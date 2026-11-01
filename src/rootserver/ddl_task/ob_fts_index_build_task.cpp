@@ -470,6 +470,11 @@ int ObFtsIndexBuildTask::prepare_aux_table(
       } else if (OB_FALSE_IT(arg.snapshot_version_ = snapshot_version_)) {
       } else if (OB_FAIL(rootserver::local_ddl_serial_call([&]{ return ::oceanbase::share::server_service<::oceanbase::rootserver::ObLocalManagementService>()->create_aux_index(arg, res); }))) {
       } else if (res.schema_generated_) {
+        // Both FTS consumers are submitted from the same parent state
+        // transition.  The child DDL service owns their actual start time;
+        // this timestamp records the parent-side submission boundary without
+        // pretending it is worker start time.
+        const int64_t submit_ts = ObTimeUtility::current_time();
         task_submitted = true;
         aux_table_id = res.aux_table_id_;
         if (res.ddl_task_id_ < 0) {
@@ -492,6 +497,8 @@ int ObFtsIndexBuildTask::prepare_aux_table(
             }
           }
         }
+        LOG_INFO("fts aux child submitted", K(index_type), K(aux_table_id),
+                 K(task_id), K(submit_ts), K(parent_task_id_), K(task_id_));
       }
     }
   }
@@ -927,7 +934,8 @@ int ObFtsIndexBuildTask::on_child_task_finish(
                                                                  status,
                                                                  true/*overwrite*/))) {
     } else {
-      LOG_INFO("child task finish successfully", K(child_task_key));
+      LOG_INFO("child task finish observed by parent", K(child_task_key),
+               K(ret_code), K(ObTimeUtility::current_time()), K(task_id_));
     }
   }
   return ret;

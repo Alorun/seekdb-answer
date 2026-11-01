@@ -30,10 +30,12 @@ namespace storage
 class ObFTWord final
 {
 public:
-  ObFTWord() : word_(), meta_() {}
+  ObFTWord() : word_(), meta_(), hash_value_(0), hash_valid_(false) {}
   ObFTWord(const int64_t length, const char *ptr, const ObObjMeta &meta) : meta_(meta)
   {
     word_.set_string(ptr, length);
+    hash_value_ = 0;
+    hash_valid_ = false;
   }
   ~ObFTWord() = default;
 
@@ -49,6 +51,8 @@ public:
 private:
   ObDatum word_;
   ObObjMeta meta_;
+  mutable uint64_t hash_value_;
+  mutable bool hash_valid_;
 };
 
 typedef common::hash::ObHashMap<ObFTWord, int64_t> ObFTWordMap;

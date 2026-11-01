@@ -1,0 +1,2 @@
+parent_task_id,child_task_id,aux_table_type,aux_table_id,source_tablet_id,destination_tablet_id,node,source_rows_scanned,physical_rows,nonempty_documents,target_rows,text_payload_bytes,lob_documents,lob_payload_bytes,lob_reads,text_len_0,text_len_1_64,text_len_65_256,text_len_257_1024,text_len_1_4kb,text_len_4_16kb,text_len_gt_16kb
+NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA

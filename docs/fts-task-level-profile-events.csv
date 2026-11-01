@@ -1,0 +1,2 @@
+event_type,parent_task_id,child_task_id,aux_table_type,tablet_id,node,start_wall_time_utc,end_wall_time_utc,duration_ms,clock_source,notes
+benchmark_connection_failed,NA,NA,NA,NA,NA,NA,NA,NA,wall_clock,MySQL connection to 127.0.0.1:2881 failed with ERROR 2002; no task events available

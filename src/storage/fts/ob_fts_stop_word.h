@@ -18,6 +18,7 @@
 #define OB_FTS_STOP_WORD_H_
 
 #include "lib/container/ob_iarray.h"
+#include "lib/allocator/ob_allocator.h"
 #include "lib/hash/ob_hashset.h"
 #include "object/ob_object.h"
 #include "data_plane/fts/ob_fts_struct.h"
@@ -86,6 +87,7 @@ private:
 
   StopWordSet stopword_set_;
   ObObjMeta stopword_type_;
+  mutable common::ObArenaAllocator scratch_allocator_;
 
   bool inited_ = false;
 

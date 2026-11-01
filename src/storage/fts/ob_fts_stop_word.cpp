@@ -76,16 +76,17 @@ int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
   int ret = OB_SUCCESS;
   
   
-  common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
   if (OB_UNLIKELY(!inited_)) {
     ret = OB_NOT_INIT;
   } else if (OB_UNLIKELY(word.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else {
     common::ObString cmp_str;
-    // do nothing set out with in if type is the same.
-    if (OB_FAIL(common::ObCharset::charset_convert(
-                                       allocator,
+    scratch_allocator_.reset_remain_one_page();
+    if (word.get_collation_type() == stopword_type_.get_collation_type()) {
+      cmp_str = word.get_word().get_string();
+    } else if (OB_FAIL(common::ObCharset::charset_convert(
+                                       scratch_allocator_,
                                        word.get_word().get_string(),
                                        word.get_collation_type(),
                                        stopword_type_.get_collation_type(),
@@ -204,14 +205,17 @@ int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
   } else if (!flag_.groupby_word()) {
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
-  } else if (OB_FAIL(word_map_.get_refactored(word, word_count)) && OB_HASH_NOT_EXIST != ret) {
   } else {
-    if (OB_HASH_NOT_EXIST == ret) {
-      word_count = 1;
+    // ObHashMap::get performs one lookup and returns a mutable value.  Update
+    // existing entries in place to avoid a second hash/compare via set().
+    int64_t *existing = word_map_.get(word);
+    if (OB_NOT_NULL(existing)) {
+      word_count = *existing + word_freq;
+      *existing = word_count;
     } else {
-      word_count += word_freq;
-    }
-    if (OB_FAIL(word_map_.set_refactored(word, word_count, 1/*overwrite*/))) {
+      word_count = 1;
+      if (OB_FAIL(word_map_.set_refactored(word, word_count))) {
+      }
     }
   }
   return ret;
