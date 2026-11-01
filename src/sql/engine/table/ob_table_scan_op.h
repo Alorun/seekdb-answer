@@ -735,6 +735,9 @@ protected:
   bool in_rescan_;
   ObDomainIndexCache domain_index_;
   ObFTIndexRowCache fts_index_;
+  // Reused for materializing the current FTS LOB value.  Its contents are
+  // valid only until the current document has been segmented.
+  common::ObArenaAllocator fts_lob_allocator_;
 
   // output_ is used to output data, TSC operator directly invokes output_::get_next_row(s),
   // it points to fold_iter_ in group rescan and iter_tree_ in normal scan.

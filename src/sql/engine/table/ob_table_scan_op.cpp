@@ -679,6 +679,7 @@ ObTableScanOp::ObTableScanOp(ObExecContext &exec_ctx, const ObOpSpec &spec, ObOp
     in_rescan_(false),
     domain_index_(),
     fts_index_(),
+    fts_lob_allocator_(),
     output_   (nullptr),
     fold_iter_(nullptr),
     iter_tree_(nullptr),
@@ -1515,6 +1516,7 @@ int ObTableScanOp::inner_close()
   }
   if (OB_SUCC(ret)) {
     fts_index_.reuse();
+    fts_lob_allocator_.reuse();
     iter_end_ = false;
     need_init_before_get_row_ = true;
     rand_scan_processor_.reset();
@@ -1648,6 +1650,10 @@ int ObTableScanOp::inner_rescan()
 {
   int ret = OB_SUCCESS;
   in_rescan_ = true;
+  if (MY_SPEC.is_fts_ddl_) {
+    fts_index_.reuse();
+    fts_lob_allocator_.reuse();
+  }
   if (OB_FAIL(try_check_status())) {
   } else if (OB_FAIL(ObOperator::inner_rescan())) {
   } else {
@@ -3666,9 +3672,11 @@ int ObTableScanOp::fetch_next_fts_index_rows()
       ret = OB_ERR_UNEXPECTED;
     } else {
       ObString ft = ft_datum->get_string();
-      ObArenaAllocator tmp_allocator(ObModIds::OB_LOB_ACCESS_BUFFER, OB_MALLOC_NORMAL_BLOCK_SIZE);
+      // Reuse the scan-scoped allocator.  The materialized text is consumed
+      // synchronously by segment() and is never retained across documents.
+      fts_lob_allocator_.reuse();
       if (OB_FAIL(ObTextStringHelper::read_real_string_data(get_exec_ctx(),
-                                                            tmp_allocator,
+                                                            fts_lob_allocator_,
                                                             *ft_datum,
                                                             ft_expr->datum_meta_,
                                                             ft_expr->obj_meta_.has_lob_header(),
