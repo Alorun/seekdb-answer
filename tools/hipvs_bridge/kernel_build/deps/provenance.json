@@ -1,0 +1,57 @@
+{
+  "raft": {
+    "repository": "ROCm-DS/hipRaft",
+    "commit": "baafb19bb11d7a32060a46c66c6d440cac21b5c1",
+    "archive_sha256": "feb6c3704d42b4b9aa677aee3f7566c2b2ee73ddb821b279e07778f7c1a86e6c",
+    "archive_bytes": 3011567,
+    "files": 1557,
+    "git_archive_comment": "baafb19bb11d7a32060a46c66c6d440cac21b5c1"
+  },
+  "hipmm": {
+    "repository": "ROCm-DS/hipMM",
+    "commit": "22732e49aa00ba179847e3b314371f2307f47a9a",
+    "archive_sha256": "d4be8d82bb9fbdaa4db05940a66774b1e7add3e85f5778a85cb16f6b1087eb58",
+    "archive_bytes": 492800,
+    "files": 388,
+    "git_archive_comment": "22732e49aa00ba179847e3b314371f2307f47a9a"
+  },
+  "logger": {
+    "repository": "ROCm-DS/rocmds-logger",
+    "commit": "22b252ceb6d8f2a83f44b0e5e6d8ee7d9ae0f708",
+    "archive_sha256": "d0c52779e05a7b038ae68c2eacea21d6c81b39e2cde6a0942d05a3e7b826bf5b",
+    "archive_bytes": 39313,
+    "files": 70,
+    "git_archive_comment": "22b252ceb6d8f2a83f44b0e5e6d8ee7d9ae0f708"
+  },
+  "libhipcxx": {
+    "repository": "ROCm/libhipcxx",
+    "commit": "45cae2d97824f461e062d3f316f0b4cbe3ee24e3",
+    "archive_sha256": "9cd4a0e0309d8ff4c092ea341b6a33314430c219cf97d3e7ed4c73a7593db64e",
+    "archive_bytes": 2486847,
+    "files": 4750,
+    "git_archive_comment": "45cae2d97824f461e062d3f316f0b4cbe3ee24e3"
+  },
+  "hipco": {
+    "repository": "ROCm/hipCollections",
+    "commit": "95578ff691c8387cb2245599b8319bdfdba9bbd5",
+    "archive_sha256": "8bf10c4cbf61cafe46b9eff852ecd0257f55ad709c4754823fd9ed7016e5804b",
+    "archive_bytes": 1104249,
+    "files": 356,
+    "git_archive_comment": "95578ff691c8387cb2245599b8319bdfdba9bbd5"
+  },
+  "hipvs": {
+    "repository": "AMD-Ecosystem/hipVS",
+    "commit": "f96a663d0a4441d6f5344bd3ef552b71ae7b370b",
+    "archive_sha256": "a3e0d7449f41b501c1ebb1994517e026bbe2da728f692fb918df253bd658e710",
+    "archive_bytes": 4582790,
+    "files": 2048,
+    "git_archive_comment": "f96a663d0a4441d6f5344bd3ef552b71ae7b370b"
+  },
+  "spdlog": {
+    "repository": "gabime/spdlog",
+    "commit": "27cb4c76708608465c413f6d0e6b8d99a4d84302",
+    "archive_sha256": "7d512b37019b61646cd6fd1e48f52a3cf3e098f36b33ba9c059fe51301ff40b3",
+    "archive_bytes": 269864
+  },
+  "selection": "Dependencies declared by frozen hipVS/hipRaft; release refs resolved to immutable commits; GPU binary compatibility awaits native build/test."
+}

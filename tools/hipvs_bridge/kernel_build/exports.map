@@ -1,0 +1,10 @@
+{
+  global:
+    seekdb_cuvs_cagra_knn;
+    seekdb_cuvs_build;
+    seekdb_cuvs_search;
+    seekdb_cuvs_free;
+    seekdb_cuvs_serialize;
+    seekdb_cuvs_deserialize;
+  local: *;
+};
