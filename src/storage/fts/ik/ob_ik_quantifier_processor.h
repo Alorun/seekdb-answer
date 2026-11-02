@@ -41,6 +41,10 @@ public:
                  const uint8_t char_len,
                  const ObFTCharUtil::CharType type);
 
+  // True while a Chinese number or a quantifier match is still open.  For a
+  // non Chinese character the processor can only act on such an open state.
+  bool has_open_state() const { return start_ != -1 || !count_hits_.empty(); }
+
 private:
   int process_CN_number(TokenizeContext &ctx,
                         const char *ch,

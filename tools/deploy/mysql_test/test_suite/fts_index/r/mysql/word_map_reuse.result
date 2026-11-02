@@ -1,0 +1,26 @@
+result_format: 4
+######## index build: short/long alternation, empty, stopwords, repeated terms ########
++----+-------+------------+------------+
+| id | word  | word_count | doc_length |
++----+-------+------------+------------+
+|  1 | short |          1 |          1 |
+|  2 | alpha |        100 |        100 |
+|  5 | alpha |         40 |         80 |
+|  5 | beta  |         40 |         80 |
+|  6 | alpha |          1 |          4 |
+|  6 | beta  |          3 |          4 |
++----+-------+------------+------------+
+######## insert; update/delete with FT_SCAN validation ########
++----+-------+------------+------------+
+| id | word  | word_count | doc_length |
++----+-------+------------+------------+
+|  1 | alpha |          4 |          4 |
+|  2 | alpha |        100 |        100 |
+|  5 | alpha |          2 |          3 |
+|  5 | beta  |          1 |          3 |
+|  7 | beta  |         80 |         80 |
+|  8 | gamma |          1 |          1 |
+| 11 | delta |          1 |          1 |
+| 12 | delta |         50 |         50 |
+| 13 | delta |          2 |          2 |
++----+-------+------------+------------+

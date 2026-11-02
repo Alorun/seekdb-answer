@@ -86,6 +86,9 @@ private:
 
   StopWordSet stopword_set_;
   ObObjMeta stopword_type_;
+  // True when every configured stopword is plain ASCII.  A word that contains a
+  // non-ASCII byte can then never match, so the hash lookup is skipped.
+  bool stopwords_all_ascii_ = false;
 
   bool inited_ = false;
 
@@ -120,6 +123,10 @@ public:
 
 private:
   bool is_min_max_word(const int64_t c_len) const;
+  // True when lowercasing the token would change it.  Tokens made of ASCII
+  // bytes without uppercase letters are returned unchanged by the charset
+  // conversion, so they can skip the per-token copy.
+  static bool needs_case_conversion(const common::ObString &word);
   int casedown_word(const ObFTWord &src, ObFTWord &dst);
   int check_stopword(const ObFTWord &word, bool &is_stopword);
   int groupby_word(const ObFTWord &word, const int64_t word_cnt);

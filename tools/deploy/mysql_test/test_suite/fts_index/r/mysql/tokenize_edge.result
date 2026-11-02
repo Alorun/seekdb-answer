@@ -1,0 +1,68 @@
+drop database if exists fts_tok_edge;
+create database fts_tok_edge;
+use fts_tok_edge;
+# case folding: ascii is lowercased, mixed case words collapse
+select tokenize('ABC abc AbC', 'beng');
+tokenize('ABC abc AbC', 'beng')
+["abc"]
+select tokenize('Hello WORLD hello', 'space');
+tokenize('Hello WORLD hello', 'space')
+["world", "hello"]
+# case folding does not touch CJK tokens
+select tokenize('数据库全文索引', 'ik');
+tokenize('数据库全文索引', 'ik')
+["数据库", "全文索引"]
+select tokenize('数据库 OceanBase 索引', 'ik');
+tokenize('数据库 OceanBase 索引', 'ik')
+["索引", "oceanbase", "数据库"]
+# stop words are filtered by the beng parser; ik keeps latin words
+select tokenize('the quick brown fox', 'beng');
+tokenize('the quick brown fox', 'beng')
+["quick", "brown", "fox"]
+select tokenize('数据库 the 索引 a', 'ik');
+tokenize('数据库 the 索引 a', 'ik')
+["a", "索引", "数据库", "the"]
+# Chinese numeral characters stay in the token stream
+select tokenize('一二三十百千万亿', 'ik');
+tokenize('一二三十百千万亿', 'ik')
+["一二三十百千万亿"]
+select tokenize('百分之一百二十三', 'ik');
+tokenize('百分之一百二十三', 'ik')
+["百分之", "一百二十三"]
+# numbers, connectors and punctuation
+select tokenize('v1.2.3 3.14 1,234 abc-def #tag', 'beng');
+tokenize('v1.2.3 3.14 1,234 abc-def #tag', 'beng')
+["tag", "234", "def", "abc"]
+select tokenize('v1.2.3 3.14 1,234 abc-def #tag 一二三十', 'ik');
+tokenize('v1.2.3 3.14 1,234 abc-def #tag 一二三十', 'ik')
+["1,234", "abc-def", "tag", "3.14", "v1.2.3", "一二三十"]
+# full width and other CJK scripts
+select tokenize('ＡＢＣ　１２３', 'beng');
+tokenize('ＡＢＣ　１２３', 'beng')
+["ａｂｃ　１２３"]
+select tokenize('ひらがな カタカナ 한글', 'ik');
+tokenize('ひらがな カタカナ 한글', 'ik')
+["ら", "ひ", "な", "タ", "ナ", "한", "カ", "글", "が"]
+# emoji / surrogate pairs must not break tokenisation
+select tokenize('database 😀 engine', 'beng');
+tokenize('database 😀 engine', 'beng')
+["engine", "database", "😀"]
+select tokenize('数据库😀索引', 'ik');
+tokenize('数据库😀索引', 'ik')
+["索引", "数据库"]
+# long text is not truncated
+select tokenize(concat('全文索引', repeat('分词器', 40)), 'ik');
+tokenize(concat('全文索引', repeat('分词器', 40)), 'ik')
+["全文索引", "分词器"]
+# empty and whitespace only input
+select tokenize('', 'ik');
+tokenize('', 'ik')
+[]
+select tokenize('   ', 'space');
+tokenize('   ', 'space')
+[]
+# ngram parser still splits by character pairs
+select tokenize('数据库abc', 'ngram');
+tokenize('数据库abc', 'ngram')
+["ab", "数据", "库a", "据库", "bc"]
+drop database if exists fts_tok_edge;

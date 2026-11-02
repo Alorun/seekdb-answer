@@ -309,6 +309,48 @@ int ObFTParseHelper::segment(
   return ret;
 }
 
+namespace
+{
+// The parser configuration of a helper (parser name + property JSON) is
+// immutable for a given workload, but it is parsed again for every helper that
+// is created.  This thread local memo keeps the last few parse results.  The
+// cached values are plain values: ObFTParser embeds its name, and
+// ObFTParserProperty only ever points to string literals (the table names are
+// the compile time literals set in parse_for_parser_helper), so they stay valid
+// after the call that produced them returns.
+constexpr int64_t HELPER_INIT_CACHE_SLOTS = 4;
+constexpr int64_t HELPER_INIT_CACHE_MAX_PROPS_LEN = 512;
+
+uint64_t helper_init_cache_hash(const char *data1,
+                                const int64_t len1,
+                                const char *data2,
+                                const int64_t len2)
+{
+  uint64_t hash = 1469598103934665603ULL;
+  for (int64_t i = 0; i < len1; ++i) {
+    hash = (hash ^ static_cast<unsigned char>(data1[i])) * 1099511628211ULL;
+  }
+  for (int64_t i = 0; i < len2; ++i) {
+    hash = (hash ^ static_cast<unsigned char>(data2[i])) * 1099511628211ULL;
+  }
+  return hash;
+}
+
+struct ObFTParseHelperInitCacheEntry
+{
+  bool valid_;
+  uint64_t hash_;
+  int32_t name_len_;
+  int32_t props_len_;
+  char name_[OB_FT_PARSER_NAME_LENGTH];
+  char props_[HELPER_INIT_CACHE_MAX_PROPS_LEN];
+  ObFTParser parser_;
+  ObFTParserProperty property_;
+  const ObIFTParserDesc *desc_;
+  ObAddWordFlag add_word_flag_;
+};
+} // namespace
+
 ObFTParseHelper::ObFTParseHelper()
     : allocator_(nullptr),
     parser_desc_(nullptr),
@@ -330,19 +372,67 @@ int ObFTParseHelper::init(
     const common::ObString &parser_properties)
 {
   int ret = OB_SUCCESS;
+  static thread_local ObFTParseHelperInitCacheEntry cache[HELPER_INIT_CACHE_SLOTS];
+  static thread_local int64_t next_slot = 0;
+
   if (OB_UNLIKELY(is_inited_)) {
     ret = OB_INIT_TWICE;
   } else if (OB_ISNULL(allocator) || OB_UNLIKELY(parser_name.empty())) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(parser_name_.parse_from_str(parser_name.ptr(), parser_name.length()))) {
-  } else if (OB_FAIL(parser_property_.parse_for_parser_helper(parser_name_, parser_properties))) {
-  } else if (OB_FAIL(parser_name_.get_desc(parser_desc_))) {
-  } else if (OB_ISNULL(parser_desc_)) {
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_FAIL(set_add_word_flag(*parser_desc_))) {
   } else {
-    allocator_ = allocator;
-    is_inited_ = true;
+    const int64_t name_len = parser_name.length();
+    const int64_t props_len = parser_properties.length();
+    const bool cacheable = name_len > 0 && name_len <= OB_FT_PARSER_NAME_LENGTH
+                           && props_len <= HELPER_INIT_CACHE_MAX_PROPS_LEN;
+    uint64_t hash = 0;
+    if (cacheable) {
+      hash = helper_init_cache_hash(parser_name.ptr(), name_len,
+                                    parser_properties.ptr(), props_len);
+    }
+    const ObFTParseHelperInitCacheEntry *hit = nullptr;
+    for (int64_t i = 0; cacheable && nullptr == hit && i < HELPER_INIT_CACHE_SLOTS; ++i) {
+      const ObFTParseHelperInitCacheEntry &entry = cache[i];
+      if (entry.valid_ && entry.hash_ == hash && entry.name_len_ == name_len
+          && entry.props_len_ == props_len
+          && 0 == MEMCMP(entry.name_, parser_name.ptr(), name_len)
+          && (0 == props_len
+              || 0 == MEMCMP(entry.props_, parser_properties.ptr(), props_len))) {
+        hit = &entry;
+      }
+    }
+    if (nullptr != hit) {
+      parser_name_ = hit->parser_;
+      parser_property_ = hit->property_;
+      parser_desc_ = hit->desc_;
+      add_word_flag_ = hit->add_word_flag_;
+      allocator_ = allocator;
+      is_inited_ = true;
+    } else if (OB_FAIL(parser_name_.parse_from_str(parser_name.ptr(), parser_name.length()))) {
+    } else if (OB_FAIL(parser_property_.parse_for_parser_helper(parser_name_, parser_properties))) {
+    } else if (OB_FAIL(parser_name_.get_desc(parser_desc_))) {
+    } else if (OB_ISNULL(parser_desc_)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(set_add_word_flag(*parser_desc_))) {
+    } else {
+      allocator_ = allocator;
+      is_inited_ = true;
+      if (cacheable) {
+        ObFTParseHelperInitCacheEntry &entry = cache[next_slot];
+        next_slot = (next_slot + 1) % HELPER_INIT_CACHE_SLOTS;
+        MEMCPY(entry.name_, parser_name.ptr(), name_len);
+        if (0 != props_len) {
+          MEMCPY(entry.props_, parser_properties.ptr(), props_len);
+        }
+        entry.name_len_ = static_cast<int32_t>(name_len);
+        entry.props_len_ = static_cast<int32_t>(props_len);
+        entry.parser_ = parser_name_;
+        entry.property_ = parser_property_;
+        entry.desc_ = parser_desc_;
+        entry.add_word_flag_ = add_word_flag_;
+        entry.hash_ = hash;
+        entry.valid_ = true;
+      }
+    }
   }
   if (OB_FAIL(ret) && OB_UNLIKELY(!is_inited_)) {
     reset();
@@ -365,6 +455,17 @@ int ObFTParseHelper::segment(
     int64_t &doc_length,
     ObFTWordMap &words) const
 {
+  return segment(meta, fulltext, fulltext_len, doc_length, words, true);
+}
+
+int ObFTParseHelper::segment(
+    const ObObjMeta &meta,
+    const char *fulltext,
+    const int64_t fulltext_len,
+    int64_t &doc_length,
+    ObFTWordMap &words,
+    const bool clear_words) const
+{
   int ret = OB_SUCCESS;
   const ObCharsetInfo *cs = nullptr;
   ObCollationType type = meta.get_collation_type();
@@ -377,7 +478,9 @@ int ObFTParseHelper::segment(
   } else if (OB_ISNULL(cs = common::ObCharset::get_charset(type))) {
     ret = OB_ERR_UNEXPECTED;
   } else {
-    words.reuse();
+    if (clear_words) {
+      words.reuse();
+    }
     ObAddWord add_word(parser_property_, meta, add_word_flag_, *allocator_, words);
     if (OB_FAIL(segment(
                     parser_property_,

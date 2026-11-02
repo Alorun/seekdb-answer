@@ -50,6 +50,54 @@ ObExprTokenize::ObExprTokenize(common::ObIAllocator &alloc)
 
 ObExprTokenize::~ObExprTokenize() {}
 
+namespace
+{
+// Every TOKENIZE evaluation of the same expression receives the same parser
+// configuration, yet the parser property JSON is reformatted anew for every
+// row.  These two thread local memos keep the last few results.  Entries are
+// fixed size buffers and plain values only (no allocator pointers, no pointers
+// into a call frame), and a miss always falls back to the regular code path.
+constexpr int64_t TOKENIZE_CACHE_SLOTS = 4;
+constexpr int64_t TOKENIZE_CACHE_MAX_PROPS_LEN = 512;
+
+uint64_t tokenize_cache_hash(const char *data1,
+                             const int64_t len1,
+                             const char *data2,
+                             const int64_t len2)
+{
+  uint64_t hash = 1469598103934665603ULL;
+  for (int64_t i = 0; i < len1; ++i) {
+    hash = (hash ^ static_cast<unsigned char>(data1[i])) * 1099511628211ULL;
+  }
+  for (int64_t i = 0; i < len2; ++i) {
+    hash = (hash ^ static_cast<unsigned char>(data2[i])) * 1099511628211ULL;
+  }
+  return hash;
+}
+
+struct ObTokenizePropsCacheEntry
+{
+  bool valid_;
+  uint64_t hash_;
+  int32_t name_len_;
+  int32_t input_len_;
+  int32_t reformed_len_;
+  char name_[storage::OB_FT_PARSER_NAME_LENGTH];
+  char input_[TOKENIZE_CACHE_MAX_PROPS_LEN];
+  char reformed_[TOKENIZE_CACHE_MAX_PROPS_LEN];
+};
+
+// The dictionary loader of a (parser, charset) pair is created once and its
+// "dictionary already loaded" state never goes back, so a successful load can
+// be memoized for the rest of the process.  The lookup in try_load_dictionary_for_ik
+// uses a fixed parser name, so the charset is the only key needed.
+struct ObTokenizeDicMemo
+{
+  bool valid_;
+  common::ObCharsetType cs_;
+};
+} // namespace
+
 int ObExprTokenize::eval_tokenize(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &expr_datum)
 {
   int ret = OB_SUCCESS;
@@ -212,7 +260,7 @@ int ObExprTokenize::parse_param(const ObExpr &expr,
   } else if (OB_FAIL(parse_fulltext(expr, ctx, param))) {
   } else if (OB_FAIL(parse_parser_name(expr, ctx, param))) {
   } else if (OB_FAIL(parse_parser_properties(expr, ctx, temp_allocator, param))) {
-  } else if (OB_FAIL(param.reform_parser_properties(param.properties_))) {
+  } else if (OB_FAIL(param.complete_parser_properties())) {
   } else if (OB_FAIL(param.try_load_dictionary_for_ik())) {
   }
   return ret;
@@ -389,21 +437,91 @@ int ObExprTokenize::TokenizeParam::reform_parser_properties(const ObString &prop
   return ret;
 }
 
+int ObExprTokenize::TokenizeParam::complete_parser_properties()
+{
+  int ret = OB_SUCCESS;
+  static thread_local ObTokenizePropsCacheEntry cache[TOKENIZE_CACHE_SLOTS];
+  static thread_local int64_t next_slot = 0;
+
+  const int64_t name_len = parser_name_.length();
+  const int64_t input_len = properties_.length();
+  const bool cacheable = name_len > 0 && name_len <= storage::OB_FT_PARSER_NAME_LENGTH
+                         && input_len <= TOKENIZE_CACHE_MAX_PROPS_LEN;
+  uint64_t hash = 0;
+  if (cacheable) {
+    hash = tokenize_cache_hash(parser_name_.ptr(), name_len, properties_.ptr(), input_len);
+  }
+
+  const ObTokenizePropsCacheEntry *hit = nullptr;
+  for (int64_t i = 0; cacheable && nullptr == hit && i < TOKENIZE_CACHE_SLOTS; ++i) {
+    const ObTokenizePropsCacheEntry &entry = cache[i];
+    if (entry.valid_ && entry.hash_ == hash && entry.name_len_ == name_len
+        && entry.input_len_ == input_len
+        && 0 == MEMCMP(entry.name_, parser_name_.ptr(), name_len)
+        && (0 == input_len || 0 == MEMCMP(entry.input_, properties_.ptr(), input_len))) {
+      hit = &entry;
+    }
+  }
+
+  if (nullptr != hit) {
+    char *buf = static_cast<char *>(allocator_.alloc(hit->reformed_len_));
+    if (OB_ISNULL(buf)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      MEMCPY(buf, hit->reformed_, hit->reformed_len_);
+      properties_.assign_ptr(buf, hit->reformed_len_);
+    }
+  } else if (OB_FAIL(reform_parser_properties(properties_))) {
+  } else if (cacheable) {
+    // Remember the result.  A value that does not fit the fixed buffers is
+    // simply not cached; storing never fails the statement.
+    ObTokenizePropsCacheEntry &entry = cache[next_slot];
+    next_slot = (next_slot + 1) % TOKENIZE_CACHE_SLOTS;
+    const int64_t reformed_len = properties_.length();
+    if (reformed_len > 0 && reformed_len <= TOKENIZE_CACHE_MAX_PROPS_LEN) {
+      MEMCPY(entry.name_, parser_name_.ptr(), name_len);
+      if (0 != input_len) {
+        MEMCPY(entry.input_, properties_.ptr(), input_len);
+      }
+      MEMCPY(entry.reformed_, properties_.ptr(), reformed_len);
+      entry.name_len_ = static_cast<int32_t>(name_len);
+      entry.input_len_ = static_cast<int32_t>(input_len);
+      entry.reformed_len_ = static_cast<int32_t>(reformed_len);
+      entry.hash_ = hash;
+      entry.valid_ = true;
+    } else {
+      entry.valid_ = false;
+    }
+  }
+  return ret;
+}
+
 int ObExprTokenize::TokenizeParam::try_load_dictionary_for_ik()
 {
   int ret = OB_SUCCESS;
   bool need_to_load_dic = false;
   storage::ObDicLoaderHandle dic_loader_handle;
+  static thread_local ObTokenizeDicMemo dic_memo = {false, common::CHARSET_INVALID};
+  const common::ObCharsetType cs_type
+      = ObCharset::charset_type_by_coll(meta_.get_collation_type());
   if (OB_FAIL(share::ObFtsIndexBuilderUtil::check_need_to_load_dic(
           parser_name_, need_to_load_dic))) {
-  } else if (need_to_load_dic) {
+  } else if (!need_to_load_dic) {
+    // the parser does not use a dictionary at all
+  } else if (dic_memo.valid_ && dic_memo.cs_ == cs_type) {
+    // The dictionary of this charset has already been loaded by this thread; the
+    // loader keeps the loaded state for the rest of its lifetime.
+  } else {
     if (OB_FAIL(storage::ObGenDicLoader::get_instance().get_dic_loader(
                     ObString::make_string(storage::ObFTSLiteral::PARSER_NAME_IK), // currently only ik, use parser_name_ without version suffix
-                    ObCharset::charset_type_by_coll(meta_.get_collation_type()),
+                    cs_type,
                     dic_loader_handle))) {
     } else if (OB_UNLIKELY(!dic_loader_handle.is_valid())) {
       ret = OB_ERR_UNEXPECTED;
     } else if (OB_FAIL(dic_loader_handle.get_loader()->try_load_dictionary_in_trans())) {
+    } else {
+      dic_memo.valid_ = true;
+      dic_memo.cs_ = cs_type;
     }
   }
   return ret;

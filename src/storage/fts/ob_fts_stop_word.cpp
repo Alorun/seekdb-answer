@@ -50,10 +50,19 @@ int ObStopWordChecker::init()
 
     stopword_type_.set_meta(stop_meta);
     const int64_t stopword_count = sizeof(ob_stop_word_list) / sizeof(ob_stop_word_list[0]);
+    bool all_ascii = true;
     for (int64_t i = 0; OB_SUCC(ret) && i < stopword_count; ++i) {
-      ObFTWord stopword(STRLEN(ob_stop_word_list[i]), ob_stop_word_list[i], stopword_type_);
+      const char *stopword_str = ob_stop_word_list[i];
+      const int64_t stopword_len = STRLEN(stopword_str);
+      for (int64_t j = 0; all_ascii && j < stopword_len; ++j) {
+        all_ascii = (static_cast<unsigned char>(stopword_str[j]) < 0x80);
+      }
+      ObFTWord stopword(stopword_len, stopword_str, stopword_type_);
       if (OB_FAIL(stopword_set_.set_refactored(stopword))) {
       }
+    }
+    if (OB_SUCC(ret)) {
+      stopwords_all_ascii_ = all_ascii;
     }
 
     if (OB_SUCC(ret)) {
@@ -67,6 +76,7 @@ void ObStopWordChecker::destroy()
 {
   if (inited_) {
     stopword_set_.destroy();
+    stopwords_all_ascii_ = false;
     inited_ = false;
   }
 }
@@ -74,16 +84,40 @@ void ObStopWordChecker::destroy()
 int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
 {
   int ret = OB_SUCCESS;
-  
-  
-  common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
+  is_stopword = false;
   if (OB_UNLIKELY(!inited_)) {
     ret = OB_NOT_INIT;
   } else if (OB_UNLIKELY(word.empty())) {
     ret = OB_INVALID_ARGUMENT;
+  } else if (word.get_collation_type() == stopword_type_.get_collation_type()) {
+    // Same collation: the comparison can use the token bytes directly.  This is
+    // the common case and avoids the per-token allocator plus charset
+    // conversion that the general path needs.
+    const common::ObString word_str = word.get_word().get_string();
+    bool may_match = true;
+    if (stopwords_all_ascii_) {
+      for (int64_t i = 0; may_match && i < word_str.length(); ++i) {
+        may_match = (static_cast<unsigned char>(word_str.ptr()[i]) < 0x80);
+      }
+    }
+    if (!may_match) {
+      is_stopword = false;
+    } else {
+      ObFTWord converted(word_str.length(), word_str.ptr(), stopword_type_);
+      ret = stopword_set_.exist_refactored(converted);
+      if (OB_HASH_NOT_EXIST == ret) {
+        is_stopword = false;
+        ret = OB_SUCCESS;
+      } else if (OB_HASH_EXIST == ret) {
+        is_stopword = true;
+        ret = OB_SUCCESS;
+      } else if (OB_SUCC(ret)) {
+        ret = OB_ERR_UNEXPECTED;
+      }
+    }
   } else {
+    common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
     common::ObString cmp_str;
-    // do nothing set out with in if type is the same.
     if (OB_FAIL(common::ObCharset::charset_convert(
                                        allocator,
                                        word.get_word().get_string(),
@@ -101,7 +135,6 @@ int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
         ret = OB_SUCCESS;
       } else if (OB_SUCC(ret)) {
         ret = OB_ERR_UNEXPECTED;
-      } else {
       }
     }
   }
@@ -158,21 +191,40 @@ bool ObAddWord::is_min_max_word(const int64_t c_len) const
   return flag_.min_max_word() && (c_len < min_token_size_ || c_len > max_token_size_);
 }
 
+bool ObAddWord::needs_case_conversion(const common::ObString &word)
+{
+  const unsigned char *ptr = reinterpret_cast<const unsigned char *>(word.ptr());
+  bool needs = false;
+  for (int64_t i = 0; !needs && i < word.length(); ++i) {
+    // Any non-ASCII byte may take part in case folding; uppercase ASCII always
+    // does.  Everything else is returned unchanged by the conversion.
+    needs = (ptr[i] >= 0x80) || (ptr[i] >= 'A' && ptr[i] <= 'Z');
+  }
+  return needs;
+}
+
 int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(src.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else if (flag_.casedown()) {
-    ObString dst_str;
-    if (OB_FAIL(ObCharset::tolower(
-                    word_meta_.get_collation_type(),
-                    src.get_word().get_string(),
-                    dst_str,
-                    allocator_))) {
+    const ObString src_str = src.get_word().get_string();
+    if (!needs_case_conversion(src_str)) {
+      // Lowercasing would be a byte-for-byte copy, keep the token in place and
+      // skip the per-token allocation.
+      dst = src;
     } else {
-      ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
-      dst = tmp;
+      ObString dst_str;
+      if (OB_FAIL(ObCharset::tolower(
+                      word_meta_.get_collation_type(),
+                      src_str,
+                      dst_str,
+                      allocator_))) {
+      } else {
+        ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
+        dst = tmp;
+      }
     }
   } else {
     dst = src;
@@ -195,23 +247,32 @@ int ObAddWord::check_stopword(const ObFTWord &ft_word, bool &is_stopword)
   return ret;
 }
 
+namespace {
+// Folds one more occurrence of a token into its existing counter.  Using
+// set_or_update keeps the node and updates the value in place, while the
+// get/set pair used to re-hash the key and rebuild the node on every hit.
+struct ObFTWordCountAccumulator
+{
+  explicit ObFTWordCountAccumulator(const int64_t word_freq) : word_freq_(word_freq) {}
+  template <class PairType>
+  void operator()(PairType &pair) { pair.second += word_freq_; }
+  int64_t word_freq_;
+};
+} // namespace
+
 int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
 {
   int ret = OB_SUCCESS;
-  int64_t word_count = 0;
   if (OB_UNLIKELY(word.empty() || word_freq <= 0)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (!flag_.groupby_word()) {
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
-  } else if (OB_FAIL(word_map_.get_refactored(word, word_count)) && OB_HASH_NOT_EXIST != ret) {
   } else {
-    if (OB_HASH_NOT_EXIST == ret) {
-      word_count = 1;
-    } else {
-      word_count += word_freq;
-    }
-    if (OB_FAIL(word_map_.set_refactored(word, word_count, 1/*overwrite*/))) {
+    // New tokens start at one, later occurrences add their frequency, which is
+    // the same accumulation the explicit lookup used to perform.
+    ObFTWordCountAccumulator accumulator(word_freq);
+    if (OB_FAIL(word_map_.set_or_update(word, 1/*initial word count*/, accumulator))) {
     }
   }
   return ret;

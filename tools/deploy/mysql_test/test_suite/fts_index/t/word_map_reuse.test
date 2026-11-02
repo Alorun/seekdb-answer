@@ -1,0 +1,102 @@
+# owner group: storage
+# description: cover per-document fulltext word-map isolation during index build and DML
+
+connect(sys_conn, $OBMYSQL_MS0, root@sys,,oceanbase, $OBMYSQL_PORT);
+connection sys_conn;
+
+--disable_query_log
+alter system set _enable_add_fulltext_index_to_existing_table = true;
+drop database if exists fts_word_map_reuse;
+create database fts_word_map_reuse;
+use fts_word_map_reuse;
+
+create table word_map_docs (
+  id int primary key,
+  body text
+);
+insert into word_map_docs values
+  (1, 'short'),
+  (2, repeat('alpha ', 100)),
+  (3, ''),
+  (4, 'the the the'),
+  (5, repeat('alpha beta ', 40)),
+  (6, 'alpha beta beta beta');
+
+create fulltext index fti on word_map_docs(body) with parser beng;
+set ob_enable_index_direct_select = 'ON';
+--enable_query_log
+
+let $database_id = query_get_value(
+  SELECT database_id FROM oceanbase.__all_database
+  WHERE database_name = 'fts_word_map_reuse',
+  database_id, 1);
+let $data_table_id = query_get_value(
+  SELECT table_id FROM oceanbase.__all_table
+  WHERE table_name = 'word_map_docs' AND database_id = $database_id,
+  table_id, 1);
+let $doc_rowkey_table_name = query_get_value(
+  SELECT table_name FROM oceanbase.__all_table
+  WHERE index_type = 12 AND data_table_id = $data_table_id,
+  table_name, 1);
+let $doc_word_table_name = query_get_value(
+  SELECT table_name FROM oceanbase.__all_table
+  WHERE index_type = 14 AND data_table_id = $data_table_id,
+  table_name, 1);
+let $__doc_id = query_get_value(
+  SELECT column_name FROM oceanbase.__all_column
+  WHERE table_id = $data_table_id AND column_name LIKE '__doc_id_%',
+  column_name, 1);
+let $__word_segment = query_get_value(
+  SELECT column_name FROM oceanbase.__all_column
+  WHERE table_id = $data_table_id AND column_name LIKE '__word_segment_%',
+  column_name, 1);
+let $__word_count = query_get_value(
+  SELECT column_name FROM oceanbase.__all_column
+  WHERE table_id = $data_table_id AND column_name LIKE '__word_count_%',
+  column_name, 1);
+let $__doc_length = query_get_value(
+  SELECT column_name FROM oceanbase.__all_column
+  WHERE table_id = $data_table_id AND column_name LIKE '__doc_length_%',
+  column_name, 1);
+
+--result_format 4
+--echo ######## index build: short/long alternation, empty, stopwords, repeated terms ########
+--disable_query_log
+eval select $doc_rowkey_table_name.id as id,
+            $doc_word_table_name.$__word_segment as word,
+            $doc_word_table_name.$__word_count as word_count,
+            $doc_word_table_name.$__doc_length as doc_length
+     from $doc_word_table_name, $doc_rowkey_table_name
+     where $doc_word_table_name.$__doc_id = $doc_rowkey_table_name.$__doc_id
+     order by id, word;
+--enable_query_log
+
+--disable_query_log
+alter system set _enable_defensive_check = 2;
+insert into word_map_docs values
+  (7, repeat('beta ', 80)),
+  (8, 'gamma'),
+  (9, ''),
+  (10, 'the the'),
+  (11, 'delta'),
+  (12, repeat('delta ', 50)),
+  (13, 'delta delta');
+update word_map_docs set body = 'alpha alpha alpha alpha' where id = 1;
+delete from word_map_docs where id = 6;
+alter system set _enable_defensive_check = 1;
+--enable_query_log
+
+--echo ######## insert; update/delete with FT_SCAN validation ########
+--disable_query_log
+eval select $doc_rowkey_table_name.id as id,
+            $doc_word_table_name.$__word_segment as word,
+            $doc_word_table_name.$__word_count as word_count,
+            $doc_word_table_name.$__doc_length as doc_length
+     from $doc_word_table_name, $doc_rowkey_table_name
+     where $doc_word_table_name.$__doc_id = $doc_rowkey_table_name.$__doc_id
+     order by id, word;
+--enable_query_log
+
+--disable_query_log
+drop database fts_word_map_reuse;
+--enable_query_log

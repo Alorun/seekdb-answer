@@ -41,6 +41,10 @@ public:
                  const uint8_t char_len,
                  const ObFTCharUtil::CharType type) override;
 
+  // True while a dictionary prefix match is pending, which is the only state a
+  // USELESS character can affect.
+  bool has_pending_hits() const { return !hits_.empty(); }
+
 private:
   ObList<ObDATrieHit, ObIAllocator> hits_;
   const ObIFTDict &dict_main_;

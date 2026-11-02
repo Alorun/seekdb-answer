@@ -30,6 +30,10 @@ namespace oceanbase
 namespace storage
 {
 class ObFTDictHub;
+class ObIKLetterProcessor;
+class ObIKQuantifierProcessor;
+class ObIKCJKProcessor;
+class ObIKSurrogateProcessor;
 
 class ObIKFTParser final : public ObITokenIterator
 {
@@ -41,6 +45,10 @@ public:
         ctx_(nullptr),
         hub_(hub),
         segmenters_(allocator_),
+        letter_seg_(nullptr),
+        quantifier_seg_(nullptr),
+        cjk_seg_(nullptr),
+        surrogate_seg_(nullptr),
         cache_main_(allocator),
         cache_quan_(allocator),
         cache_stop_(allocator),
@@ -53,6 +61,13 @@ public:
   virtual ~ObIKFTParser() { reset(); }
 
   int init(const ObFTParserParam &param);
+
+  // Prepares an initialized parser for another document with the same
+  // configuration: the dictionaries are kept, only the per document state
+  // (tokenize context and the processors' state) is rebuilt.  Returns
+  // OB_INVALID_ARGUMENT when the configuration does not match, the caller then
+  // has to create a fresh parser.
+  int reuse(const ObFTParserParam &param);
 
   int get_next_token(const char *&word,
                      int64_t &word_len,
@@ -82,6 +97,11 @@ private:
 
   void reset();
 
+  // Drops the per document state but keeps the (immutable) dictionaries.
+  void reset_document_state();
+
+  void destroy_dicts();
+
   bool should_read_newest_table() const;
 
   int build_dict_from_cache(const ObFTDictDesc &desc,
@@ -97,6 +117,13 @@ private:
   TokenizeContext *ctx_;
   ObFTDictHub *hub_;
   ObList<ObIIKProcessor *, ObIAllocator> segmenters_;
+  // Typed aliases of the processors above.  The per character dispatch calls
+  // the concrete `do_process` directly so that it no longer has to walk the
+  // list with a virtual call per processor.
+  ObIKLetterProcessor *letter_seg_;
+  ObIKQuantifierProcessor *quantifier_seg_;
+  ObIKCJKProcessor *cjk_seg_;
+  ObIKSurrogateProcessor *surrogate_seg_;
 
   // For now there's no change of dict in one query, so we can pin dict this level.
   ObFTCacheRangeContainer cache_main_;

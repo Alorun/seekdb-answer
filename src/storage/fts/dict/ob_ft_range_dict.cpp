@@ -378,19 +378,27 @@ int ObFTRangeDict::match_with_hit(const ObString &single_word,
   return last_hit.dict_->match_with_hit(single_word, last_hit, hit);
 }
 
+// The boundaries of every range and single_word are single characters, and the
+// utf8mb4_bin collation compares raw bytes (see ob_strnncoll_mb_bin), so this
+// returns the same sign as ObCharset::strcmp(CS_TYPE_UTF8MB4_BIN, ..) while
+// saving two charset lookups and one indirect collation call per range.
+static OB_INLINE int cmp_word_utf8mb4_bin(const ObString &lhs, const ObString &rhs)
+{
+  int cmp = 0;
+  const int64_t cmp_len = OB_MIN(lhs.length(), rhs.length());
+  if (cmp_len > 0) {
+    cmp = MEMCMP(lhs.ptr(), rhs.ptr(), cmp_len);
+  }
+  return 0 != cmp ? cmp : static_cast<int>(lhs.length() - rhs.length());
+}
+
 int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict *&dict) const
 {
   int ret = OB_SUCCESS;
   bool found = false;
   for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
-    if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                          range_dicts_[i].start_.get_word(),
-                          single_word)
-            <= 0
-        && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                             range_dicts_[i].end_.get_word(),
-                             single_word)
-               >= 0) {
+    if (cmp_word_utf8mb4_bin(range_dicts_[i].start_.get_word(), single_word) <= 0
+        && cmp_word_utf8mb4_bin(range_dicts_[i].end_.get_word(), single_word) >= 0) {
       dict = range_dicts_[i].dict_;
       found = true;
     }

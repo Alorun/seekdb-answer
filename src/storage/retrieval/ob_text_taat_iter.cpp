@@ -70,7 +70,21 @@ int ObTextTaaTIter::pre_process()
     } else if (OB_FAIL(bm25_param_estimator_.do_estimation(*iter_param_->eval_ctx_))) {
     } else {
       const int64_t total_doc_cnt = bm25_param_estimator_.get_total_doc_cnt();
-      partition_cnt_ = MIN((total_doc_cnt-1) / OB_HASHMAP_DEFAULT_SIZE + 1, OB_MAX_HASHMAP_COUNT);
+      // The hash map is sized from the number of documents in the index and
+      // never extends, so the whole result of one tablet has to fit in the
+      // budget given to create().  Below the direct threshold every distinct
+      // document of this tablet fits into a single map, which removes the
+      // partitioning and the spill row stores from the merge path.
+      if (total_doc_cnt <= OB_TAAT_DIRECT_MAX_DOC_CNT) {
+        use_direct_accum_ = true;
+        partition_cnt_ = 1;
+        direct_bucket_cnt_ = total_doc_cnt + total_doc_cnt / 4 + 64;
+      } else {
+        // One partition is expected to hold about OB_HASHMAP_DEFAULT_SIZE
+        // documents. init_chunk_stores() uses the same constant as the fixed
+        // per-partition bucket budget, so the two must stay aligned.
+        partition_cnt_ = MIN((total_doc_cnt-1) / OB_HASHMAP_DEFAULT_SIZE + 1, OB_MAX_HASHMAP_COUNT);
+      }
     }
   }
   return ret;

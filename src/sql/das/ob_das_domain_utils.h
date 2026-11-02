@@ -49,7 +49,7 @@ public:
   int segment(const common::ObObjMeta &ft_obj_meta, const ObDatum &doc_id, const common::ObString &fulltext);
   int get_next_row(blocksstable::ObDatumRow *&row);
   void reset();
-  void reuse();
+  int reuse();
   TO_STRING_KV(K_(row_idx), K_(is_fts_index_aux), K_(helper), K_(is_inited),
                "row_count", rows_.count());
 private:
@@ -58,6 +58,9 @@ private:
   uint64_t row_idx_;
   bool is_fts_index_aux_;
   storage::ObFTParseHelper helper_;
+  // The map owns buckets/nodes; reuse frees nodes but keeps buckets. Keys borrow
+  // parser tokens, while output rows are separately allocated in merge_memctx_.
+  // Rows survive map reuse, but not reuse/reset of the context.
   storage::ObFTWordMap word_map_;
   bool is_inited_;
 
@@ -189,6 +192,16 @@ public:
                                          const bool is_fts_index_aux,
                                          ObDomainIndexRow &word_rows,
                                          storage::ObFTWordMap *reusable_word_map = nullptr);
+  // Set already_cleared only when the owner cleared the map before reusing its arena.
+  static int generate_fulltext_word_rows(common::ObIAllocator &allocator,
+                                         storage::ObFTParseHelper *helper,
+                                         const common::ObObjMeta &ft_obj_meta,
+                                         const ObDatum &doc_id_datum,
+                                         const ObString &fulltext,
+                                         const bool is_fts_index_aux,
+                                         ObDomainIndexRow &word_rows,
+                                         storage::ObFTWordMap *reusable_word_map,
+                                         const bool reusable_word_map_already_cleared);
   static int generate_multivalue_index_rows(
       ObIAllocator &allocator,
       const ObDASDMLBaseCtDef &das_ctdef,
@@ -205,7 +218,8 @@ private:
       const common::ObObjMeta &meta,
       const ObString &fulltext,
       int64_t &doc_length,
-      storage::ObFTWordMap &words_count);
+      storage::ObFTWordMap &words_count,
+      const bool clear_words);
   static int calc_save_rowkey_policy(
     ObIAllocator &allocator,
     const ObDASDMLBaseCtDef &das_ctdef,
@@ -260,6 +274,8 @@ protected:
       const ObDASDMLBaseCtDef *main_ctdef,
       const common::ObLobReadOptions *lob_read_options);
   virtual int generate_domain_rows(const ObChunkDatumStore::StoredRow *store_row) = 0;
+  // Called after prior output rows are consumed and before allocator_ is reused.
+  virtual int reuse_domain_row_state() { return common::OB_SUCCESS; }
 
   virtual int check_sync_interval(bool &is_sync_interval) const { UNUSED(is_sync_interval); return OB_SUCCESS; }
 
@@ -389,12 +405,16 @@ protected:
   int generate_ft_word_rows(const ObChunkDatumStore::StoredRow *store_row);
   int scan_ft_word_rows(const ObChunkDatumStore::StoredRow *store_row);
   int build_ft_word_row(blocksstable::ObDatumRow *src_row, blocksstable::ObDatumRow *&dest_row);
+  virtual int reuse_domain_row_state() override;
 
 private:
   const ObFTDocWordInfo *doc_word_info_;
   data_plane::ObFTDocWordIterator *ft_doc_word_iter_;
   common::ObArenaAllocator ft_doc_word_allocator_;
   storage::ObFTParseHelper ft_parse_helper_;
+  // The map owns buckets/nodes; reuse frees nodes but keeps buckets. Keys borrow
+  // parser tokens, while output rows are separately allocated in allocator_.
+  // Rows survive map reuse, but not reuse/reset of the allocator.
   storage::ObFTWordMap word_map_;
   bool is_inited_;
 };

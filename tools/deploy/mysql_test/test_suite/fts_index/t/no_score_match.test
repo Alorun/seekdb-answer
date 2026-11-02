@@ -1,0 +1,67 @@
+# owner: fts-perf
+# owner group: storage
+# description: MATCH used only as a presence predicate must keep every surrounding
+#   query shape working.  A count-only projection is allowed to skip the relevance
+#   column, which used to shift the scan output column positions and break
+#   ORDER BY / DISTINCT / aggregates with ER_WINDOW_FUNCTION_IN_WINDOW_SPEC.
+
+--disable_warnings
+drop database if exists fts_no_score;
+create database fts_no_score;
+use fts_no_score;
+--enable_warnings
+
+create table t (
+  id int primary key,
+  body text,
+  fulltext index fti(body) with parser beng
+);
+
+insert into t values
+  (1, 'alpha beta'),
+  (2, 'alpha'),
+  (3, 'beta gamma'),
+  (4, 'gamma'),
+  (5, 'alpha gamma delta');
+
+--echo # count-only projection: relevance is not needed by any operator above
+select count(*) from t where match(body) against('alpha');
+
+--echo # plain projection over the same predicate
+select id from t where match(body) against('alpha') order by id;
+
+--echo # order by a non-score column
+select id, body from t where match(body) against('beta') order by id desc;
+
+--echo # distinct over the scan output
+select distinct id from t where match(body) against('gamma') order by id;
+
+--echo # aggregate over a column of the scanned table
+select sum(id) from t where match(body) against('alpha');
+
+--echo # score explicitly requested: still computed and ordered by it
+select id, round(match(body) against('alpha'), 6) from t
+  where match(body) against('alpha') order by id;
+
+--echo # score used as a threshold keeps the score path
+select id from t where match(body) against('alpha') > 0.3 order by id;
+
+--echo # extra predicate next to the match
+select count(*) from t where match(body) against('alpha') and id < 3;
+
+--echo # boolean mode
+select id from t where match(body) against('+alpha -beta' in boolean mode) order by id;
+
+--echo # dml driven by a match predicate
+update t set body = 'alpha updated' where match(body) against('delta');
+select id, body from t where id = 5;
+
+--echo # prepared statement
+prepare stmt from 'select count(*) from t where match(body) against(?)';
+set @q = 'alpha';
+execute stmt using @q;
+deallocate prepare stmt;
+
+--disable_warnings
+drop database fts_no_score;
+--enable_warnings

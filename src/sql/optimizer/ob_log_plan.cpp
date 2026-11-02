@@ -12038,7 +12038,10 @@ int ObLogPlan::prepare_text_retrieval_scan(const ObIArray<ObRawExpr *> &scan_mat
   } else {
     ObTextRetrievalInfo &tr_info = table_scan->get_text_retrieval_info();
     tr_info.match_expr_ = match_against;
-    tr_info.pushdown_match_filter_ = match_pred;
+    // A presence-only MATCH needs no runtime filter, and keeping one would
+    // force the relevance column back into the scan output as well.
+    tr_info.pushdown_match_filter_ =
+        tr_info.need_calc_relevance_ ? match_pred : nullptr;
     // The mapping table is absent when the data-table rowkey is used as the document ID.
     table_scan->set_doc_id_index_table_id(tr_info.doc_id_idx_tid_);
     if (table_scan->is_vec_adaptive_scan() || table_scan->is_vec_idx_scan_post_filter()) {
@@ -12184,7 +12187,6 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
   uint64_t inv_idx_tid = OB_INVALID_ID;
   ObSEArray<ObAuxTableMetaInfo, 4> index_infos;
   bool need_calc_relevance = true;
-  ObSEArray<ObExprConstraint, 2> constraints;
   uint64_t docid_col_id = OB_INVALID_ID;
   if (OB_ISNULL(match_against) || OB_ISNULL(get_stmt()) || OB_ISNULL(get_optimizer_context().get_query_ctx())) {
     ret = OB_INVALID_ARGUMENT;
@@ -12251,18 +12253,65 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
     }
   }
   if (OB_SUCC(ret)) {
-    /*
-    if (OB_FAIL(ObTransformUtils::check_need_calc_match_score(get_optimizer_context().get_exec_ctx(),
-                                                              get_stmt(),
-                                                              match_against,
-                                                              need_calc_relevance,
-                                                              constraints))) {
-      LOG_WARN("failed to check need calc relevance", K(ret));
-    } else if (!need_calc_relevance &&
-               OB_FAIL(append_array_no_dup(get_optimizer_context().get_query_ctx()->all_expr_constraints_, constraints))) {
-      LOG_WARN("failed to append array no dup", K(ret));
+    // BM25 is only needed when the score is consumed.  When every use of the
+    // MATCH expression is a bare presence predicate, retrieval already returns
+    // exactly the matching documents, so the per-posting-row score computation
+    // can be skipped.  Deliberately conservative: any comparison
+    // (MATCH(...) > x), any use in ORDER BY / SELECT / GROUP BY / HAVING, a
+    // boolean-mode query, or an extra predicate keeps the score path.
+    const ObSelectStmt *select_stmt = get_stmt()->is_select_stmt()
+        ? static_cast<const ObSelectStmt *>(get_stmt()) : nullptr;
+    // Only the plain "WHERE <match>" shape is proven to work without a score
+    // column: ORDER BY / DISTINCT / GROUP BY / window functions change what the
+    // scan has to output and still expect the relevance column, so those keep
+    // computing the score.
+    // Operators that reference the scan output by column position (ORDER BY,
+    // DISTINCT, GROUP BY, window functions) or that aggregate a column need the
+    // scan to keep emitting the relevance column.  Only a count-only projection
+    // is safe without it, so the score is dropped just for that shape.
+    bool references_column = false;
+    if (nullptr != select_stmt) {
+      const ObIArray<SelectItem> &items = select_stmt->get_select_items();
+      for (int64_t i = 0; !references_column && i < items.count(); ++i) {
+        const ObRawExpr *item_expr = items.at(i).expr_;
+        references_column = nullptr == item_expr || item_expr->has_flag(CNT_COLUMN);
+      }
     }
-    */
+    // A LIMIT makes the plan emit rows one by one with an index-back lookup for
+    // the projected columns; skipping the score on that path measured 8% slower
+    // than keeping it, so bounded queries stay on the scored path.
+    const bool score_free_shape = nullptr != select_stmt
+        && !references_column
+        && !select_stmt->has_limit()
+        && 0 == select_stmt->get_order_items().count()
+        && !select_stmt->has_distinct()
+        && 0 == select_stmt->get_group_exprs().count()
+        && 0 == select_stmt->get_having_exprs().count()
+        && 0 == select_stmt->get_window_func_exprs().count();
+    if (score_free_shape
+        && NATURAL_LANGUAGE_MODE == match_against->get_mode_flag()
+        && 1 == select_stmt->get_condition_exprs().count()) {
+      const ObRawExpr *condition = select_stmt->get_condition_exprs().at(0);
+      const bool presence_only = nullptr != condition
+          && (condition == match_against
+              || (T_OP_BOOL == condition->get_expr_type()
+                  && 1 == condition->get_param_count()
+                  && condition->get_param_expr(0) == match_against));
+      if (presence_only) {
+        ObSEArray<ObRawExpr *, 8> other_exprs;
+        ObStmtExprGetter getter;
+        getter.set_relation_scope();
+        getter.remove_scope(SCOPE_WHERE);
+        bool score_used = false;
+        if (OB_FAIL(select_stmt->get_relation_exprs(other_exprs, getter))) {
+          LOG_WARN("failed to get non-filter relation exprs", K(ret));
+        }
+        for (int64_t i = 0; OB_SUCC(ret) && !score_used && i < other_exprs.count(); ++i) {
+          score_used = other_exprs.at(i)->has_flag(CNT_MATCH_EXPR);
+        }
+        need_calc_relevance = score_used;
+      }
+    }
     tr_info.match_expr_ = match_against;
     tr_info.inv_idx_tid_ = inv_idx_tid;
     tr_info.fwd_idx_tid_ = fwd_idx_tid;

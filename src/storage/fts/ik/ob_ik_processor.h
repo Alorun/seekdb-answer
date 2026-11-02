@@ -47,10 +47,14 @@ public:
 
   int current_char(const char *&ch, uint8_t &char_len);
   int current_char_type(ObFTCharUtil::CharType &type);
+  // Length of the valid character starting at `offset`, using the charset that
+  // was resolved once at init time.
+  int first_valid_char_at(const int64_t offset, int64_t &char_len) const;
 
   int step_next();
 
   ObCollationType collation() const;
+  ObCharsetType charset_type() const { return cs_type_; }
   int64_t get_end_cursor() const;
   const char *fulltext() const;
   int64_t fulltext_len() const;
@@ -77,6 +81,13 @@ private:
   int prepare_next_char();
 
   ObCollationType coll_type_;
+  // Cached once: resolving collation to charset per character shows up in the
+  // per-character profile of the tokenizer.
+  ObCharsetType cs_type_;
+  // Resolved once from cs_type_, the per character path must not look the
+  // charset up again (it did, once per character and once more per document
+  // while re-scanning the text).
+  const ObCharsetInfo *cs_;
   const char *fulltext_;
   int64_t fulltext_len_;
 

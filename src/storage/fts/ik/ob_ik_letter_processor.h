@@ -34,6 +34,14 @@ public:
                  const uint8_t char_len,
                  const ObFTCharUtil::CharType type) override;
 
+  // True while a word of the letter classes is still open.  When no word is
+  // open the processor only has work to do for a letter character, so callers
+  // can skip it for every other character type.
+  bool has_open_state() const
+  {
+    return english_start_ != -1 || arabic_start_ != -1 || mix_start_ != -1;
+  }
+
 private:
   int process_english_letter(TokenizeContext &ctx,
                              const char *ch,

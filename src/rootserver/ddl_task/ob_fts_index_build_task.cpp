@@ -365,7 +365,21 @@ int ObFtsIndexBuildTask::get_next_status(share::ObDDLTaskStatus &next_status)
         break;
       }
       case ObDDLTaskStatus::GENERATE_ROWKEY_DOC_SCHEMA: {
-        next_status = ObDDLTaskStatus::WAIT_ROWKEY_DOC_TABLE_COMPLEMENT;
+        // The rowkey-doc table build is independent from the other auxiliary
+        // tables: it is a plain mapping of the source table.  Submit the rest
+        // right away and let the single final wait cover all of them, instead of
+        // blocking here (~270ms on the benchmark) and then starting the
+        // remaining three builds.  Every aux task is already registered in
+        // dependent_task_result_map_, so the final wait still observes the
+        // rowkey-doc task and propagates its result.
+        bool need_to_load_dic = false;
+        const ObString &parser_name = create_index_arg_.index_option_.parser_name_;
+        if (is_fts_task() && OB_FAIL(ObFtsIndexBuilderUtil::check_need_to_load_dic(parser_name, need_to_load_dic))) {
+        } else if (need_to_load_dic) {
+          next_status = ObDDLTaskStatus::LOAD_DICTIONARY;
+        } else {
+          next_status = ObDDLTaskStatus::GENERATE_DOC_AUX_SCHEMA;
+        }
         break;
       }
       case ObDDLTaskStatus::WAIT_ROWKEY_DOC_TABLE_COMPLEMENT: {

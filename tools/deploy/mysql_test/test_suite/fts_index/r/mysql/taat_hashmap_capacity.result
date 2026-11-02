@@ -1,0 +1,88 @@
+# single-word natural language: complete result
+select id from taat_docs where match(body) against('alpha') order by id;
+id
+1
+2
+3
+4
+7
+9
+# multi-word natural language: union, docs 4 and 7 match both terms once
+select id from taat_docs where match(body) against('alpha beta') order by id;
+id
+1
+2
+3
+4
+5
+7
+8
+9
+# boolean intersection: docs 4 and 7 are each returned once
+select id from taat_docs where match(body) against('+alpha +beta' in boolean mode) order by id;
+id
+4
+7
+# boolean exclusion
+select id from taat_docs where match(body) against('+alpha -beta' in boolean mode) order by id;
+id
+1
+2
+3
+9
+# zero hit
+select count(*) as n from taat_docs where match(body) against('absentterm');
+n
+0
+# few hits
+select id from taat_docs where match(body) against('gamma') order by id;
+id
+6
+7
+# relevance predicate: complete result set
+select id from taat_docs where match(body) against('alpha') > 0 order by id;
+id
+1
+2
+3
+4
+7
+9
+# explicit descending sort
+select id from taat_docs where match(body) against('beta') order by id desc;
+id
+8
+7
+5
+4
+# limit with offset
+select id from taat_docs where match(body) against('alpha') order by id limit 2, 3;
+id
+3
+4
+7
+# two-partition table, many hits
+select count(*) as n from taat_many where match(body) against('taattoken');
+n
+1225
+# two-partition table, one hit
+select id from taat_many where match(body) against('raretoken');
+id
+4000
+# two-partition table, zero hit
+select count(*) as n from taat_many where match(body) against('absentterm');
+n
+0
+# two-partition table, limit with offset on many hits
+select id from taat_many where match(body) against('taattoken') order by id limit 1222, 3;
+id
+3533
+3534
+3535
+# >256 distinct tokens force TAAT; doc 5000 contains all of them
+set @taat_query = (select group_concat(term separator ' ') from taat_query_terms);
+prepare taat_stmt from 'select id from taat_many where match(body) against(?) order by id';
+execute taat_stmt using @taat_query;
+id
+5000
+deallocate prepare taat_stmt;

@@ -42,16 +42,27 @@ public:
   INHERIT_TO_STRING_KV("ObISparseRetrievalMergeIter", ObISparseRetrievalMergeIter,
       K_(partition_cnt), K_(cur_map_idx), K_(next_clear_map_idx));
 protected:
+  typedef hash::ObHashMap<ObDocIdExt, double> ObSRTaaTHashMap;
+  static const int64_t OB_MAX_HASHMAP_COUNT = 20;
+  static const int64_t OB_HASHMAP_DEFAULT_SIZE = 1000;
+  // Upper bound on the document count for which the whole per-tablet result is
+  // merged in a single hash map.  Above it the partitioned spill row store path
+  // keeps the peak memory bounded for very large indexes.
+  static const int64_t OB_TAAT_DIRECT_MAX_DOC_CNT = 128 * 1024;
+protected:
   virtual int pre_process(); // should set partition_cnt_, among other things
   virtual int init_chunk_stores();
   virtual int fill_chunk_stores();
+  // Accumulate the posting rows straight into the per-partition hash maps.
+  // Used when the partitions fit in a single map, which makes the spill row
+  // stores unnecessary: they only added one serialize/deserialize round trip
+  // per posting row.
+  int fill_hash_map_directly();
+  int accumulate_doc_id(ObSRTaaTHashMap &map, const common::ObDatum &id_datum, const double relevance);
   virtual int load_next_hash_map();
   virtual int project_results(const int64_t safe_capacity, int64_t &count);
   virtual int update_dim_iter(const int64_t dim_idx); // should return OB_ITER_END if no more dimensions
 protected:
-  typedef hash::ObHashMap<ObDocIdExt, double> ObSRTaaTHashMap;
-  static const int64_t OB_MAX_HASHMAP_COUNT = 20;
-  static const int64_t OB_HASHMAP_DEFAULT_SIZE = 1000;
   ObIAllocator *iter_allocator_;
   ObSparseRetrievalMergeParam *iter_param_;
   ObISparseRetrievalDimIter *dim_iter_;
@@ -66,6 +77,10 @@ protected:
   ObDocIdExt cache_first_id_;
   bool are_chunk_stores_inited_;
   bool are_chunk_stores_filled_;
+  // Set by pre_process() when the whole result of this tablet fits into one
+  // hash map, so posting rows can be merged without the spill row store.
+  bool use_direct_accum_;
+  int64_t direct_bucket_cnt_;
   void (*set_datum_func_)(ObDatum &, const ObDocIdExt &);
 private:
   DISALLOW_COPY_AND_ASSIGN(ObSRTaaTIterImpl);

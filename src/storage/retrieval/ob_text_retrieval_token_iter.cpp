@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <cstdlib>
+#include "lib/time/ob_time_utility.h"
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_text_retrieval_token_iter.h"
@@ -203,7 +205,8 @@ int ObTextRetrievalTokenIter::get_next_row()
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-  } else if (!token_doc_cnt_calculated_ && OB_FAIL(estimate_token_doc_cnt())) {
+  } else if (need_calc_relevance() && !token_doc_cnt_calculated_
+             && OB_FAIL(estimate_token_doc_cnt())) {
   } else if (OB_FAIL(query::das_scan_next_row(inv_idx_scan_iter_))) {
     if (OB_UNLIKELY(OB_ITER_END != ret)) {
     }
@@ -242,7 +245,8 @@ int ObTextRetrievalTokenIter::get_next_batch(const int64_t capacity, int64_t &co
   count = 0;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-  } else if (!token_doc_cnt_calculated_ && OB_FAIL(estimate_token_doc_cnt())) {
+  } else if (need_calc_relevance() && !token_doc_cnt_calculated_
+             && OB_FAIL(estimate_token_doc_cnt())) {
   } else if (OB_FAIL(query::das_scan_next_rows(
                  inv_idx_scan_iter_, count, OB_MIN(max_batch_size_, capacity)))) {
     if (OB_UNLIKELY(OB_ITER_END != ret)) {
@@ -524,9 +528,13 @@ int ObTextRetrievalDaaTTokenIter::save_docids()
     ret = OB_INVALID_ARGUMENT;
   } else {
     cur_idx_ = 0;
+    // The skip vector is only allocated for scored retrieval, where it carries
+    // the per-row aggregation result.  Unscored retrieval has no aggregation and
+    // therefore no row to filter out.
+    sql::ObBitVector *skip = token_iter_->get_skip();
     const ObDatumVector &doc_id_datum = inv_scan_domain_id_col_->locate_expr_datumvector(*eval_ctx_);
     for (int64_t i = 0; OB_SUCC(ret) && i < count_; ++i) {
-      if (OB_LIKELY(!token_iter_->get_skip()->at(i))) {
+      if (OB_LIKELY(nullptr == skip || !skip->at(i))) {
         if (OB_FAIL(doc_id_[i].from_datum(*doc_id_datum.at(i)))) {
         };
       }
@@ -584,6 +592,8 @@ int ObTextRetrievalDaaTTokenIter::get_curr_score(double &score) const
     ret = OB_ARRAY_OUT_OF_RANGE;
   } else if (relevance_expr_) {
     score = relevance_[cur_idx_];
+  } else {
+    score = 0.0;
   }
   return ret;
 }

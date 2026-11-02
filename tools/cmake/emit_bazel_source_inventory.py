@@ -27,7 +27,7 @@ import ast
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
 # Python 3.14 removed these deprecated AST compatibility node classes.  Keep
@@ -193,7 +193,7 @@ PRETEST_MODULES: Sequence[str] = (
 )
 
 
-def _pretest_spec(path: Path, module: str) -> Mapping[str, Any]:
+def _pretest_spec(path: Path, module: str) -> Optional[Mapping[str, Any]]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     except (OSError, SyntaxError) as exc:
@@ -206,6 +206,8 @@ def _pretest_spec(path: Path, module: str) -> Mapping[str, Any]:
         call = statement.value
         if isinstance(call.func, ast.Name) and call.func.id == "seekdb_module_cc_test":
             matches.append(call)
+    if not matches:
+        return None
     if len(matches) != 1:
         raise InventoryError(
             "%s must contain exactly one seekdb_module_cc_test call" % path
@@ -383,16 +385,18 @@ def emit(repo: Path, output: Path) -> None:
             paths.append(path)
         _emit_set(lines, name, paths)
 
-    pretest_modules = [
-        module
-        for module in PRETEST_MODULES
-        if (repo / "unittest" / module / "BUILD.bazel").is_file()
-    ]
+    pretest_specs = []
+    for module in PRETEST_MODULES:
+        build_file = repo / "unittest" / module / "BUILD.bazel"
+        if build_file.is_file():
+            spec = _pretest_spec(build_file, module)
+            if spec is not None:
+                pretest_specs.append((module, spec))
+    pretest_modules = [module for module, _ in pretest_specs]
     lines.append("set(SEEKDB_PRETEST_MODULES %s)" % " ".join(pretest_modules))
     lines.append("")
-    for module in pretest_modules:
+    for module, spec in pretest_specs:
         relative = "unittest/%s/BUILD.bazel" % module
-        spec = _pretest_spec(repo / relative, module)
         prefix = "SEEKDB_PRETEST_%s" % _cmake_name(module).upper()
         exception_paths = [
             "unittest/%s/%s" % (module, source)

@@ -64,6 +64,10 @@ private:
 
     // check and reform parser properties to standard format
     int reform_parser_properties(const ObString &properties);
+    // Same as reform_parser_properties, but the result is memoized: every
+    // TOKENIZE evaluation receives the very same parser configuration, and
+    // re-parsing the JSON on each row is pure overhead.
+    int complete_parser_properties();
     int try_load_dictionary_for_ik();
 
   public:

@@ -1,0 +1,112 @@
+# owner: taat-capacity
+# owner group: storage
+# description: TAAT per-partition hash-map capacity regression with full result sets
+
+# The no-score MATCH predicates below are the shapes that can select the TAAT
+# executor (token count > 256, or no relevance projection).  The actual plan
+# still has to be confirmed with EXPLAIN on a running server.
+--disable_query_log
+drop database if exists fts_taat_capacity;
+create database fts_taat_capacity;
+use fts_taat_capacity;
+
+create table taat_docs (
+  id int primary key,
+  body text,
+  fulltext index fti(body) with parser beng
+);
+
+insert into taat_docs values
+  (1, 'alpha'),
+  (2, 'alpha alpha'),
+  (3, 'alpha alpha alpha'),
+  (4, 'alpha beta'),
+  (5, 'beta'),
+  (6, 'gamma'),
+  (7, 'alpha beta gamma'),
+  (8, 'beta beta'),
+  (9, 'alpha alpha alpha alpha'),
+  (10, 'unrelated');
+
+# 35 x 35 = 1225 documents, plus one rare document.  The total document count
+# is above OB_HASHMAP_DEFAULT_SIZE, so pre_process() is expected to choose two
+# partitions for this table.
+create table taat_numbers (n int primary key);
+insert into taat_numbers values
+  (1), (2), (3), (4), (5), (6), (7), (8), (9), (10),
+  (11), (12), (13), (14), (15), (16), (17), (18), (19), (20),
+  (21), (22), (23), (24), (25), (26), (27), (28), (29), (30),
+  (31), (32), (33), (34), (35);
+
+create table taat_many (
+  id int primary key,
+  body text,
+  fulltext index fti(body) with parser beng
+);
+insert into taat_many (id, body)
+  select a.n * 100 + b.n, 'taattoken' from taat_numbers a, taat_numbers b;
+insert into taat_many (id, body) values (4000, 'raretoken');
+
+# 26 x 26 = 676 two-letter terms; keep 257 of them.  The last document
+# contains all 257 terms so a >256-token query must return it.
+create table taat_query_terms (term varchar(16) primary key);
+insert into taat_query_terms
+  select concat('qt',
+                substring('abcdefghijklmnopqrstuvwxyz', a.n, 1),
+                substring('abcdefghijklmnopqrstuvwxyz', b.n, 1))
+  from taat_numbers a, taat_numbers b
+  where a.n <= 26 and b.n <= 26
+    and (a.n - 1) * 26 + b.n <= 257;
+set session group_concat_max_len = 65535;
+insert into taat_many (id, body)
+  select 5000, group_concat(term separator ' ') from taat_query_terms;
+--enable_query_log
+
+--echo # single-word natural language: complete result
+select id from taat_docs where match(body) against('alpha') order by id;
+
+--echo # multi-word natural language: union, docs 4 and 7 match both terms once
+select id from taat_docs where match(body) against('alpha beta') order by id;
+
+--echo # boolean intersection: docs 4 and 7 are each returned once
+select id from taat_docs where match(body) against('+alpha +beta' in boolean mode) order by id;
+
+--echo # boolean exclusion
+select id from taat_docs where match(body) against('+alpha -beta' in boolean mode) order by id;
+
+--echo # zero hit
+select count(*) as n from taat_docs where match(body) against('absentterm');
+
+--echo # few hits
+select id from taat_docs where match(body) against('gamma') order by id;
+
+--echo # relevance predicate: complete result set
+select id from taat_docs where match(body) against('alpha') > 0 order by id;
+
+--echo # explicit descending sort
+select id from taat_docs where match(body) against('beta') order by id desc;
+
+--echo # limit with offset
+select id from taat_docs where match(body) against('alpha') order by id limit 2, 3;
+
+--echo # two-partition table, many hits
+select count(*) as n from taat_many where match(body) against('taattoken');
+
+--echo # two-partition table, one hit
+select id from taat_many where match(body) against('raretoken');
+
+--echo # two-partition table, zero hit
+select count(*) as n from taat_many where match(body) against('absentterm');
+
+--echo # two-partition table, limit with offset on many hits
+select id from taat_many where match(body) against('taattoken') order by id limit 1222, 3;
+
+--echo # >256 distinct tokens force TAAT; doc 5000 contains all of them
+set @taat_query = (select group_concat(term separator ' ') from taat_query_terms);
+prepare taat_stmt from 'select id from taat_many where match(body) against(?) order by id';
+execute taat_stmt using @taat_query;
+deallocate prepare taat_stmt;
+
+--disable_query_log
+drop database fts_taat_capacity;
+--enable_query_log

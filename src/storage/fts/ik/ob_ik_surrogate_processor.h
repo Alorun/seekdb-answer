@@ -35,6 +35,10 @@ public:
                  const uint8_t char_len,
                  const ObFTCharUtil::CharType type) override;
 
+  // True while a high surrogate is waiting for its pair.  That is the only
+  // state a non surrogate character can affect.
+  bool has_open_state() const { return high_offset_ != -1; }
+
 private:
   void reset()
   {
@@ -42,7 +46,7 @@ private:
     high_offset_ = -1;
   }
 
-  bool has_high() { return high_offset_ != -1; }
+  bool has_high() const { return high_offset_ != -1; }
 
 private:
   int64_t high_offset_ = -1;

@@ -1,0 +1,53 @@
+# owner: fts-perf
+# owner group: storage
+# description: TOKENIZE edge cases around the hot-path optimisations: case folding
+#   skip, stop word fast path, Chinese numeral lookup, unicode classification and
+#   the ngram/space/beng parsers.  Locks in current tokenisation semantics.
+
+--disable_warnings
+drop database if exists fts_tok_edge;
+create database fts_tok_edge;
+use fts_tok_edge;
+--enable_warnings
+
+--echo # case folding: ascii is lowercased, mixed case words collapse
+select tokenize('ABC abc AbC', 'beng');
+select tokenize('Hello WORLD hello', 'space');
+
+--echo # case folding does not touch CJK tokens
+select tokenize('数据库全文索引', 'ik');
+select tokenize('数据库 OceanBase 索引', 'ik');
+
+--echo # stop words are filtered by the beng parser; ik keeps latin words
+select tokenize('the quick brown fox', 'beng');
+select tokenize('数据库 the 索引 a', 'ik');
+
+--echo # Chinese numeral characters stay in the token stream
+select tokenize('一二三十百千万亿', 'ik');
+select tokenize('百分之一百二十三', 'ik');
+
+--echo # numbers, connectors and punctuation
+select tokenize('v1.2.3 3.14 1,234 abc-def #tag', 'beng');
+select tokenize('v1.2.3 3.14 1,234 abc-def #tag 一二三十', 'ik');
+
+--echo # full width and other CJK scripts
+select tokenize('ＡＢＣ　１２３', 'beng');
+select tokenize('ひらがな カタカナ 한글', 'ik');
+
+--echo # emoji / surrogate pairs must not break tokenisation
+select tokenize('database 😀 engine', 'beng');
+select tokenize('数据库😀索引', 'ik');
+
+--echo # long text is not truncated
+select tokenize(concat('全文索引', repeat('分词器', 40)), 'ik');
+
+--echo # empty and whitespace only input
+select tokenize('', 'ik');
+select tokenize('   ', 'space');
+
+--echo # ngram parser still splits by character pairs
+select tokenize('数据库abc', 'ngram');
+
+--disable_warnings
+drop database if exists fts_tok_edge;
+--enable_warnings

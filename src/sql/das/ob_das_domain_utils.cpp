@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <cstdlib>
 #include "config_bridge.h"
 #include "lib/container/ob_se_array.h"
 #include "common/json_type/ob_json_bin.h"
@@ -70,7 +71,6 @@ int ObFTIndexRowCache::init(
     ret = OB_INIT_TWICE;
   } else if (OB_FAIL(CURRENT_CONTEXT->CREATE_CONTEXT(merge_memctx_, param))) {
   } else if (OB_FAIL(helper_.init(&(merge_memctx_->get_arena_allocator()), parser_name, parser_properties))) {
-  } else if (OB_FAIL(word_map_.create(997, common::ObMemAttr("FTWordMap")))) {
   } else {
     row_idx_ = 0;
     is_fts_index_aux_ = is_fts_index_aux;
@@ -89,7 +89,7 @@ int ObFTIndexRowCache::segment(const common::ObObjMeta &ft_obj_meta,
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
-  } else if (FALSE_IT(reuse())) {
+  } else if (OB_FAIL(reuse())) {
   } else if (OB_FAIL(ObDASDomainUtils::generate_fulltext_word_rows(merge_memctx_->get_arena_allocator(),
                                                                    &helper_,
                                                                    ft_obj_meta,
@@ -97,7 +97,8 @@ int ObFTIndexRowCache::segment(const common::ObObjMeta &ft_obj_meta,
                                                                    fulltext,
                                                                    is_fts_index_aux_,
                                                                    rows_,
-                                                                   &word_map_))) {
+                                                                   &word_map_,
+                                                                   true))) {
   } else {
     row_idx_ = 0;
   }
@@ -136,16 +137,16 @@ void ObFTIndexRowCache::reset()
   is_inited_ = false;
 }
 
-void ObFTIndexRowCache::reuse()
+int ObFTIndexRowCache::reuse()
 {
+  int ret = OB_SUCCESS;
   rows_.reuse();
   row_idx_ = 0;
-  if (word_map_.created()) {
-    (void)word_map_.reuse();
-  }
-  if (OB_NOT_NULL(merge_memctx_)) {
+  if (word_map_.created() && OB_FAIL(word_map_.reuse())) {
+  } else if (OB_NOT_NULL(merge_memctx_)) {
     merge_memctx_->reset_remain_one_page();
   }
+  return ret;
 }
 
 int ObDASDomainUtils::generate_spatial_index_rows(
@@ -292,6 +293,229 @@ int ObDASDomainUtils::build_ft_doc_word_infos(
                                                              ObDomainIndexRow &word_rows,
                                                              storage::ObFTWordMap *reusable_word_map)
 {
+  return generate_fulltext_word_rows(allocator,
+                                     helper,
+                                     ft_obj_meta,
+                                     doc_id_datum,
+                                     fulltext,
+                                     is_fts_index_aux,
+                                     word_rows,
+                                     reusable_word_map,
+                                     false);
+}
+
+namespace
+{
+
+// Dual-writer milestone M1: one segmentation pass, two row layouts.
+//   fts_index aux   : [WORD], [DOC_ID], [WORD_COUNT], [DOC_LENGTH]
+//   fts_doc_word aux: [DOC_ID], [WORD], [WORD_COUNT], [DOC_LENGTH]
+// The two layouts only differ by the word/doc_id swap, and the row at index i in
+// both arrays describes the same word, so a reader can advance them in lockstep.
+// The word strings are the parser tokens owned by the caller supplied word map /
+// parse helper, so the caller must keep them alive while the rows are consumed
+// (same contract as the single table version).
+// TODO(dual-writer M2): promote to ObDASDomainUtils::generate_fulltext_word_rows_dual
+// once the scan operator emits row pairs.
+int generate_fulltext_word_rows_dual_impl(common::ObIAllocator &allocator,
+                                          storage::ObFTParseHelper *helper,
+                                          const common::ObObjMeta &ft_obj_meta,
+                                          const ObDatum &doc_id_datum,
+                                          const ObString &fulltext,
+                                          ObDomainDMLIterator::ObDomainIndexRow &index_rows,
+                                          ObDomainDMLIterator::ObDomainIndexRow &word_rows)
+{
+  int ret = OB_SUCCESS;
+  static constexpr int64_t FT_WORD_DOC_COL_CNT = 4;
+  static constexpr int64_t FT_MAX_WORD_BUCKET = 997;
+  int64_t doc_length = 0;
+  ObFTWordMap word_map;
+  void *rows_buf = nullptr;
+  blocksstable::ObDatumRow *rows = nullptr;
+  const int64_t ft_word_bkt_cnt = MIN(MAX(fulltext.length() / 10, 2), FT_MAX_WORD_BUCKET);
+  if (OB_ISNULL(helper) || OB_UNLIKELY(!ft_obj_meta.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (0 == fulltext.length()) {
+    ret = OB_ITER_END;
+  } else if (OB_FAIL(word_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
+  } else if (OB_FAIL(helper->segment(ft_obj_meta,
+                                     fulltext.ptr(),
+                                     fulltext.length(),
+                                     doc_length,
+                                     word_map,
+                                     true /* clear_words */))) {
+  } else if (0 == word_map.size()) {
+    ret = OB_ITER_END;
+  } else {
+    const int64_t one_doc_word_cnt = word_map.size();
+    if (OB_ISNULL(rows_buf = static_cast<char *>(allocator.alloc(
+            2 * one_doc_word_cnt * sizeof(blocksstable::ObDatumRow))))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      // Note: like the single table version the words are emitted in word map
+      // (hash bucket) order.  Re-sorting a document's words per row would only
+      // help if the doc_id byte order matched the scan order, which it does not
+      // (ObDocId::get_string() is a raw little endian {tablet_id, seq_id} pair).
+      rows = new (rows_buf) blocksstable::ObDatumRow[2 * one_doc_word_cnt];
+      int64_t i = 0;
+      for (ObFTWordMap::const_iterator iter = word_map.begin();
+           OB_SUCC(ret) && iter != word_map.end();
+           ++iter, ++i) {
+        blocksstable::ObDatumRow &index_row = rows[i];
+        blocksstable::ObDatumRow &word_row = rows[one_doc_word_cnt + i];
+        const ObFTWord &ft_word = iter->first;
+        const int64_t word_cnt = iter->second;
+        if (OB_FAIL(index_row.init(allocator, FT_WORD_DOC_COL_CNT))
+            || OB_FAIL(word_row.init(allocator, FT_WORD_DOC_COL_CNT))) {
+        } else {
+          index_row.storage_datums_[0].set_datum(ft_word.get_word());
+          index_row.storage_datums_[1].shallow_copy_from_datum(doc_id_datum);
+          index_row.storage_datums_[2].set_uint(word_cnt);
+          index_row.storage_datums_[3].set_uint(doc_length);
+          word_row.storage_datums_[0].shallow_copy_from_datum(doc_id_datum);
+          word_row.storage_datums_[1].set_datum(ft_word.get_word());
+          word_row.storage_datums_[2].set_uint(word_cnt);
+          word_row.storage_datums_[3].set_uint(doc_length);
+          if (OB_FAIL(index_rows.push_back(&index_row))
+              || OB_FAIL(word_rows.push_back(&word_row))) {
+          }
+        }
+      }
+    }
+  }
+  if (word_map.created()) {
+    (void)word_map.destroy();
+  }
+  return ret;
+}
+
+// M1 self check (diagnostic only): enabled by FTS_DUAL_ROWS_CHECK=1. Re-runs the
+// dual generation for the same document and compares both row sets against the
+// rows the single table path just produced, so a normal index build doubles as
+// an equivalence test. It never changes the result of the build.
+bool fts_dual_rows_check_enabled()
+{
+  static const bool enabled = (nullptr != ::getenv("FTS_DUAL_ROWS_CHECK"));
+  return enabled;
+}
+
+struct FtsDualCheckStat
+{
+  int64_t checked_;
+  int64_t mismatch_;
+  int64_t skipped_;
+};
+
+FtsDualCheckStat &fts_dual_check_stat()
+{
+  static thread_local FtsDualCheckStat stat = {0, 0, 0};
+  return stat;
+}
+
+bool fts_datum_equal(const ObDatum &lhs,
+                     const ObDatum &rhs,
+                     const bool is_string)
+{
+  bool equal = false;
+  if (lhs.is_null() || rhs.is_null()) {
+    equal = lhs.is_null() && rhs.is_null();
+  } else if (is_string) {
+    const ObString lhs_str = lhs.get_string();
+    const ObString rhs_str = rhs.get_string();
+    equal = lhs_str.length() == rhs_str.length()
+            && (0 == lhs_str.length()
+                || 0 == MEMCMP(lhs_str.ptr(), rhs_str.ptr(), lhs_str.length()));
+  } else {
+    equal = lhs.get_uint() == rhs.get_uint();
+  }
+  return equal;
+}
+
+void check_fts_dual_rows(common::ObIAllocator &allocator,
+                         storage::ObFTParseHelper *helper,
+                         const common::ObObjMeta &ft_obj_meta,
+                         const ObDatum &doc_id_datum,
+                         const ObString &fulltext,
+                         const bool is_fts_index_aux,
+                         const ObDomainDMLIterator::ObDomainIndexRow &produced_rows)
+{
+  int ret = OB_SUCCESS;
+  ObDomainDMLIterator::ObDomainIndexRow index_rows;
+  ObDomainDMLIterator::ObDomainIndexRow word_rows;
+  FtsDualCheckStat &stat = fts_dual_check_stat();
+  ret = generate_fulltext_word_rows_dual_impl(allocator,
+                                              helper,
+                                              ft_obj_meta,
+                                              doc_id_datum,
+                                              fulltext,
+                                              index_rows,
+                                              word_rows);
+  if (OB_ITER_END == ret) {
+    ++stat.skipped_;
+  } else if (OB_FAIL(ret)) {
+    ++stat.mismatch_;
+    LOG_WARN("fts dual rows check: dual generation failed", K(ret), K(fulltext.length()));
+  } else if (index_rows.count() != produced_rows.count()
+             || word_rows.count() != produced_rows.count()) {
+    ++stat.mismatch_;
+    LOG_WARN("fts dual rows check: row count mismatch", K(ret), K(index_rows.count()),
+             K(word_rows.count()), "single_rows", produced_rows.count(), K(is_fts_index_aux));
+  } else {
+    // Both paths emit the same document's words in the same word map order, so the
+    // i-th row of each array must describe the same word; compare every column.
+    const int64_t word_idx = is_fts_index_aux ? 0 : 1;
+    const int64_t doc_id_idx = is_fts_index_aux ? 1 : 0;
+    bool equal = true;
+    for (int64_t i = 0; OB_SUCC(ret) && equal && i < index_rows.count(); ++i) {
+      const blocksstable::ObDatumRow *single = produced_rows.at(i);
+      const blocksstable::ObDatumRow *dual_index = index_rows.at(i);
+      const blocksstable::ObDatumRow *dual_word = word_rows.at(i);
+      if (OB_ISNULL(single) || OB_ISNULL(dual_index) || OB_ISNULL(dual_word)) {
+        equal = false;
+      } else {
+        equal = fts_datum_equal(single->storage_datums_[word_idx],
+                                dual_index->storage_datums_[0], true /* string */)
+             && fts_datum_equal(single->storage_datums_[doc_id_idx],
+                                dual_index->storage_datums_[1], true /* string */)
+             && fts_datum_equal(single->storage_datums_[2],
+                                dual_index->storage_datums_[2], false /* uint */)
+             && fts_datum_equal(single->storage_datums_[3],
+                                dual_index->storage_datums_[3], false /* uint */)
+             && fts_datum_equal(dual_index->storage_datums_[0],
+                                dual_word->storage_datums_[1], true /* string */)
+             && fts_datum_equal(dual_index->storage_datums_[1],
+                                dual_word->storage_datums_[0], true /* string */)
+             && fts_datum_equal(dual_index->storage_datums_[2],
+                                dual_word->storage_datums_[2], false /* uint */)
+             && fts_datum_equal(dual_index->storage_datums_[3],
+                                dual_word->storage_datums_[3], false /* uint */);
+      }
+      if (!equal) {
+        ++stat.mismatch_;
+        LOG_WARN("fts dual rows check: datum mismatch", K(i), K(is_fts_index_aux),
+                 KPC(single), KPC(dual_index), KPC(dual_word));
+      }
+    }
+  }
+  ++stat.checked_;
+  if (0 == stat.checked_ % 1000 || stat.mismatch_ > 0) {
+    LOG_INFO("FTS_DUAL_ROWS_CHECK", "checked", stat.checked_,
+             "mismatch", stat.mismatch_, "skipped", stat.skipped_);
+  }
+}
+
+} // namespace
+
+/*static*/ int ObDASDomainUtils::generate_fulltext_word_rows(common::ObIAllocator &allocator,
+                                                             storage::ObFTParseHelper *helper,
+                                                             const common::ObObjMeta &ft_obj_meta,
+                                                             const ObDatum &doc_id_datum,
+                                                             const ObString &fulltext,
+                                                             const bool is_fts_index_aux,
+                                                             ObDomainIndexRow &word_rows,
+                                                             storage::ObFTWordMap *reusable_word_map,
+                                                             const bool reusable_word_map_already_cleared)
+{
   int ret = OB_SUCCESS;
   static int64_t FT_WORD_DOC_COL_CNT = 4;
   static constexpr int64_t FT_MAX_WORD_BUCKET = 997;
@@ -301,12 +525,13 @@ int ObDASDomainUtils::build_ft_doc_word_infos(
   ObFTWordMap *ft_word_map = (nullptr != reusable_word_map) ? reusable_word_map : &local_word_map;
   void *rows_buf = nullptr;
   blocksstable::ObDatumRow *rows = nullptr;
-  if (OB_ISNULL(helper) || OB_UNLIKELY(!ft_obj_meta.is_valid())) {
+  if (nullptr != reusable_word_map
+      && !reusable_word_map_already_cleared
+      && reusable_word_map->created()
+      && OB_FAIL(reusable_word_map->reuse())) {
+  } else if (OB_ISNULL(helper) || OB_UNLIKELY(!ft_obj_meta.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
   } else if (0 == fulltext.length()) {
-    if (nullptr != reusable_word_map && reusable_word_map->created()) {
-      (void)reusable_word_map->reuse();
-    }
     ret = OB_ITER_END;
   } else if (!ft_word_map->created()
              && OB_FAIL(ft_word_map->create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
@@ -315,7 +540,8 @@ int ObDASDomainUtils::build_ft_doc_word_infos(
                                                  ft_obj_meta,
                                                  fulltext,
                                                  doc_length,
-                                                 *ft_word_map))) {
+                                                 *ft_word_map,
+                                                 false))) {
   } else if (0 == ft_word_map->size()) {
     ret = OB_ITER_END;
   } else if (OB_ISNULL(rows_buf = reinterpret_cast<char *>(
@@ -352,6 +578,16 @@ int ObDASDomainUtils::build_ft_doc_word_infos(
   if (nullptr == reusable_word_map && local_word_map.created()) {
     (void)local_word_map.destroy();
   }
+  // M1 diagnostic: prove the dual generation matches this single table output.
+  if (OB_UNLIKELY(fts_dual_rows_check_enabled()) && OB_SUCC(ret)) {
+    check_fts_dual_rows(allocator,
+                        helper,
+                        ft_obj_meta,
+                        doc_id_datum,
+                        fulltext,
+                        is_fts_index_aux,
+                        word_rows);
+  }
   return ret;
 }
 
@@ -361,7 +597,8 @@ int ObDASDomainUtils::build_ft_doc_word_infos(
     const common::ObObjMeta &meta,
     const ObString &fulltext,
     int64_t &doc_length,
-    ObFTWordMap &words_count)
+    ObFTWordMap &words_count,
+    const bool clear_words)
 {
   int ret = OB_SUCCESS;
   ObCollationType type = meta.get_collation_type();
@@ -370,7 +607,12 @@ int ObDASDomainUtils::build_ft_doc_word_infos(
                   || ObCollationType::CS_TYPE_PINYIN_BEGIN_MARK <= type)
       || OB_UNLIKELY(!words_count.created())) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(helper->segment(meta, fulltext.ptr(), fulltext.length(), doc_length, words_count))) {
+  } else if (OB_FAIL(helper->segment(meta,
+                                     fulltext.ptr(),
+                                     fulltext.length(),
+                                     doc_length,
+                                     words_count,
+                                     clear_words))) {
   }
 
   STORAGE_FTS_LOG(TRACE, "segment and calc word count", K(ret), K(words_count.size()), K(type));
@@ -572,6 +814,7 @@ int ObDomainDMLIterator::create_domain_dml_iterator(
                                                         param.main_ctdef_, param.lob_read_options_);
       if (OB_FAIL(iter->init(param.das_ctdef_->table_param_.get_data_table().get_fts_parser_name(),
                              param.das_ctdef_->table_param_.get_data_table().get_fts_parser_property()))) {
+        iter->~ObFTDMLIterator();
       } else {
         domain_iter = static_cast<ObDomainDMLIterator *>(iter);
       }
@@ -716,9 +959,10 @@ int ObDomainDMLIterator::get_next_domain_row(blocksstable::ObDatumRow *&row)
   while (OB_SUCC(ret) && !got_row) {
     if (row_idx_ >= rows_.count()) {
       rows_.reuse();
-      allocator_.reuse();
       row_idx_ = 0;
-      if (OB_UNLIKELY(!das_ctdef_->table_param_.get_data_table().is_domain_index())) {
+      if (OB_FAIL(reuse_domain_row_state())) {
+      } else if (FALSE_IT(allocator_.reuse())) {
+      } else if (OB_UNLIKELY(!das_ctdef_->table_param_.get_data_table().is_domain_index())) {
         ret = OB_ERR_UNEXPECTED;
       } else if (FAILEDx(write_iter_.get_next_row(sr))) {
         if (OB_ITER_END != ret) {
@@ -755,9 +999,10 @@ int ObDomainDMLIterator::get_next_domain_rows(blocksstable::ObDatumRow *&row, in
     while (OB_SUCC(ret) && !got_row) {
       if (row_idx_ >= rows_.count()) {
         rows_.reuse();
-        allocator_.reuse();
         row_idx_ = 0;
-        if (OB_UNLIKELY(!das_ctdef_->table_param_.get_data_table().is_domain_index())) {
+        if (OB_FAIL(reuse_domain_row_state())) {
+        } else if (FALSE_IT(allocator_.reuse())) {
+        } else if (OB_UNLIKELY(!das_ctdef_->table_param_.get_data_table().is_domain_index())) {
           ret = OB_ERR_UNEXPECTED;
         } else if (FAILEDx(write_iter_.get_next_row(sr))) {
           if (OB_ITER_END != ret) {
@@ -868,8 +1113,17 @@ void ObFTDMLIterator::reset()
   ObDomainDMLIterator::reset();
 }
 
+int ObFTDMLIterator::reuse_domain_row_state()
+{
+  int ret = OB_SUCCESS;
+  if (word_map_.created() && OB_FAIL(word_map_.reuse())) {
+  }
+  return ret;
+}
+
 ObFTDMLIterator::~ObFTDMLIterator()
 {
+  reset();
   data_plane::destroy_ft_doc_word_iterator(ft_doc_word_iter_);
 }
 
@@ -927,7 +1181,6 @@ int ObFTDMLIterator::init(
     switch (mode_) {
       case ObDomainDMLMode::DOMAIN_DML_MODE_DEFAULT: {
         if (OB_FAIL(ft_parse_helper_.init(&allocator_, parser_name, parser_properties))) {
-        } else if (OB_FAIL(word_map_.create(997, common::ObMemAttr("FTWordMap")))) {
         }
         break;
       }
@@ -1056,7 +1309,8 @@ int ObFTDMLIterator::generate_ft_word_rows(const ObChunkDatumStore::StoredRow *s
                                                                    ft,
                                                                    is_fts_index_aux,
                                                                    rows_,
-                                                                   &word_map_))) {
+                                                                   &word_map_,
+                                                                   true))) {
     if (OB_UNLIKELY(OB_ITER_END != ret)) {
     }
   }

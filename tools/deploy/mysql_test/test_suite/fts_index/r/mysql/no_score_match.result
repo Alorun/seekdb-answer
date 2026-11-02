@@ -1,0 +1,74 @@
+drop database if exists fts_no_score;
+create database fts_no_score;
+use fts_no_score;
+create table t (
+id int primary key,
+body text,
+fulltext index fti(body) with parser beng
+);
+insert into t values
+(1, 'alpha beta'),
+(2, 'alpha'),
+(3, 'beta gamma'),
+(4, 'gamma'),
+(5, 'alpha gamma delta');
+# count-only projection: relevance is not needed by any operator above
+select count(*) from t where match(body) against('alpha');
+count(*)
+3
+# plain projection over the same predicate
+select id from t where match(body) against('alpha') order by id;
+id
+1
+2
+5
+# order by a non-score column
+select id, body from t where match(body) against('beta') order by id desc;
+id	body
+3	beta gamma
+1	alpha beta
+# distinct over the scan output
+select distinct id from t where match(body) against('gamma') order by id;
+id
+3
+4
+5
+# aggregate over a column of the scanned table
+select sum(id) from t where match(body) against('alpha');
+sum(id)
+8
+# score explicitly requested: still computed and ordered by it
+select id, round(match(body) against('alpha'), 6) from t
+where match(body) against('alpha') order by id;
+id	round(match(body) against('alpha'), 6)
+1	0.371622
+2	0.395683
+5	0.350318
+# score used as a threshold keeps the score path
+select id from t where match(body) against('alpha') > 0.3 order by id;
+id
+1
+2
+5
+# extra predicate next to the match
+select count(*) from t where match(body) against('alpha') and id < 3;
+count(*)
+2
+# boolean mode
+select id from t where match(body) against('+alpha -beta' in boolean mode) order by id;
+id
+2
+5
+# dml driven by a match predicate
+update t set body = 'alpha updated' where match(body) against('delta');
+select id, body from t where id = 5;
+id	body
+5	alpha updated
+# prepared statement
+prepare stmt from 'select count(*) from t where match(body) against(?)';
+set @q = 'alpha';
+execute stmt using @q;
+count(*)
+3
+deallocate prepare stmt;
+drop database fts_no_score;

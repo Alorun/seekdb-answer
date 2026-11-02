@@ -43,7 +43,6 @@ namespace storage
 int ObIKFTParser::init(const ObFTParserParam &param)
 {
   int ret = OB_SUCCESS;
-
   if (IS_INIT) {
     ret = OB_INIT_TWICE;
   } else {
@@ -64,6 +63,36 @@ int ObIKFTParser::init(const ObFTParserParam &param)
     }
   }
 
+  return ret;
+}
+
+int ObIKFTParser::reuse(const ObFTParserParam &param)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!is_inited_)) {
+    ret = OB_NOT_INIT;
+  } else if (OB_ISNULL(param.cs_) || OB_ISNULL(param.cs_->name)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_ISNULL(ctx_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (ObCharset::collation_type(param.cs_->name) != coll_type_) {
+    // different collation, the dictionaries were built for another charset
+    ret = OB_INVALID_ARGUMENT;
+  } else if ((ObFTIKParam::Mode::SMART == param.ik_param_.mode_) != ctx_->is_smart()) {
+    // the smart mode is fixed when the context is created
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    // The dictionaries only depend on the table contents, which do not change
+    // for the lifetime of the process, so they are kept.  Everything that
+    // carries per document state is rebuilt from scratch.
+    reset_document_state();
+    if (OB_FAIL(init_ctx(param))) {
+    } else if (OB_FAIL(init_segmenter(param))) {
+    }
+  }
+  if (OB_FAIL(ret)) {
+    reset();
+  }
   return ret;
 }
 
@@ -134,12 +163,27 @@ int ObIKFTParser::process_one_char(TokenizeContext &ctx,
                                    const ObFTCharUtil::CharType type)
 {
   int ret = OB_SUCCESS;
-  // proces by char with all segmenters
-  for (ObList<ObIIKProcessor *, ObIAllocator>::iterator iter = segmenters_.begin();
-       OB_SUCC(ret) && iter != segmenters_.end();
-       iter++) {
-    if (OB_FAIL((*iter)->do_process(ctx, ch, char_len, type))) {
-    }
+  // The processors are called in their fixed order, but only when the
+  // character can actually affect them.  A processor that has no open state
+  // and does not handle this character class is a guaranteed no-op, so it is
+  // skipped; every skipped call keeps the token stream identical.
+  const bool is_letter = (ObFTCharUtil::CharType::ENGLISH_LETTER == type
+                          || ObFTCharUtil::CharType::ARABIC_LETTER == type);
+  const bool is_chinese = (ObFTCharUtil::CharType::CHINESE == type);
+  const bool is_surrogate = (ObFTCharUtil::CharType::SURROGATE_HIGH == type
+                             || ObFTCharUtil::CharType::SURROGATE_LOW == type);
+  if (is_letter || letter_seg_->has_open_state()) {
+    ret = letter_seg_->do_process(ctx, ch, char_len, type);
+  }
+  if (OB_SUCC(ret) && (is_chinese || quantifier_seg_->has_open_state())) {
+    ret = quantifier_seg_->do_process(ctx, ch, char_len, type);
+  }
+  if (OB_SUCC(ret)
+      && (ObFTCharUtil::CharType::USELESS != type || cjk_seg_->has_pending_hits())) {
+    ret = cjk_seg_->do_process(ctx, ch, char_len, type);
+  }
+  if (OB_SUCC(ret) && (is_surrogate || surrogate_seg_->has_open_state())) {
+    ret = surrogate_seg_->do_process(ctx, ch, char_len, type);
   }
   return ret;
 }
@@ -190,35 +234,140 @@ int ObIKFTParser::process_next_batch()
   return ret;
 }
 
+namespace
+{
+// Building the dictionaries of the IK parser costs a few microseconds and they
+// only depend on table contents that do not change while the process runs, yet a
+// fresh parser is created for every document.  The parser of a thread is
+// therefore kept and re-initialized for the next document (see
+// ObIKFTParser::reuse).  Its memory comes from a dedicated arena: reusing the
+// parser means that the per document allocations (tokenize context and the token
+// lists) cannot be handed back to the caller's allocator because an arena
+// ignores free(), so the whole cache is dropped and rebuilt once the arena has
+// grown past the water mark below.  One document leaves a few kilobytes behind,
+// so the dictionary rebuild (a few microseconds) is amortized over ~100
+// documents while every tokenizing thread stays below this bound.
+constexpr int64_t IK_PARSER_CACHE_MAX_BYTES = 512 * 1024;
+
+struct ObIKParserCache
+{
+  ObArenaAllocator alloc_;
+  ObIKFTParser *parser_;
+  ObFTDictHub *hub_;
+  bool in_use_;
+
+  ObIKParserCache() : alloc_(ObMemAttr("IKParserCache")), parser_(nullptr), hub_(nullptr), in_use_(false) {}
+  ~ObIKParserCache() { destroy(); }
+
+  void destroy()
+  {
+    if (nullptr != parser_) {
+      parser_->~ObIKFTParser();
+      alloc_.free(parser_);
+      parser_ = nullptr;
+    }
+    alloc_.reset();
+    hub_ = nullptr;
+    in_use_ = false;
+  }
+
+  bool is_reusable(ObFTDictHub *hub) const
+  {
+    return nullptr != parser_ && !in_use_ && hub == hub_
+           && alloc_.used() < IK_PARSER_CACHE_MAX_BYTES;
+  }
+};
+
+ObIKParserCache &get_ik_parser_cache()
+{
+  static thread_local ObIKParserCache cache;
+  return cache;
+}
+} // namespace
+
 int ObIKFTParserDesc::segment(ObFTParserParam *param, ObITokenIterator *&iter) const
 {
   int ret = OB_SUCCESS;
   ObIKFTParser *parser = nullptr;
   ObFTDictHub *hub = nullptr;
+  ObIKParserCache &cache = get_ik_parser_cache();
   if (OB_ISNULL(param) || OB_UNLIKELY(!param->is_valid())) {
     ret = OB_INVALID_ARGUMENT;
   } else if (OB_FAIL(ObFTParseData::instance().get_dict_hub(hub))) {
-  } else if (OB_ISNULL(parser = OB_NEWx(ObIKFTParser, param->allocator_, *(param->allocator_), hub))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-  } else if (OB_FAIL(parser->init(*param))) {
   } else {
-    iter = parser;
-  }
+    bool reused = false;
+    if (cache.is_reusable(hub)) {
+      const int reuse_ret = cache.parser_->reuse(*param);
+      if (OB_SUCCESS == reuse_ret) {
+        parser = cache.parser_;
+        reused = true;
+      } else {
+        // Either the configuration changed or the parser cannot take another
+        // document (e.g. it failed to rebuild its per document state).  Drop it
+        // and build a fresh one, exactly like a cold call, so that a single
+        // failure never poisons the cache of this thread.
+        cache.destroy();
+      }
+    } else if (nullptr != cache.parser_ && !cache.in_use_) {
+      // The arena grew too large, drop it and start over.
+      cache.destroy();
+    } else {
+      // A parser of this thread is currently in use (nested evaluation), fall
+      // back to a one shot parser.
+    }
 
-  if (OB_FAIL(ret)) {
-    OB_DELETEx(ObIKFTParser, param->allocator_, parser);
-  }
+    if (OB_FAIL(ret)) {
+    } else if (!reused) {
+      if (OB_ISNULL(cache.parser_) && !cache.in_use_) {
+        if (OB_ISNULL(parser = OB_NEWx(ObIKFTParser, &cache.alloc_, cache.alloc_, hub))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+        } else if (OB_FAIL(parser->init(*param))) {
+          OB_DELETEx(ObIKFTParser, &cache.alloc_, parser);
+          parser = nullptr;
+        } else {
+          cache.parser_ = parser;
+          cache.hub_ = hub;
+        }
+      } else if (OB_ISNULL(
+                     parser = OB_NEWx(ObIKFTParser, param->allocator_, *(param->allocator_), hub))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else if (OB_FAIL(parser->init(*param))) {
+        OB_DELETEx(ObIKFTParser, param->allocator_, parser);
+        parser = nullptr;
+      }
+    }
 
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(parser)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        if (parser == cache.parser_) {
+          cache.in_use_ = true;
+        }
+        iter = parser;
+      }
+    }
+  }
   return ret;
 }
 
 void ObIKFTParserDesc::free_token_iter(ObFTParserParam *param,
                                        ObITokenIterator *&iter) const
 {
-  iter->~ObITokenIterator();
-  param->allocator_->free(iter);
+  ObIKParserCache &cache = get_ik_parser_cache();
+  if (OB_ISNULL(iter)) {
+  } else if (iter == cache.parser_) {
+    // Keep the parser for the next document of this thread.
+    cache.in_use_ = false;
+    iter = nullptr;
+  } else {
+    iter->~ObITokenIterator();
+    if (OB_NOT_NULL(param) && OB_NOT_NULL(param->allocator_)) {
+      param->allocator_->free(iter);
+    }
+    iter = nullptr;
+  }
 }
-
 
 int ObIKFTParserDesc::get_add_word_flag(ObAddWordFlag &flag) const
 {
@@ -328,12 +477,16 @@ int ObIKFTParser::init_segmenter(const ObFTParserParam &param)
   } else if (OB_ISNULL(surrogate_seg = OB_NEWx(ObIKSurrogateProcessor, &allocator_))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
   } else if (OB_FAIL(segmenters_.push_back(letter_seg))) {
+  } else if (FALSE_IT(letter_seg_ = letter_seg)) {
   } else if (FALSE_IT(letter_seg = nullptr)) {
   } else if (OB_FAIL(segmenters_.push_back(cnqsg))) {
+  } else if (FALSE_IT(quantifier_seg_ = cnqsg)) {
   } else if (FALSE_IT(cnqsg = nullptr)) {
   } else if (OB_FAIL(segmenters_.push_back(cjksg))) {
+  } else if (FALSE_IT(cjk_seg_ = cjksg)) {
   } else if (FALSE_IT(cjksg = nullptr)) {
   } else if (OB_FAIL(segmenters_.push_back(surrogate_seg))) {
+  } else if (FALSE_IT(surrogate_seg_ = surrogate_seg)) {
   } else if (OB_FALSE_IT(surrogate_seg = nullptr)) {
   }
   // push back by order, quantifier is before cjk
@@ -347,11 +500,12 @@ int ObIKFTParser::init_segmenter(const ObFTParserParam &param)
   return ret;
 }
 
-void ObIKFTParser::reset()
+void ObIKFTParser::reset_document_state()
 {
   if (!OB_ISNULL(ctx_)) {
     ctx_->~TokenizeContext();
     allocator_.free(ctx_);
+    ctx_ = nullptr;
   }
 
   for (ObIIKProcessor *segmenter : segmenters_) {
@@ -361,7 +515,14 @@ void ObIKFTParser::reset()
     }
   }
   segmenters_.clear();
+  letter_seg_ = nullptr;
+  quantifier_seg_ = nullptr;
+  cjk_seg_ = nullptr;
+  surrogate_seg_ = nullptr;
+}
 
+void ObIKFTParser::destroy_dicts()
+{
   cache_main_.reset();
   cache_quan_.reset();
   cache_stop_.reset();
@@ -369,16 +530,24 @@ void ObIKFTParser::reset()
   if (!OB_ISNULL(dict_main_)) {
     dict_main_->~ObIFTDict();
     allocator_.free(dict_main_);
+    dict_main_ = nullptr;
   }
   if (!OB_ISNULL(dict_quan_)) {
     dict_quan_->~ObIFTDict();
     allocator_.free(dict_quan_);
+    dict_quan_ = nullptr;
   }
   if (!OB_ISNULL(dict_stop_)) {
     dict_stop_->~ObIFTDict();
     allocator_.free(dict_stop_);
+    dict_stop_ = nullptr;
   }
+}
 
+void ObIKFTParser::reset()
+{
+  reset_document_state();
+  destroy_dicts();
   is_inited_ = false;
 }
 

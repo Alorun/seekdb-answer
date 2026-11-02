@@ -11,6 +11,12 @@ BINARY="$ROOT/build_release/src/observer/seekdb"
 SDB="$ROOT/.github/script/seekdb/sdb.py"
 BENCH="$ROOT/tools/benchmark/fts_large_bench.sh"
 COMPARE="/home/hahaha/fts_bench_compare.py"
+BUILD_JOBS="${FTS_BUILD_JOBS:-1}"
+
+if [[ ! "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: FTS_BUILD_JOBS must be a positive integer"
+    exit 1
+fi
 
 mkdir -p "$REPORT_DIR" /home/hahaha/seekdb-tests
 
@@ -61,7 +67,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "========== 1. Build =========="
-./build.sh release --make -j"$(nproc)"
+echo "Build parallelism: $BUILD_JOBS"
+./build.sh release --make "-j${BUILD_JOBS}"
 
 [[ -x "$BINARY" ]] || {
     echo "ERROR: SeekDB binary not found"

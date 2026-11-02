@@ -25,6 +25,8 @@
 #include "data_plane/fts/ob_fts_parser_helper.h"
 #include "share/schema/ob_multi_version_schema_service.h"
 #include "share/schema/ob_schema_utils.h"
+#include "share/config/ob_parallel_ddl_control_mode.h"
+#include "share/rc/ob_server_runtime.h"
 
 namespace oceanbase
 {
@@ -1031,6 +1033,32 @@ int ObFtsIndexBuilderUtil::generate_doc_id_column(
   return ret;
 }
 
+namespace
+{
+
+// Auto DOP for one FTS index-build query when the statement carries no PARALLEL
+// clause.  At steady state the FTS parent task runs two aux-index builds
+// concurrently (the FTS index table and the FTS doc-word table) and both
+// tokenize the same base rows, so split the tenant CPU spec between them.  The
+// per-build value is capped so one build cannot monopolise the tenant while the
+// aggregate stays close to the tenant's CPU spec.
+constexpr int64_t FTS_AUTO_PARALLELISM_MAX = 8;
+constexpr int64_t FTS_AUTO_CONCURRENT_BUILDS = 2;
+
+int64_t calc_fts_auto_parallelism()
+{
+  int64_t parallelism = 1;
+  const ObServerRuntimeState *runtime = server_runtime();
+  if (OB_NOT_NULL(runtime) && runtime->max_cpu() > 0) {
+    const int64_t tenant_cpu = static_cast<int64_t>(runtime->max_cpu());
+    parallelism = MAX(1L, MIN(FTS_AUTO_PARALLELISM_MAX,
+                              tenant_cpu / FTS_AUTO_CONCURRENT_BUILDS));
+  }
+  return parallelism;
+}
+
+} // namespace
+
 int ObFtsIndexBuilderUtil::decide_parallelism(
     const share::schema::ObIndexType index_type,
     const int64_t original_parallelism,
@@ -1047,7 +1075,23 @@ int ObFtsIndexBuilderUtil::decide_parallelism(
       case share::schema::ObIndexType::INDEX_TYPE_DOC_ID_ROWKEY_LOCAL:
       case share::schema::ObIndexType::INDEX_TYPE_FTS_INDEX_LOCAL:
       case share::schema::ObIndexType::INDEX_TYPE_FTS_DOC_WORD_LOCAL:
-        decided_parallelism = MAX(original_parallelism / 3, 1L);
+        if (original_parallelism <= 1) {
+          // No explicit PARALLEL clause: derive a per-build DOP from the tenant
+          // CPU spec instead of forcing the build to run serially.
+          bool auto_parallel_ddl = false;
+          int tmp_ret = ObParallelDDLControlMode::is_parallel_ddl_enable(
+              ObParallelDDLControlMode::CREATE_INDEX, auto_parallel_ddl);
+          if (OB_SUCCESS != tmp_ret) {
+            LOG_WARN("failed to check parallel ddl control, fallback to serial build", K(tmp_ret));
+            decided_parallelism = 1;
+          } else if (auto_parallel_ddl) {
+            decided_parallelism = calc_fts_auto_parallelism();
+          } else {
+            decided_parallelism = 1;
+          }
+        } else {
+          decided_parallelism = MAX(original_parallelism / 3, 1L);
+        }
         break;
       case share::schema::ObIndexType::INDEX_TYPE_NORMAL_MULTIVALUE_LOCAL:
       case share::schema::ObIndexType::INDEX_TYPE_UNIQUE_MULTIVALUE_LOCAL:
@@ -1059,6 +1103,10 @@ int ObFtsIndexBuilderUtil::decide_parallelism(
       default:
         decided_parallelism = 1;
         break;
+    }
+    if (OB_SUCC(ret)) {
+      LOG_INFO("decide fts build parallelism", K(index_type),
+               K(original_parallelism), K(decided_parallelism));
     }
   }
   return ret;

@@ -141,44 +141,91 @@ bool ObUnicodeBlockUtils::is_convertable_fullwidth(const ob_wc_t unicode)
   return FW_SPACE || FW_OHTER;
 }
 
-ob_wc_t ObUnicodeBlockUtils::get_unicode_from_u8(const char *input, const uint8_t char_len)
+namespace
 {
-  ob_wc_t unicode = 0;
-  const unsigned char *ustart = reinterpret_cast<const unsigned char *>(input);
-  const unsigned char *uend = reinterpret_cast<const unsigned char *>(&input[char_len]);
-  int code_size = common::ob_charset_decode_unicode<common::CHARSET_UTF8MB4>(ustart, uend, unicode);
-  return unicode;
-}
-
-#define OB_IK_GET_NUMBER_UNICODE(str) get_unicode_from_u8(str, sizeof(str))
-bool ObUnicodeBlockUtils::is_unicode_cn_number(ob_wc_t unicode)
+// The characters recognized as Chinese numeric characters. The table is built
+// once from the literals below and kept sorted and duplicate free, so that the
+// per character check is a binary search instead of a linear scan.
+class CnNumberSet
 {
-  // Chinese numerical characters: "一二两三四五六七八九十零壹贰叁肆伍陆柒捌玖拾百千万亿拾佰仟萬億兆卅廿"
-  static const ob_wc_t cn_number_array[] = {
-      OB_IK_GET_NUMBER_UNICODE("一"), OB_IK_GET_NUMBER_UNICODE("二"),
-      OB_IK_GET_NUMBER_UNICODE("两"), OB_IK_GET_NUMBER_UNICODE("三"),
-      OB_IK_GET_NUMBER_UNICODE("四"), OB_IK_GET_NUMBER_UNICODE("五"),
-      OB_IK_GET_NUMBER_UNICODE("六"), OB_IK_GET_NUMBER_UNICODE("七"),
-      OB_IK_GET_NUMBER_UNICODE("八"), OB_IK_GET_NUMBER_UNICODE("九"),
-      OB_IK_GET_NUMBER_UNICODE("十"), OB_IK_GET_NUMBER_UNICODE("零"),
-      OB_IK_GET_NUMBER_UNICODE("壹"), OB_IK_GET_NUMBER_UNICODE("贰"),
-      OB_IK_GET_NUMBER_UNICODE("叁"), OB_IK_GET_NUMBER_UNICODE("肆"),
-      OB_IK_GET_NUMBER_UNICODE("伍"), OB_IK_GET_NUMBER_UNICODE("陆"),
-      OB_IK_GET_NUMBER_UNICODE("柒"), OB_IK_GET_NUMBER_UNICODE("捌"),
-      OB_IK_GET_NUMBER_UNICODE("玖"), OB_IK_GET_NUMBER_UNICODE("拾"),
-      OB_IK_GET_NUMBER_UNICODE("百"), OB_IK_GET_NUMBER_UNICODE("千"),
-      OB_IK_GET_NUMBER_UNICODE("万"), OB_IK_GET_NUMBER_UNICODE("亿"),
-      OB_IK_GET_NUMBER_UNICODE("拾"), OB_IK_GET_NUMBER_UNICODE("佰"),
-      OB_IK_GET_NUMBER_UNICODE("仟"), OB_IK_GET_NUMBER_UNICODE("萬"),
-      OB_IK_GET_NUMBER_UNICODE("億"), OB_IK_GET_NUMBER_UNICODE("兆"),
-      OB_IK_GET_NUMBER_UNICODE("卅"), OB_IK_GET_NUMBER_UNICODE("廿"),
-  };
-  for (int i = 0; i < sizeof(cn_number_array) / sizeof(cn_number_array[0]); i++) {
-    if (unicode == cn_number_array[i]) {
-      return true;
+public:
+  CnNumberSet() : size_(0)
+  {
+    static const char *CN_NUMBER_LITERALS[] = {
+        "一", "二", "两", "三", "四", "五",
+        "六", "七", "八", "九", "十", "零",
+        "壹", "贰", "叁", "肆", "伍", "陆",
+        "柒", "捌", "玖", "拾", "百", "千",
+        "万", "亿", "拾", "佰", "仟", "萬",
+        "億", "兆", "卅", "廿",
+    };
+    for (int64_t i = 0; i < ARRAYSIZEOF(CN_NUMBER_LITERALS); ++i) {
+      const char *literal = CN_NUMBER_LITERALS[i];
+      const int64_t literal_len = static_cast<int64_t>(STRLEN(literal));
+      ob_wc_t unicode = 0;
+      if (literal_len <= 0) {
+      } else if (common::ob_charset_decode_unicode<common::CHARSET_UTF8MB4>(
+                     reinterpret_cast<const unsigned char *>(literal),
+                     reinterpret_cast<const unsigned char *>(literal + literal_len),
+                     unicode)
+                 <= 0) {
+        // never happens, the literals above are valid utf8mb4
+      } else {
+        insert_sorted(unicode);
+      }
     }
   }
-  return false;
+
+  bool contains(const ob_wc_t unicode) const
+  {
+    int32_t left = 0;
+    int32_t right = size_ - 1;
+    bool found = false;
+    while (!found && left <= right) {
+      const int32_t mid = left + ((right - left) >> 1);
+      if (values_[mid] == unicode) {
+        found = true;
+      } else if (values_[mid] < unicode) {
+        left = mid + 1;
+      } else {
+        right = mid - 1;
+      }
+    }
+    return found;
+  }
+
+private:
+  void insert_sorted(const ob_wc_t unicode)
+  {
+    int32_t pos = 0;
+    while (pos < size_ && values_[pos] < unicode) {
+      ++pos;
+    }
+    if (pos < size_ && values_[pos] == unicode) {
+      // already in the set
+    } else if (size_ >= MAX_CN_NUMBER) {
+      // never happens, CN_NUMBER_LITERALS is shorter than MAX_CN_NUMBER
+    } else {
+      for (int32_t i = size_; i > pos; --i) {
+        values_[i] = values_[i - 1];
+      }
+      values_[pos] = unicode;
+      ++size_;
+    }
+  }
+
+private:
+  static constexpr int32_t MAX_CN_NUMBER = 64;
+  ob_wc_t values_[MAX_CN_NUMBER];
+  int32_t size_;
+};
+} // namespace
+
+bool ObUnicodeBlockUtils::is_unicode_cn_number(ob_wc_t unicode)
+{
+  // Built once; the guarded initialization below is thread safe.
+  static const CnNumberSet CN_NUMBER_SET;
+  return CN_NUMBER_SET.contains(unicode);
 }
 
 } //  namespace storage
