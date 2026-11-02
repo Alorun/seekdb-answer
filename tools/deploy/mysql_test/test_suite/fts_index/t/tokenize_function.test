@@ -35,6 +35,27 @@ select tokenize('hello world', 'ngram');
 select tokenize('hello world', 'space', '[{"output": "all"}]');
 select tokenize('hello world', 'space', '[{"output": "default"}]');
 
+# BENG keeps normalized token storage alive across consecutive tokens.
+select tokenize('!!!Alpha alpha BETA beta alpha!!!', 'beng');
+select tokenize('!!!Alpha alpha BETA beta alpha!!!', 'beng', '[{"output": "all"}]');
+select tokenize(',,Alpha,,,123,,,BETA!!', 'beng');
+select tokenize('the THE the', 'beng', '[{"output": "all"}]');
+select json_extract(tokenize('!!!Alpha alpha BETA beta alpha!!!', 'beng', '[{"output": "all"}]'), '$.tokens[*].alpha') as alpha_count;
+select json_extract(tokenize('!!!Alpha alpha BETA beta alpha!!!', 'beng', '[{"output": "all"}]'), '$.tokens[*].beta') as beta_count;
+select tokenize('', 'beng');
+select tokenize('One TWO', 'beng');
+select tokenize('three FOUR', 'beng');
+
+CREATE TABLE beng_lifecycle (
+  id INT PRIMARY KEY,
+  body VARCHAR(200),
+  FULLTEXT INDEX fti(body) WITH PARSER beng
+);
+INSERT INTO beng_lifecycle VALUES (1, 'Alpha ALPHA beta Beta alpha.');
+SELECT COUNT(*) AS alpha_matches FROM beng_lifecycle WHERE MATCH(body) AGAINST ('ALPHA' IN BOOLEAN MODE);
+SELECT COUNT(*) AS beta_matches FROM beng_lifecycle WHERE MATCH(body) AGAINST ('bEtA' IN BOOLEAN MODE);
+DROP TABLE beng_lifecycle;
+
 
 # output empty result
 

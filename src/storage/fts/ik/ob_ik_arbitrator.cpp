@@ -50,7 +50,7 @@ int ObIKArbitrator::process(TokenizeContext &ctx)
       if (OB_FAIL(tokens.pop_front())) {
       } else if (OB_FAIL(chain_need_arbitrate->add_token_if_conflict(token, is_add))) {
       } else if (!is_add) {
-        ObFTSortList::CellIter iter = chain_need_arbitrate->list().tokens().begin();
+        ObFTSortList::ConstCellIter iter = chain_need_arbitrate->list().tokens().begin();
         ObIKTokenChain *judge_result = nullptr;
         if (chain_need_arbitrate->list().tokens().size() == 1 || !use_smart) {
           if (OB_FAIL(add_chain(chain_need_arbitrate))) {
@@ -216,14 +216,14 @@ int ObIKArbitrator::output_result(TokenizeContext &ctx)
 
 int ObIKArbitrator::optimize(TokenizeContext &ctx,
                              ObIKTokenChain *chain,
-                             ObFTSortList::CellIter iter,
+                             ObFTSortList::ConstCellIter iter,
                              int64_t fulltext_len,
                              ObIKTokenChain *&best)
 {
   int ret = OB_SUCCESS;
 
   ObIKTokenChain *option = nullptr;
-  ObList<ObFTSortList::CellIter, ObIAllocator> conflict_stack(alloc_);
+  ObList<ObFTSortList::ConstCellIter, ObIAllocator> conflict_stack(alloc_);
 
   if (OB_ISNULL(option = OB_NEWx(ObIKTokenChain, &alloc_, alloc_))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -235,7 +235,7 @@ int ObIKArbitrator::optimize(TokenizeContext &ctx,
   } else if (OB_FAIL(best->copy(option))) {
   } else {
     while (OB_SUCC(ret) && !conflict_stack.empty()) {
-      ObFTSortList::CellIter iter = conflict_stack.get_last();
+      ObFTSortList::ConstCellIter iter = conflict_stack.get_last();
       conflict_stack.pop_back();
       if (OB_FAIL(remove_conflict(*iter, option))) {
       } else if (OB_FAIL(try_add_next_words(chain, iter, option, false, conflict_stack))) {
@@ -264,10 +264,10 @@ int ObIKArbitrator::optimize(TokenizeContext &ctx,
 }
 
 int ObIKArbitrator::try_add_next_words(ObIKTokenChain *chain,
-                                       ObFTSortList::CellIter iter,
+                                       ObFTSortList::ConstCellIter iter,
                                        ObIKTokenChain *option,
                                        bool need_conflict,
-                                       ObList<ObFTSortList::CellIter, ObIAllocator> &conflict_stack)
+                                       ObList<ObFTSortList::ConstCellIter, ObIAllocator> &conflict_stack)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(chain) || OB_ISNULL(option)) {

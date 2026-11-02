@@ -1,0 +1,26 @@
+load("//bazel:defs.bzl", "seekdb_cc_library", "seekdb_cc_test")
+
+package(default_visibility = ["//visibility:private"])
+
+seekdb_cc_library(
+    name = "_ob_ik_token_test_lib",
+    srcs = ["ob_ik_token_test.cpp"],
+    deps = [
+        "//src/storage:storage_unit_test_interface",
+        "@seekdb_3rd_headers//:gtest",
+    ],
+    alwayslink = True,
+    testonly = True,
+)
+
+seekdb_cc_test(
+    name = "ob_ik_token_test",
+    deps = [
+        ":_ob_ik_token_test_lib",
+        "@seekdb_3rd_headers//:gtest",
+    ],
+    linkopts = [
+        "-pthread",
+        "-ldl",
+    ],
+)

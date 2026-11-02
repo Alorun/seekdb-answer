@@ -113,7 +113,7 @@ public:
 
   bool check_conflict(const ObIKToken &token);
 
-  ObFTSortList &list() { return list_; }
+  const ObFTSortList &list() const { return list_; }
 
   bool better_than(const ObIKTokenChain &other) const;
 
@@ -127,14 +127,29 @@ public:
 
   int64_t payload() const { return payload_; }
 
+  int64_t token_count() const { return token_count_; }
+
   int64_t x_weight() const;
 
   int64_t p_weight() const;
 
 private:
+  void reset_weight_cache();
+
+  void rebuild_weight_cache() const;
+
+  void update_weight_cache_after_insert(const ObIKToken &token, bool append);
+
+  void update_weight_cache_after_append(const ObIKToken &token);
+
   int min_offset_ = -1;
   int max_offset_ = -1;
   int payload_ = -1;
+  mutable int64_t token_count_ = 0;
+  mutable int position_count_ = 0;
+  mutable int64_t x_weight_cache_ = 1;
+  mutable int64_t p_weight_cache_ = 0;
+  mutable bool weight_cache_valid_ = true;
   ObFTSortList list_;
 };
 

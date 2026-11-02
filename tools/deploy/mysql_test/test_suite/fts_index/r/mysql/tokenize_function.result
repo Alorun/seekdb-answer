@@ -56,6 +56,80 @@ select tokenize('hello world', 'space', '[{"output": "default"}]');
 | ["world", "hello"]                                          |
 +-------------------------------------------------------------+
 
+select tokenize('!!!Alpha alpha BETA beta alpha!!!', 'beng');
++-------------------------------------------------------+
+| tokenize('!!!Alpha alpha BETA beta alpha!!!', 'beng') |
++-------------------------------------------------------+
+| ["beta", "alpha"]                                     |
++-------------------------------------------------------+
+select tokenize('!!!Alpha alpha BETA beta alpha!!!', 'beng', '[{"output": "all"}]');
++------------------------------------------------------------------------------+
+| tokenize('!!!Alpha alpha BETA beta alpha!!!', 'beng', '[{"output": "all"}]') |
++------------------------------------------------------------------------------+
+| {"tokens": [{"beta": 2}, {"alpha": 3}], "doc_len": 5}                        |
++------------------------------------------------------------------------------+
+select tokenize(',,Alpha,,,123,,,BETA!!', 'beng');
++--------------------------------------------+
+| tokenize(',,Alpha,,,123,,,BETA!!', 'beng') |
++--------------------------------------------+
+| ["123", "beta", "alpha"]                   |
++--------------------------------------------+
+select tokenize('the THE the', 'beng', '[{"output": "all"}]');
++--------------------------------------------------------+
+| tokenize('the THE the', 'beng', '[{"output": "all"}]') |
++--------------------------------------------------------+
+| {"tokens": [], "doc_len": 0}                           |
++--------------------------------------------------------+
+select json_extract(tokenize('!!!Alpha alpha BETA beta alpha!!!', 'beng', '[{"output": "all"}]'), '$.tokens[*].alpha') as alpha_count;
++-------------+
+| alpha_count |
++-------------+
+| [3]         |
++-------------+
+select json_extract(tokenize('!!!Alpha alpha BETA beta alpha!!!', 'beng', '[{"output": "all"}]'), '$.tokens[*].beta') as beta_count;
++------------+
+| beta_count |
++------------+
+| [2]        |
++------------+
+select tokenize('', 'beng');
++---------------------+
+| tokenize('', 'beng') |
++---------------------+
+| []                  |
++---------------------+
+select tokenize('One TWO', 'beng');
++-----------------------------+
+| tokenize('One TWO', 'beng') |
++-----------------------------+
+| ["two", "one"]             |
++-----------------------------+
+select tokenize('three FOUR', 'beng');
++-------------------------------+
+| tokenize('three FOUR', 'beng') |
++-------------------------------+
+| ["four", "three"]             |
++-------------------------------+
+CREATE TABLE beng_lifecycle (
+  id INT PRIMARY KEY,
+  body VARCHAR(200),
+  FULLTEXT INDEX fti(body) WITH PARSER beng
+);
+INSERT INTO beng_lifecycle VALUES (1, 'Alpha ALPHA beta Beta alpha.');
+SELECT COUNT(*) AS alpha_matches FROM beng_lifecycle WHERE MATCH(body) AGAINST ('ALPHA' IN BOOLEAN MODE);
++---------------+
+| alpha_matches |
++---------------+
+|             1 |
++---------------+
+SELECT COUNT(*) AS beta_matches FROM beng_lifecycle WHERE MATCH(body) AGAINST ('bEtA' IN BOOLEAN MODE);
++--------------+
+| beta_matches |
++--------------+
+|            1 |
++--------------+
+DROP TABLE beng_lifecycle;
+
 select tokenize("");
 +--------------+
 | tokenize("") |

@@ -64,16 +64,28 @@ int ObIKTokenChain::add_token_if_conflict(const ObIKToken &token, bool &added)
   int ret = OB_SUCCESS;
   added = true;
   if (list_.is_empty()) {
+    const int64_t old_size = list_.tokens().size();
     list_.add_token(token);
     min_offset_ = token.offset_;
     max_offset_ = token.offset_ + token.length_;
     payload_ = token.length_;
+    if (list_.tokens().size() != old_size) {
+      update_weight_cache_after_append(token);
+    }
   } else if (check_conflict(token)) {
+    const int64_t old_size = list_.tokens().size();
+    const bool append = token > list_.tokens().get_last();
+    if (append && !weight_cache_valid_) {
+      rebuild_weight_cache();
+    }
     list_.add_token(token);
     if (token.offset_ + token.length_ > max_offset_) {
       max_offset_ = token.offset_ + token.length_;
     }
     payload_ = max_offset_ - min_offset_;
+    if (list_.tokens().size() != old_size) {
+      update_weight_cache_after_insert(token, append);
+    }
   } else {
     added = false;
   }
@@ -85,17 +97,29 @@ int ObIKTokenChain::add_token_if_no_conflict(const ObIKToken &token, bool &added
   int ret = OB_SUCCESS;
   added = true;
   if (list_.is_empty()) {
+    const int64_t old_size = list_.tokens().size();
     list_.add_token(token);
     min_offset_ = token.offset_;
     max_offset_ = token.offset_ + token.length_;
     payload_ = token.length_;
+    if (list_.tokens().size() != old_size) {
+      update_weight_cache_after_append(token);
+    }
   } else if (check_conflict(token)) {
     added = false;
   } else {
+    const int64_t old_size = list_.tokens().size();
+    const bool append = token > list_.tokens().get_last();
+    if (append && !weight_cache_valid_) {
+      rebuild_weight_cache();
+    }
     list_.add_token(token);
     min_offset_ = list_.min();
     max_offset_ = list_.max();
     payload_ += token.length_;
+    if (list_.tokens().size() != old_size) {
+      update_weight_cache_after_insert(token, append);
+    }
     added = true;
   }
   return ret;
@@ -121,10 +145,8 @@ bool ObIKTokenChain::better_than(const ObIKTokenChain &other) const
   }
 
   // less words
-  int64_t token_count = list_.tokens().size();
-  int64_t other_token_count = other.list_.tokens().size();
-  if (token_count != other_token_count) {
-    return token_count < other_token_count;
+  if (token_count_ != other.token_count_) {
+    return token_count_ < other.token_count_;
   }
 
   // more distance
@@ -138,16 +160,14 @@ bool ObIKTokenChain::better_than(const ObIKTokenChain &other) const
   }
 
   // more average distance is better
-  int64_t this_x_weight = x_weight();
-  int64_t other_x_weight = other.x_weight();
+  const int64_t this_x_weight = x_weight();
+  const int64_t other_x_weight = other.x_weight();
   if (this_x_weight != other_x_weight) {
     return this_x_weight > other_x_weight;
   }
 
   // position
-  int64_t this_p_weight = p_weight();
-  int64_t other_p_weight = other.p_weight();
-  return this_p_weight > other_p_weight;
+  return p_weight() > other.p_weight();
 }
 
 int ObIKTokenChain::copy(ObIKTokenChain *other)
@@ -160,7 +180,7 @@ int ObIKTokenChain::copy(ObIKTokenChain *other)
     min_offset_ = other->min_offset_;
     max_offset_ = other->max_offset_;
     payload_ = other->payload_;
-    ObFTSortList::CellIter iter = other->list().tokens().begin();
+    ObFTSortList::ConstCellIter iter = other->list().tokens().begin();
 
     for (; OB_SUCC(ret) && iter != other->list().tokens().end(); ++iter) {
       bool added = false;
@@ -173,21 +193,17 @@ int ObIKTokenChain::copy(ObIKTokenChain *other)
 
 int64_t ObIKTokenChain::p_weight() const
 {
-  int64_t p_weight = 0;
-  int p = 0;
-  for (const ObIKToken &token : list_.tokens()) {
-    p++;
-    p_weight += p * token.char_cnt_;
+  if (!weight_cache_valid_) {
+    rebuild_weight_cache();
   }
-  return p_weight;
+  return p_weight_cache_;
 }
 int64_t ObIKTokenChain::x_weight() const
 {
-  int64_t product = 1;
-  for (const ObIKToken &token : list_.tokens()) {
-    product *= token.char_cnt_;
+  if (!weight_cache_valid_) {
+    rebuild_weight_cache();
   }
-  return product;
+  return x_weight_cache_;
 }
 
 int ObIKTokenChain::pop_back(ObIKToken &token)
@@ -201,13 +217,59 @@ int ObIKTokenChain::pop_back(ObIKToken &token)
     min_offset_ = -1;
     max_offset_ = -1;
     payload_ = 0;
+    reset_weight_cache();
   } else {
+    --token_count_;
+    weight_cache_valid_ = false;
     payload_ -= token.length_;
     ObIKToken new_last = list_.tokens().get_last();
     // only for not conflict case
     max_offset_ = new_last.offset_ + new_last.length_;
   }
   return ret;
+}
+
+void ObIKTokenChain::reset_weight_cache()
+{
+  token_count_ = 0;
+  position_count_ = 0;
+  x_weight_cache_ = 1;
+  p_weight_cache_ = 0;
+  weight_cache_valid_ = true;
+}
+
+void ObIKTokenChain::rebuild_weight_cache() const
+{
+  token_count_ = 0;
+  position_count_ = 0;
+  x_weight_cache_ = 1;
+  p_weight_cache_ = 0;
+  int p = 0;
+  for (const ObIKToken &token : list_.tokens()) {
+    ++token_count_;
+    x_weight_cache_ *= token.char_cnt_;
+    ++p;
+    p_weight_cache_ += p * token.char_cnt_;
+  }
+  position_count_ = p;
+  weight_cache_valid_ = true;
+}
+
+void ObIKTokenChain::update_weight_cache_after_insert(const ObIKToken &token, bool append)
+{
+  if (append) {
+    update_weight_cache_after_append(token);
+  } else {
+    rebuild_weight_cache();
+  }
+}
+
+void ObIKTokenChain::update_weight_cache_after_append(const ObIKToken &token)
+{
+  ++token_count_;
+  x_weight_cache_ *= token.char_cnt_;
+  ++position_count_;
+  p_weight_cache_ += position_count_ * token.char_cnt_;
 }
 
 int64_t ObFTSortList::max()
