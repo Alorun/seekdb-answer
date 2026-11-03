@@ -101,7 +101,8 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
   h->ip->build_algo = ivfpq ? IVF_PQ : NN_DESCENT;
   h->ip->graph_degree = (size_t)sk_env_int("SK_CUVS_FINAL_DEGREE", 128, 16, 512);
-  h->ip->intermediate_graph_degree = (size_t)sk_env_int("SK_CUVS_NND_INTERNAL_DEGREE", 256, 32, 512);
+  h->ip->intermediate_graph_degree =
+      (size_t)sk_env_int("SK_CUVS_NND_INTERNAL_DEGREE", 256, 32, 512);
   h->ip->nn_descent_niter = 100;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (n >= 1024 && !ivfpq) {
