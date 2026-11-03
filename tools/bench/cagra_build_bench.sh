@@ -236,7 +236,29 @@ for config in $CONFIGS; do
     mysql_cmd -e "drop table if exists $DB.$TABLE;" >/dev/null
     mysql_cmd -e "create table $DB.$TABLE(id bigint primary key, v vector($DATA_DIM));" >/dev/null
     import_start=$(now_ms)
-    mysql_cmd -e "load data /*+ parallel(16) */ infile '$DATA_DIR/load.tsv' into table $DB.$TABLE fields terminated by '\t' lines terminated by '\n';" >/dev/null
+    if ! mysql_cmd -e "load data /*+ parallel(16) */ infile '$DATA_DIR/load.tsv' into table $DB.$TABLE fields terminated by '\t' lines terminated by '\n';" >/dev/null 2>"$EVIDENCE/load-data-error.log"; then
+      echo "[bench] LOAD DATA failed (see load-data-error.log); falling back to INSERT"
+      if [[ ! -s "$DATA_DIR/insert.sql" ]]; then
+        python3 - "$DATA_DIR" "$DB" "$TABLE" <<'PY'
+import pathlib, sys
+data, db, table = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+src = data / "load.tsv"
+dst = data / "insert.sql"
+with src.open() as fin, dst.open("w", buffering=1 << 22) as out:
+    out.write(f"use {db};\n")
+    batch = []
+    for line in fin:
+        row_id, vector = line.rstrip("\n").split("\t", 1)
+        batch.append(f"({row_id},'{vector}')")
+        if len(batch) >= 250:
+            out.write(f"insert into {table} values " + ",".join(batch) + ";\n")
+            batch.clear()
+    if batch:
+        out.write(f"insert into {table} values " + ",".join(batch) + ";\n")
+PY
+      fi
+      mysql_cmd < "$DATA_DIR/insert.sql" >/dev/null
+    fi
     import_ms=$(( $(now_ms) - import_start ))
     count=$(mysql_cmd -e "select count(*) from $DB.$TABLE;")
     [[ "$count" == "$DATA_ROWS" ]] || { echo "imported $count rows, expected $DATA_ROWS" >&2; exit 1; }
