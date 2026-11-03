@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
+#include <cstdarg>
 #include <cstring>
 #include <pthread.h>
 #include "vsag/vsag.h"
@@ -88,6 +89,8 @@ struct ObCuvsEntry {
   std::vector<int64_t> buf_ids_;// accumulated external vids from add_index
   size_t built_n_ = 0;          // #vectors present when cuVS was last (re)built
   bool vsag_ready_ = false;     // CPU fallback is built only when it is needed
+  uint64_t add_calls_ = 0;      // add_index calls buffered into this entry
+  uint64_t add_rows_ = 0;       // rows buffered into this entry
 };
 static std::mutex g_ob_cuvs_mu;
 static std::map<void *, ObCuvsEntry *> g_ob_cuvs_reg;
@@ -131,6 +134,19 @@ static inline void ob_vsag_trace(const char *fn, const void *h, long a, long b) 
 #else
   (void)fn; (void)h; (void)a; (void)b;
 #endif
+}
+// Dev-only timing sink: appends one line to $SK_CUVS_TIMING_FILE so DDL-phase
+// timings survive the observer's stderr redirection. No-op unless set.
+static void ob_cuvs_timing(const char *format, ...) {
+  const char *path = ::getenv("SK_CUVS_TIMING_FILE");
+  if (path == nullptr || path[0] == '\0') { return; }
+  FILE *file = ::fopen(path, "a");
+  if (file == nullptr) { return; }
+  va_list args;
+  va_start(args, format);
+  ::vfprintf(file, format, args);
+  va_end(args);
+  ::fclose(file);
 }
 static std::shared_ptr<void> ob_cuvs_wrap(void *handle) {
   if (handle == nullptr) { return std::shared_ptr<void>(); }
@@ -181,6 +197,8 @@ static void ob_cuvs_add(void *key, const float *vectors, const int64_t *ids,
   slot->buf_vecs_.insert(slot->buf_vecs_.end(), vectors,
                          vectors + static_cast<size_t>(dim) * size);
   slot->buf_ids_.insert(slot->buf_ids_.end(), ids, ids + size);
+  slot->add_calls_ += 1;
+  slot->add_rows_ += static_cast<uint64_t>(size);
 }
 static bool ob_cuvs_vsag_ready(void *key) {
   std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
@@ -435,6 +453,13 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
     remaining -= bytes;
   }
   const int64_t stream_write_us = ObTimeUtility::current_time() - start_us - build_us;
+  ob_cuvs_timing("SEEKDB_CUVS_APPEND calls=%llu rows=%llu n=%lld dim=%d build_call_us=%lld "
+                 "snapshot_us=%lld stream_write_us=%lld graph_bytes=%llu\n",
+                 static_cast<unsigned long long>(ent->add_calls_),
+                 static_cast<unsigned long long>(ent->add_rows_),
+                 static_cast<long long>(n), dim32, static_cast<long long>(build_call_us),
+                 static_cast<long long>(snapshot_us), static_cast<long long>(stream_write_us),
+                 static_cast<unsigned long long>(graph_bytes));
   LOG_INFO("[OBVSAG][cuVS] serialized GPU CAGRA snapshot", KP(key), K(n), K(dim32),
            K(built), K(build_us), K(graph_bytes), K(build_call_us), K(snapshot_us),
            K(stream_write_us));

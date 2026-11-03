@@ -39,6 +39,7 @@ TABLE=items
 INDEX_NAME=idx_items
 GENERATE_ARGS=""
 ABS_MIN="0.95,0.95"
+EXTRA_ENV=""
 
 usage()
 {
@@ -62,6 +63,7 @@ while (($# > 0)); do
     --datafile-size) DATAFILE=$2; shift 2 ;;
     --skip-gen) SKIP_GEN=1; shift ;;
     --abs-min) ABS_MIN=$2; shift 2 ;;
+    --extra-env) EXTRA_ENV=$2; shift 2 ;;
     --generate-args) GENERATE_ARGS+=" $2"; shift 2 ;;
     -h|--help) usage 0 ;;
     *) echo "unknown argument: $1" >&2; usage ;;
@@ -135,6 +137,14 @@ start_observer()
   )
   [[ -n "$itopk" ]] && tune_env+=("SK_CUVS_SEARCH_ITOPK=$itopk")
   [[ -n "$width" ]] && tune_env+=("SK_CUVS_SEARCH_WIDTH=$width")
+  if [[ -n "$EXTRA_ENV" ]]; then
+    local -a extra_env=()
+    IFS=',' read -r -a extra_env <<< "$EXTRA_ENV"
+    local pair
+    for pair in "${extra_env[@]}"; do
+      [[ -n "$pair" ]] && tune_env+=("$pair")
+    done
+  fi
   env \
     LD_LIBRARY_PATH="$(dirname "$BRIDGE"):/opt/hipvs/lib:/opt/rocm/lib" \
     "${tune_env[@]}" \
@@ -272,14 +282,31 @@ PY
   log_offset=$(($(wc -l < "$LOG") + 1))
 
   create_start=$(now_ms)
-  mysql_cmd -e "create vector index $INDEX_NAME on $DB.$TABLE(v) with (distance=l2, type=hnsw, lib=cuvs, m=16, ef_construction=200, ef_search=64);" >/dev/null
+  if ! mysql_cmd -e "create vector index $INDEX_NAME on $DB.$TABLE(v) with (distance=l2, type=hnsw, lib=cuvs, m=16, ef_construction=200, ef_search=64);" \
+      >/dev/null 2>"$EVIDENCE/$label-create.err"; then
+    echo "[bench] $label CREATE failed; continuing" >&2
+    tail -n 3 "$EVIDENCE/$label-create.err" >&2 || true
+    printf '%s\tFAIL\t\tFAIL\t\t\t\t\t\t\t\t\t\t\tFAIL\n' "$label" >> "$SUMMARY"
+    config_index=$((config_index + 1))
+    continue
+  fi
   create_ms=$(( $(now_ms) - create_start ))
 
   query_start=$(now_ms)
-  first_rows=$(mysql_cmd -e "$(sql_first_query "$FIRST_QUERY" 10)")
+  if ! first_rows=$(mysql_cmd -e "$(sql_first_query "$FIRST_QUERY" 10)"); then
+    echo "[bench] $label first query failed; continuing" >&2
+    printf '%s\t%s\tFAIL\tFAIL\t\t\t\t\t\t\t\t\t\t\tFAIL\n' "$label" "$create_ms" >> "$SUMMARY"
+    config_index=$((config_index + 1))
+    continue
+  fi
   firstq_ms=$(( $(now_ms) - query_start ))
   first_count=$(printf '%s\n' "$first_rows" | grep -c . || true)
-  [[ "$first_count" -eq 10 ]] || { echo "first query returned $first_count rows" >&2; exit 1; }
+  if [[ "$first_count" -ne 10 ]]; then
+    echo "[bench] $label first query returned $first_count rows; continuing" >&2
+    printf '%s\t%s\t\tFAIL\t\t\t\t\t\t\t\t\t\t\tFAIL\n' "$label" "$create_ms" >> "$SUMMARY"
+    config_index=$((config_index + 1))
+    continue
+  fi
 
   build_ms=$((create_ms + firstq_ms))
 

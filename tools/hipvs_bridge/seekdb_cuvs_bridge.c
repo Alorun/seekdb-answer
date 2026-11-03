@@ -11,6 +11,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdarg.h>
+#include <string.h>
+#include <time.h>
 #include "custom_builder.h"
 #ifndef SK_CUVS_BUILD_FLAGS
 #define SK_CUVS_BUILD_FLAGS 1
@@ -31,6 +34,53 @@ typedef struct {
 
 } sk_cuvs_index;
 
+/* Optional dev-only timing sink: appends bridge phase timings to the file named
+ * by SK_CUVS_TIMING_FILE so they survive the observer's stderr redirection. */
+static void sk_timing(const char* format, ...)
+{
+  const char* path = getenv("SK_CUVS_TIMING_FILE");
+  va_list args;
+  FILE* file = NULL;
+  if (path == NULL || path[0] == '\0') return;
+  file = fopen(path, "a");
+  if (file == NULL) return;
+  va_start(args, format);
+  vfprintf(file, format, args);
+  va_end(args);
+  fclose(file);
+}
+
+static int sk_env_int(const char* name, int fallback, int low, int high)
+{
+  const char* text = getenv(name);
+  char* end = NULL;
+  long value = 0;
+  if (text == NULL || text[0] == '\0') return fallback;
+  value = strtol(text, &end, 10);
+  if (end == text || *end != '\0' || value < low || value > high) {
+    fprintf(stderr, "[seekdb_cuvs] ignoring %s=%s\n", name, text);
+    return fallback;
+  }
+  return (int)value;
+}
+
+/* SK_CUVS_BUILD_ALGO=ivfpq switches the graph build to the library's native
+ * IVF-PQ all-neighbours path (no NN-descent iterations at all). */
+static int sk_build_algo_ivfpq(void)
+{
+  static int cached = -1;
+  if (cached < 0) {
+    const char* algo = getenv("SK_CUVS_BUILD_ALGO");
+    cached = (algo != NULL && (strcmp(algo, "ivfpq") == 0 || strcmp(algo, "IVF_PQ") == 0)) ? 1 : 0;
+  }
+  return cached;
+}
+
+static double sk_seconds(const struct timespec* start, const struct timespec* end)
+{
+  return (double)(end->tv_sec - start->tv_sec) + (double)(end->tv_nsec - start->tv_nsec) / 1e9;
+}
+
 void* seekdb_cuvs_build(const float* base, long n, long dim)
 {
   sk_cuvs_index* h = (sk_cuvs_index*)calloc(1, sizeof(*h));
@@ -44,21 +94,30 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   dset.dl_tensor.dtype.code = kDLFloat; dset.dl_tensor.dtype.bits = 32; dset.dl_tensor.dtype.lanes = 1;
   dset.dl_tensor.shape = ds; dset.dl_tensor.strides = 0; dset.dl_tensor.byte_offset = 0;
 
+  const int ivfpq = sk_build_algo_ivfpq();
+  struct timespec build_start;
+  struct timespec build_end;
+  clock_gettime(CLOCK_MONOTONIC, &build_start);
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
-  h->ip->build_algo = NN_DESCENT;
-  h->ip->graph_degree = 128;
-  h->ip->intermediate_graph_degree = 256;
+  h->ip->build_algo = ivfpq ? IVF_PQ : NN_DESCENT;
+  h->ip->graph_degree = (size_t)sk_env_int("SK_CUVS_FINAL_DEGREE", 128, 16, 512);
+  h->ip->intermediate_graph_degree = (size_t)sk_env_int("SK_CUVS_NND_INTERNAL_DEGREE", 256, 32, 512);
   h->ip->nn_descent_niter = 100;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
-  if (n >= 1024) {
+  if (n >= 1024 && !ivfpq) {
     h->idx->dtype.code = kDLFloat;
     h->idx->dtype.bits = 32;
     h->idx->dtype.lanes = 1;
     if (seekdb_cuvs_custom_build(h->res, base, n, dim, h->idx, SK_CUVS_BUILD_FLAGS) != 0) goto fail_idx;
   } else {
-    /* Preserve the fixed library's reduced-degree behavior for small graphs. */
+    /* Small graphs keep the library's own degree handling; ivfpq uses the
+     * library's IVF-PQ all-neighbours build. */
     if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   }
+  clock_gettime(CLOCK_MONOTONIC, &build_end);
+  sk_timing("SEEKDB_BRIDGE_BUILD algo=%s n=%ld dim=%ld graph_degree=%zu intermediate=%zu sec=%.3f\n",
+            ivfpq ? "ivfpq" : "nnd_custom", n, dim, h->ip->graph_degree,
+            h->ip->intermediate_graph_degree, sk_seconds(&build_start, &build_end));
   h->n = n; h->dim = dim;
   return h;
 
@@ -112,20 +171,6 @@ static int reserve_search_buffers(sk_cuvs_index* h, size_t query_count, size_t r
 
 /* Search-effort tuning knobs. Defaults are the shipped values; the environment
  * overrides exist for offline sweeps (build cost vs Recall) on a GPU host. */
-static int sk_env_int(const char* name, int fallback, int low, int high)
-{
-  const char* text = getenv(name);
-  char* end = NULL;
-  long value = 0;
-  if (text == NULL || text[0] == '\0') return fallback;
-  value = strtol(text, &end, 10);
-  if (end == text || *end != '\0' || value < low || value > high) {
-    fprintf(stderr, "[seekdb_cuvs] ignoring %s=%s\n", name, text);
-    return fallback;
-  }
-  return (int)value;
-}
-
 int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
                        unsigned int* out_ids, float* out_dist)
 {
@@ -209,11 +254,16 @@ void seekdb_cuvs_free(void* handle)
 int seekdb_cuvs_serialize(void* handle, const char* filename)
 {
   sk_cuvs_index* index = (sk_cuvs_index*)handle;
+  struct timespec start;
+  struct timespec end;
   if (!index || !filename) return 1;
+  clock_gettime(CLOCK_MONOTONIC, &start);
   if (cuvsCagraSerialize(index->res, filename, index->idx, true) != CUVS_SUCCESS) {
     fprintf(stderr, "[seekdb_cuvs] serialize failed: %s\n", cuvsGetLastErrorText());
     return 1;
   }
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  sk_timing("SEEKDB_BRIDGE_SERIALIZE sec=%.3f\n", sk_seconds(&start, &end));
   return 0;
 }
 

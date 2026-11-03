@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdarg>
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -50,6 +51,23 @@ DLManagedTensor tensor(void* data, int64_t* shape, uint8_t code) {
 }
 double seconds(Clock::time_point start, Clock::time_point end) {
   return std::chrono::duration<double>(end - start).count();
+}
+// Dev-only timing sink: duplicates the phase line into $SK_CUVS_TIMING_FILE so
+// it survives the observer's stderr redirection. No-op unless set.
+void log_line(const char* format, ...) {
+  va_list args;
+  va_start(args, format);
+  vfprintf(stderr, format, args);
+  va_end(args);
+  fflush(stderr);
+  const char* path = std::getenv("SK_CUVS_TIMING_FILE");
+  if (path == nullptr || path[0] == '\0') return;
+  FILE* file = std::fopen(path, "a");
+  if (file == nullptr) return;
+  va_start(args, format);
+  vfprintf(file, format, args);
+  va_end(args);
+  std::fclose(file);
 }
 // Graph-build tuning knobs. Defaults are the shipped values; the environment
 // overrides exist for offline sweeps (build cost vs Recall) on a GPU host and
@@ -154,18 +172,18 @@ extern "C" int seekdb_cuvs_custom_build(cuvsResources_t resources, const float* 
           "CagraIndexFromArgs");
     check(cuvsStreamSync(resources), "CagraIndexFromArgs sync");
     const auto end = Clock::now();
-    fprintf(stderr, "SEEKDB_GPU_BUILD flags=%u n=%ld dim=%ld niter=%d degree=%d "
-            "internal_degree=%d final_degree=%d "
-            "nnd_sec=%.6f sort_sec=%.6f prune_reverse_sec=%.6f attach_sec=%.6f total_sec=%.6f\n",
-            flags, n, dim, tune.iterations, tune.degree, tune.internal_degree,
-            tune.final_degree, seconds(start, joined), seconds(joined, sorted),
-            seconds(sorted, pruned), seconds(pruned, end), seconds(start, end));
+    log_line("SEEKDB_GPU_BUILD flags=%u n=%ld dim=%ld niter=%d degree=%d "
+             "internal_degree=%d final_degree=%d "
+             "nnd_sec=%.6f sort_sec=%.6f prune_reverse_sec=%.6f attach_sec=%.6f total_sec=%.6f\n",
+             flags, n, dim, tune.iterations, tune.degree, tune.internal_degree,
+             tune.final_degree, seconds(start, joined), seconds(joined, sorted),
+             seconds(sorted, pruned), seconds(pruned, end), seconds(start, end));
     return 0;
   } catch (const std::exception& error) {
-    fprintf(stderr, "SEEKDB_GPU_BUILD_FAILED flags=%u: %s\n", flags, error.what());
+    log_line("SEEKDB_GPU_BUILD_FAILED flags=%u: %s\n", flags, error.what());
     return 1;
   } catch (...) {
-    fprintf(stderr, "SEEKDB_GPU_BUILD_FAILED flags=%u: unknown exception\n", flags);
+    log_line("SEEKDB_GPU_BUILD_FAILED flags=%u: unknown exception\n", flags);
     return 1;
   }
 }

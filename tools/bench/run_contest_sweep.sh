@@ -24,6 +24,7 @@ SIFT_QUERY=""
 CONFIGS="current:100:256:384:128 floor:4:64:64:64 it50:50:256:384:128 it30:30:256:384:128 it30d192:30:192:256:128 it20d192:20:192:256:128"
 SKIP_SIFT=0
 SKIP_SYN=0
+EXTRA_ENV=""
 SYN_DIM=256
 
 while (($# > 0)); do
@@ -41,6 +42,7 @@ while (($# > 0)); do
     --syn-dim) SYN_DIM=$2; shift 2 ;;
     --skip-sift) SKIP_SIFT=1; shift ;;
     --skip-syn) SKIP_SYN=1; shift ;;
+    --extra-env) EXTRA_ENV=$2; shift 2 ;;
     -h|--help) awk 'NR > 1 { if (/^#/) { sub(/^# ?/, ""); print } else { exit } }' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -75,7 +77,9 @@ run_suite()
 {
   local tag=$1 data=$2 port=$3 abs_min=$4
   echo
-  echo "================ $tag (data=$data) ================"
+  echo "================ $tag (data=$data) extra_env=${EXTRA_ENV:-none} ================"
+  local -a extra_args=()
+  [[ -n "$EXTRA_ENV" ]] && extra_args=(--extra-env "$EXTRA_ENV")
   "$HERE/cagra_build_bench.sh" \
     --observer "$OBSERVER" \
     --bridge "$BRIDGE" \
@@ -86,7 +90,7 @@ run_suite()
     --memory "$MEMORY" \
     --skip-gen \
     --abs-min "$abs_min" \
-    --configs "$CONFIGS" 2>&1 | tee "$WORK/run-$tag.log"
+    --configs "$CONFIGS" "${extra_args[@]}" 2>&1 | tee "$WORK/run-$tag.log"
   cp "$WORK/evidence-$tag/summary.tsv" "$WORK/summary-$tag.tsv"
 }
 
@@ -96,7 +100,7 @@ if [[ "$SKIP_SIFT" == "0" ]]; then
   if [[ -f "$SIFT_DATA/meta.json" ]]; then
     echo "[sweep] reusing $SIFT_DATA"
   elif detect_sift; then
-    local -a qargs=()
+    qargs=()
     [[ -n "$SIFT_QUERY" ]] && qargs=(--query-fbin "$SIFT_QUERY")
     python3 "$HERE/gen_bench_data.py" --out "$SIFT_DATA" --rows "$ROWS" --nq "$NQ" \
       --base-fbin "$SIFT_BASE" "${qargs[@]}"
