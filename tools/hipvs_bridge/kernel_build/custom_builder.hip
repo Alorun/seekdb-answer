@@ -89,8 +89,8 @@ struct Tuning {
   int iterations;
   int final_degree;
   Tuning()
-      : degree(env_int("SK_CUVS_NND_DEGREE", 192, 32, 1024)),
-        internal_degree(env_int("SK_CUVS_NND_INTERNAL_DEGREE", 256, 32, 1024)),
+      : degree(env_int("SK_CUVS_NND_DEGREE", 256, 32, 1024)),
+        internal_degree(env_int("SK_CUVS_NND_INTERNAL_DEGREE", 384, 32, 1024)),
         iterations(env_int("SK_CUVS_NND_ITER", 20, 1, 400)),
         final_degree(env_int("SK_CUVS_FINAL_DEGREE", 128, 16, 1024)) {
     if (internal_degree < degree) internal_degree = degree;
