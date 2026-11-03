@@ -110,6 +110,22 @@ static int reserve_search_buffers(sk_cuvs_index* h, size_t query_count, size_t r
   return 0;
 }
 
+/* Search-effort tuning knobs. Defaults are the shipped values; the environment
+ * overrides exist for offline sweeps (build cost vs Recall) on a GPU host. */
+static int sk_env_int(const char* name, int fallback, int low, int high)
+{
+  const char* text = getenv(name);
+  char* end = NULL;
+  long value = 0;
+  if (text == NULL || text[0] == '\0') return fallback;
+  value = strtol(text, &end, 10);
+  if (end == text || *end != '\0' || value < low || value > high) {
+    fprintf(stderr, "[seekdb_cuvs] ignoring %s=%s\n", name, text);
+    return fallback;
+  }
+  return (int)value;
+}
+
 int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
                        unsigned int* out_ids, float* out_dist)
 {
@@ -133,11 +149,16 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     h->default_itopk = params->itopk_size;
   }
   {
-    size_t required_itopk = (size_t)topk * 4;
-    if (required_itopk < 512) required_itopk = 512;
+    static int itopk_floor = -1;
+    static int search_width = -1;
+    size_t required_itopk = 0;
+    if (itopk_floor < 0) itopk_floor = sk_env_int("SK_CUVS_SEARCH_ITOPK", 512, 32, 4096);
+    if (search_width < 0) search_width = sk_env_int("SK_CUVS_SEARCH_WIDTH", 4, 1, 32);
+    required_itopk = (size_t)topk * 4;
+    if (required_itopk < (size_t)itopk_floor) required_itopk = (size_t)itopk_floor;
     h->search_params->itopk_size = h->default_itopk > required_itopk
         ? h->default_itopk : required_itopk;
-    h->search_params->search_width = 4;
+    h->search_params->search_width = (size_t)search_width;
   }
   if (cudaMemcpy(h->query_device, query, query_count * sizeof(float),
                    cudaMemcpyDefault) != cudaSuccess) return 13;
