@@ -19,7 +19,13 @@ import json
 import pathlib
 import sys
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover
+    raise SystemExit(
+        "numpy is required: install it (pip3 install numpy) or use the container "
+        "python that already provides it"
+    )
 
 GT_TOPK = 100
 
