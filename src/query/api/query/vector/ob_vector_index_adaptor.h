@@ -831,6 +831,17 @@ public:
     }
     return is_sparse;
   }
+  // True when this index was declared WITH (lib=cuvs); the DDL snapshot build
+  // uses it to hand a whole row-file batch to one add_snap_index call.
+  inline bool is_cuvs_index()
+  {
+    bool is_cuvs = false;
+    if (algo_data_ != nullptr) {
+      ObVectorIndexParam *param = static_cast<ObVectorIndexParam *>(algo_data_);
+      is_cuvs = param->lib_ == VIAL_CUVS;
+    }
+    return is_cuvs;
+  }
   int parse_sparse_vector(char *data, int num, uint32_t *sparse_byte_lens, ObArenaAllocator *allocator, uint32_t **lens,
     uint32_t **dims, float **vals);
 

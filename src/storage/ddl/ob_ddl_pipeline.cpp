@@ -25,6 +25,7 @@
 #include "storage/tx/ob_trans_service.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "query/engine/expr/ob_expr_lob_utils.h"
+#include <cstdlib>
 #include "query/engine/expr/ob_array_expr_utils.h"
 
 using namespace oceanbase::storage;
@@ -963,6 +964,13 @@ int ObHNSWIndexAppendBufferOperator::append_row_file(ObDDLRowFile *row_file, ObD
 {
   int ret = OB_SUCCESS;
   ObBatchDatumRows *datum_rows = nullptr;
+  // A dense lib=cuvs snapshot index takes a whole row-file batch in one
+  // add_snap_index call: the per-row path pays an adapter lookup, an arena
+  // reset and a buffer insert for every vector, which dominates the DDL side
+  // of the build for 250K rows.  Other shapes keep the per-row path, and
+  // SK_CUVS_BULK_APPEND=0 restores the old behaviour for A/B testing.
+  const char *bulk_env = ::getenv("SK_CUVS_BULK_APPEND");
+  const bool bulk_append = (bulk_env == nullptr || bulk_env[0] != '0');
   if (OB_ISNULL(row_file) || OB_ISNULL(tablet_context)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguments", K(ret), KP(row_file), KP(tablet_context));
@@ -975,11 +983,87 @@ int ObHNSWIndexAppendBufferOperator::append_row_file(ObDDLRowFile *row_file, ObD
       } else {
         LOG_WARN("get next batch failed", K(ret));
       }
-    } else {
+    } else if (OB_ISNULL(datum_rows)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get null datum rows", K(ret));
+    } else if (!bulk_append) {
       const ObArray<common::ObIVector *> &vectors = datum_rows->vectors_;
       const int64_t total_row_count = datum_rows->row_count_;
       for (int64_t i = 0; OB_SUCC(ret) && i < total_row_count; ++i) {
         if (OB_FAIL(append_row(i, vectors, tablet_context))) {
+        }
+      }
+    } else {
+      const ObArray<common::ObIVector *> &vectors = datum_rows->vectors_;
+      const int64_t total_row_count = datum_rows->row_count_;
+      ObPluginVectorIndexAdapterGuard adaptor_guard;
+      ObIVectorIndexRuntime *vec_index_service =
+          ::oceanbase::share::server_service<::oceanbase::storage::ObIVectorIndexRuntime>();
+      ObPluginVectorIndexAdaptor *adaptor = nullptr;
+      row_allocator_.reuse();
+      if (total_row_count <= 0) {
+        // do nothing
+      } else if (vectors.count() <= vector_vid_col_idx_ || vectors.count() <= vector_col_idx_ ||
+                 vec_dim_ <= 0) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("failed to get valid vector index col idx", K(ret), K(vector_col_idx_),
+                 K(vector_vid_col_idx_), K(vec_dim_));
+      } else if (OB_ISNULL(tablet_context->vector_index_ctx_)) {
+        ret = OB_ERR_SYS;
+        LOG_WARN("null vector index ctx", K(ret));
+      } else if (OB_ISNULL(vec_index_service)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("error unexpected, vector index service is nullptr", K(ret));
+      } else if (OB_FAIL(vec_index_service->acquire_adapter_guard(tablet_id_,
+                     ObIndexType::INDEX_TYPE_VEC_INDEX_SNAPSHOT_DATA_LOCAL, adaptor_guard,
+                     &tablet_context->vector_index_ctx_->vec_idx_param_,
+                     tablet_context->vector_index_ctx_->vec_dim_))) {
+      } else if (OB_ISNULL(adaptor = adaptor_guard.get_adatper())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get null adaptor", K(ret));
+      } else if (!adaptor->is_cuvs_index() || adaptor->is_sparse_vector_index_type() ||
+                 extra_column_idx_types_.count() > 0) {
+        for (int64_t i = 0; OB_SUCC(ret) && i < total_row_count; ++i) {
+          if (OB_FAIL(append_row(i, vectors, tablet_context))) {
+          }
+        }
+      } else {
+        float *vec_buf = static_cast<float *>(row_allocator_.alloc(
+            sizeof(float) * static_cast<int64_t>(vec_dim_) * total_row_count));
+        int64_t *vid_buf = static_cast<int64_t *>(
+            row_allocator_.alloc(sizeof(int64_t) * total_row_count));
+        int64_t bulk_count = 0;
+        if (OB_ISNULL(vec_buf) || OB_ISNULL(vid_buf)) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("allocate bulk append buffer failed", K(ret), K(total_row_count), K(vec_dim_));
+        }
+        for (int64_t i = 0; OB_SUCC(ret) && i < total_row_count; ++i) {
+          ObString vec_str;
+          int64_t vec_vid = 0;
+          if (vectors.at(vector_col_idx_)->is_null(i)) {
+            // null vectors are not indexed
+          } else if (FALSE_IT(vec_vid = vectors.at(vector_vid_col_idx_)->get_int(i))) {
+          } else if (FALSE_IT(vec_str = vectors.at(vector_col_idx_)->get_string(i))) {
+          } else if (OB_FAIL(read_full_lob_string(
+                         row_allocator_, ObLongTextType, CS_TYPE_BINARY, true, vec_str))) {
+          } else if (vec_str.length() == 0) {
+            // empty vectors are not indexed
+          } else if (static_cast<int64_t>(vec_str.length()) !=
+                     vec_dim_ * static_cast<int64_t>(sizeof(float))) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected dense vector length", K(ret), K(vec_str.length()), K(vec_dim_), K(i));
+          } else {
+            MEMCPY(reinterpret_cast<char *>(vec_buf) + bulk_count * vec_dim_ * sizeof(float),
+                   vec_str.ptr(), vec_str.length());
+            vid_buf[bulk_count] = vec_vid;
+            ++bulk_count;
+          }
+        }
+        if (OB_FAIL(ret) || bulk_count <= 0) {
+          // nothing to append
+        } else if (OB_FAIL(adaptor->add_snap_index(vec_buf, vid_buf, nullptr, 0,
+                                                   static_cast<int>(bulk_count)))) {
+          LOG_WARN("bulk add snap index failed", K(ret), K(bulk_count));
         }
       }
     }
