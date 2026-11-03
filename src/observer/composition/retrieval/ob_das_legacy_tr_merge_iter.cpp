@@ -422,7 +422,15 @@ int ObDASLegacyTRMergeIter::create_sparse_retrieval_iter()
   } else if (daat_mode_) {
     ObTextDaaTParam iter_param;
     ObTextDaaTIter *daat_iter = nullptr;
+    ObTextDocIdBitmapIter *bitmap_iter = nullptr;
     if (OB_FAIL(init_daat_iter_param(iter_param))) {
+    } else if (is_doc_id_bitmap_applicable()
+               && OB_NOT_NULL(bitmap_iter = OB_NEWx(ObTextDocIdBitmapIter, &myself_allocator_))) {
+      if (OB_FAIL(bitmap_iter->init(iter_param))) {
+        LOG_WARN("failed to init document id bitmap iter", K(ret));
+      } else {
+        sparse_retrieval_iter_ = bitmap_iter;
+      }
     } else if (OB_ISNULL(daat_iter = OB_NEWx(ObTextDaaTIter, &myself_allocator_))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
     } else if (OB_FAIL(daat_iter->init(iter_param))) {
@@ -1143,6 +1151,31 @@ int ObDASLegacyTRMergeIter::build_query_tokens(const ObDASIRScanCtDef *ir_ctdef,
     }
   }
   return ret;
+}
+
+bool ObDASLegacyTRMergeIter::is_doc_id_bitmap_applicable() const
+{
+  bool applicable = false;
+  if (function_lookup_mode_
+      || nullptr != boolean_compute_node_
+      || nullptr == ir_ctdef_
+      || nullptr == sr_iter_param_.id_proj_expr_
+      || nullptr == sr_iter_param_.eval_ctx_
+      || nullptr != ir_ctdef_->match_filter_
+      || ir_ctdef_->need_calc_relevance()
+      || ir_ctdef_->need_proj_relevance_score()
+      || ir_ctdef_->has_pushdown_topk()
+      || sql::NATURAL_LANGUAGE_MODE != ir_ctdef_->mode_flag_
+      || (nullptr != sr_iter_param_.limit_param_ && sr_iter_param_.limit_param_->is_valid())
+      || dim_iters_.count() < 2) {
+    // undecidable by construction, or the plain merge path is required
+  } else if (common::CS_TYPE_BINARY != sr_iter_param_.id_proj_expr_->datum_meta_.cs_type_
+             || !common::ob_is_string_type(sr_iter_param_.id_proj_expr_->datum_meta_.type_)) {
+    // only the fixed width binary document id is decoded by the bitmap
+  } else {
+    applicable = true;
+  }
+  return applicable;
 }
 
 int ObDASLegacyTRMergeIter::init_topk_limit()

@@ -35,10 +35,34 @@ class ObIFTDict;
 class ObDATrieHit final
 {
 public:
+  // Provided for containers that have to keep storage for a hit before it is
+  // produced by a match.  A default constructed hit owns no dictionary and is
+  // not a valid match.
+  ObDATrieHit()
+      : dict_(nullptr), char_cnt_(0), start_pos_(-1), end_pos_(-1), base_idx_(0), current_check_(0),
+        is_match_(false), is_prefix_(false)
+  {
+  }
+
   ObDATrieHit(const ObIFTDict *dict, const int64_t start_pos)
       : dict_(dict), char_cnt_(0), start_pos_(start_pos), end_pos_(start_pos_), base_idx_(0),
         current_check_(0), is_match_(false), is_prefix_(false)
   {
+  }
+
+  // Full copy including dict_.  operator= deliberately keeps the target's
+  // dict_ (see below), so moving a live hit between two slots must go through
+  // this method instead.
+  void assign_all(const ObDATrieHit &other)
+  {
+    dict_ = other.dict_;
+    char_cnt_ = other.char_cnt_;
+    start_pos_ = other.start_pos_;
+    end_pos_ = other.end_pos_;
+    base_idx_ = other.base_idx_;
+    current_check_ = other.current_check_;
+    is_match_ = other.is_match_;
+    is_prefix_ = other.is_prefix_;
   }
 
   bool is_match() const { return is_match_; }

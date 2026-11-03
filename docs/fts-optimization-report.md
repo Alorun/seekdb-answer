@@ -172,6 +172,119 @@ build 与 query 取 3 次完整基准中位，tokenize 取 8 次中位（该指�
 对比明细文件：`reports/fts/indextuning-compare.txt`；官方单跑报告：`reports/fts/indextuning.txt`
 （2026-11-03 13:59 重新生成，此前为 11-02 的旧数据）。
 
+### 5.4 官方评分脚本的口径（重要）
+
+`tools/benchmark/fts_large_bench_score.py` 使用的基线是
+`tools/benchmark/fts_large_bench_baseline.json`，**不是** `reports/fts/baseline.txt`。
+两者差异巨大：
+
+| 指标 | 官方 json 基线 | `reports/fts/baseline.txt` |
+|---|---|---|
+| `select1_avg_ms` | **0.21032** | 0.0241 |
+| `build_ik_all_sec` | **35.2836** | 3.754 |
+| `tokenize_ik_avg_ms` | **0.76478** | 0.0720 |
+| `query_cn_avg_ms` | **16.6628** | 1.3914 |
+
+JSON 说明它来自「2026-07-07 五次 VLDB CI 运行的均值」，其 `select1` 是本地机器的 **8.18 倍**，
+即那份基线录制在慢得多的 CI 机器上。
+
+用当前代码的报告跑官方脚本：
+
+```
+score: 100.00 / 100
+mean_improvement: 91.85%
+  build_improvement: 91.36%
+  tokenize_improvement: 92.02%
+  query_improvement: 92.18%
+```
+
+**但 91.85% 里绝大部分是机器差异**。按 `select1` 归一（除以 8.18x）后，当前代码相对官方基线的
+真实改善为：
+
+| 指标 | 归一后改善 |
+|---|---|
+| `build_ik_all` | +31.5% |
+| `build_ik_content` | +29.9% |
+| `build_beng_en` | +26.4% |
+| `tokenize_ik` | +37.9% |
+| `tokenize_beng` | +31.5% |
+| `query_cn` | +49.2% |
+| `query_beng` | +48.5% |
+| `query_mixed` | +45.1% |
+| `query_limit` | **+1.3%** ← 唯一的短板 |
+| **类别均值** | build +29.3% / tokenize +34.7% / query +36.0% |
+| **总均值** | **+33.3%**（官方口径得分约 67） |
+
+结论：
+1. **在本地这种快机器上跑官方脚本，当前代码已是 100/100**（因为基线来自慢机器）；
+2. 若在"与基线同速"的机器上评测，真实均值约 **+33%**，对应约 **67 分**；
+3. 要"任何机器都稳过 50% 均值"，还需每类再提升 **15~20 个百分点**，
+   最优先的是 `query_limit`（归一后仅 +1.3%，而其余 3 个查询指标已 +45~49%）。
+
+### 5.5 官方平台实测口径（权威，2026-11-03）
+
+官方平台对当前代码的实测（`git_dirty=1`）：
+
+| 指标 | 平台实测 |
+|---|---|
+| `build_ik_all_sec` | 5.550 |
+| `build_ik_content_sec` | 4.224 |
+| `build_beng_en_sec` | 2.422 |
+| `tokenize_ik_avg_ms` | 0.0607 |
+| `tokenize_beng_avg_ms` | 0.0386 |
+| `query_cn_avg_ms` | 0.9957 |
+| `query_beng_avg_ms` | 1.5707 |
+| `query_mixed_avg_ms` | 1.1766 |
+| `query_limit_avg_ms` | 1.9936 |
+| `fts_mean_improvement` | **0.2151** |
+| `fts_raw_score` | **43.01** |
+
+由 `fts_mean_improvement=21.51%` 与 tokenize(+12.22%)、query(+15.53%) 反解出**平台 build 类别为
++36.76%**，即平台基线 build ≈ **8.78 / 6.68 / 3.83 s**（本地 `baseline.txt` 为 3.754/2.954/1.640）。
+
+**关键判断**：平台 tokenize/query 与本机同速（0.0607/0.0386、0.9957… 与本机 0.0633/0.0402、1.0873…
+基本一致），但 build 慢 **1.8 倍**。CPU 型指标一致、写密集指标慢 2 倍 ⇒ **平台上的构建是 CPU/IO
+受限（核数更少或存储更慢），不是并行度不足**。因此：
+1. C1 的自适应 DOP 在平台若按 `max_cpu/2` 只得到 1，则 C1 在平台几乎不贡献；
+2. 平台上构建的杠杆是**减少总工作量**（少一次分词、少写一张表），而不是加并行度。
+
+### 5.6 平台口径下的边际价值（决定下一步做什么）
+
+| 措施 | 预期 | 综合 | 得分 |
+|---|---|---|---|
+| 现状 | — | +21.51% | **43.0** |
+| `query_limit` 从 −13.8% 提到 +20% | 修掉真实退化 | +24.32% | **48.6**（+5.6） |
+| 构建再降 25%（双 writer 合并，省一次分词/一份行） | build +36.8%→+52.6% | +26.78% | **53.6**（+10.5） |
+| 分词服务端再降 10% | tokenize +12.2%→+22.2% | +24.84% | **49.7**（+6.7） |
+| **三项全做** | | **+32.92%** | **65.8**（+22.8） |
+
+要达到均值 50%（满分），需要 build/tokenize/query 三类都到 ~50%：
+`query` 需 query_limit 从 1.99ms 降到 0.88ms（2.3x）、其余三项再快 1.4x；
+`tokenize` 需服务端从 ~35µs 降到 ~11µs（3x）。这两项都是子系统级重写。
+
+### 5.7 针对平台口径追加排除的假设（2026-11-03 下午）
+
+| 假设 | 实验 | 结论 |
+|---|---|---|
+| 构建排序溢出落盘，调大工作区可提速 | `ob_sql_work_area_percentage` 5% / 30% / 60%，`ik(content)` 构建 2.651/2.529/2.629 s（重复 2.542/2.540/2.533） | **证伪**，排序未落盘 |
+| 直载写入每行一次 tablet→writer 哈希查找是热点 | 加单条 last-writer 缓存，4 块交替 A/B：2.553 → 2.551 s（**+0.08%**） | **证伪**，已回退 |
+| aux 表未压缩、写入字节可省 | 默认建表已是 `COMPRESSION = 'zstd_1.3.8'`（`SHOW CREATE TABLE` 实测） | **不成立**，压缩已开启 |
+| 平台构建的算力与本地相当 | 平台 tokenize/query 与本地同速，但 build 慢 1.8x | **不成立**：平台构建受限于总工作量/存储，不是并行度 |
+
+### 5.8 修正后的三项优先级（基于新的证据）
+
+§5.6 的估计偏乐观，按"分词约占构建 14%（0.8s / 5.55s）"修正：
+
+| 措施 | 修正后预期 | 得分增量 |
+|---|---|---|
+| `query_limit` 从 −13.8% 修到 +20% | 消除唯一负项 | **+5.6** |
+| 分词服务端再降 10%（CJK 热路径 120ns/char + 词表） | tokenize +12.2% → +22.2% | **+6.7** |
+| 双 writer 合并（省一次分词 + 少一份行生成） | build 约 −14% → +36.8% → +45.5% | **+1.6** |
+| 三项全做 | | **+13.9**（43.0 → 56.9） |
+
+结论：**`query_limit` 与分词服务端才是当前最值的两项**；双 writer 合并在平台上只值 ~1.6 分，
+应排在后面。要摸到满分（均值 50%），仍需两个子系统重写（query 2.3x、tokenize 服务端 3x）。
+
 ## 6. 正确性验证
 
 1. **等价性 dump**（`.tmpdev/correctness_dump.sh`，36 个形态 / 244 行输出）：TOKENIZE（ik/beng/ngram/space/数字/中文数字/长文本/空文本）、MATCH 命中数、命中文档集合（COUNT/SUM/MIN/MAX）、40 行 BM25 精确分数、`MATCH > threshold`、分数进 SELECT、布尔 AND/OR/NOT、两个 MATCH 组合、LIMIT/OFFSET、按分数排序。与改动前逐字节一致，唯一差异是 `ORDER BY MATCH(...) DESC, id ASC LIMIT n` 的并列组选取（topk 比较器不含 rowkey 次序键，属既有行为；同分文档物理顺序在并行构建下不可复现，索引内容本身一致）。
@@ -219,6 +332,15 @@ build 与 query 取 3 次完整基准中位，tokenize 取 8 次中位（该指�
 |---|---|---|
 | [`docs/fts-dual-writer-design.md`](fts-dual-writer-design.md) | 构建 **−25~30%** | 一次源扫描 + 一次分词同时喂 `fts_index` 与 `fts_doc_word` 两个直载 writer，消除重复分词（实测占构建 ~33%） |
 | [`docs/fts-tokenizer-rewrite-design.md`](fts-tokenizer-rewrite-design.md) | 分词 **−25~30%** | 字符分类查表、处理器分派去虚化、`parse_param` 缓存、词表结构与 JSON 输出直写；**硬约束是保持 token 输出顺序不变**（当前顺序为哈希桶序，非文本序，见 `tokenize_edge.result`） |
+
+另外两份**可直接交给其他 agent 执行的子系统重写提示词**（含全部实测数据、硬约束、验证命令）：
+
+| 文档 | 目标 | 首要抓手 |
+|---|---|---|
+| [`docs/fts-query-subsystem-rewrite-prompt.md`](fts-query-subsystem-rewrite-prompt.md) | 查询类 1.5~2.3x | `query_limit` 的 `LIMIT 5→20` 台阶（0.51ms → 2.19ms，计划相同） |
+| [`docs/fts-tokenizer-subsystem-rewrite-prompt.md`](fts-tokenizer-subsystem-rewrite-prompt.md) | 分词服务端 2~3x | CJK `hits_` 链表 → 定长数组（120ns/char）、词表桶、JSON 直写 |
+
+总入口见 [`docs/fts-delivery-index.md`](fts-delivery-index.md)（交付索引：现状、文档地图、剩余工作、环境坑）。
 
 > 分词重写已实施，实测端到端 **−14%**（服务端三相位 −23%），逐字节等价与逐步 A/B 见
 > [`docs/fts-tokenizer-rewrite-report.md`](fts-tokenizer-rewrite-report.md)。未达到设计目标的

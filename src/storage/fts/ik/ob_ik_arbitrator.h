@@ -41,6 +41,11 @@ public:
 private:
   int prepare(TokenizeContext &ctx);
 
+  // Drops the state of the previous document but keeps the memory of the arena
+  // and the bucket array of the chain map, so that the next document does not
+  // allocate them again.  Called by prepare() before a new document is handled.
+  void reuse();
+
   int add_chain(ObIKTokenChain *chain);
 
   int optimize(TokenizeContext &ctx,
@@ -62,6 +67,10 @@ private:
 private:
   ObArenaAllocator alloc_;
   hash::ObHashMap<int64_t, ObIKTokenChain *> chains_;
+  // Bucket count the map was created with, -1 while it is not created.  The
+  // bucket count depends on the document length, so a document of a different
+  // length has to rebuild the map.
+  int64_t bucket_num_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObIKArbitrator);

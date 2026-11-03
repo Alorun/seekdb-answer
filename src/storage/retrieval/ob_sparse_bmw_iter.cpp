@@ -24,6 +24,18 @@ namespace oceanbase
 namespace storage
 {
 
+// Number of pivot evaluations BMW may spend before it re-examines whether
+// block-max pruning is worth it, and the minimum prune rate (one skipped range
+// per BMW_FALLBACK_SKIP_RATIO pivots) that justifies continuing with it.
+//
+// A pivot costs several times what a plain DAA T candidate costs (block-max
+// seeks, pivot bookkeeping and the merge round), so BMW only pays off when it
+// prunes the large majority of the candidates.  Checking early keeps the test
+// cheap, and a query whose block maxima do not separate the candidates falls
+// back to the plain walk almost immediately.
+static constexpr int64_t BMW_FALLBACK_PIVOT_CNT = 32;
+static constexpr int64_t BMW_FALLBACK_SKIP_RATIO = 2;
+
 ObSRBMWIterImpl::ObSRBMWIterImpl()
   : ObSRDaaTIterImpl(),
     allocator_("BMWAlloc"),
@@ -122,10 +134,7 @@ int ObSRBMWIterImpl::top_k_search()
     status_ = BMWStatus::FIND_NEXT_PIVOT;
   }
 
-  // stats for debug & optimization
   int64_t pivot_cnt = 0;
-  int64_t eval_pivot_cnt = 0;
-  int64_t eval_pivot_range_cnt = 0;
   int64_t skip_range_cnt = 0;
 
   int64_t pivot_iter_idx = 0;
@@ -148,7 +157,6 @@ int ObSRBMWIterImpl::top_k_search()
       bool is_candidate = false;
       if (OB_FAIL(evaluate_pivot_range(pivot_iter_idx, is_candidate))) {
       } else if (is_candidate) {
-        ++eval_pivot_cnt;
         status_ = BMWStatus::EVALUATE_PIVOT;
       } else {
         status_ = BMWStatus::FIND_NEXT_PIVOT_RANGE;
@@ -161,6 +169,20 @@ int ObSRBMWIterImpl::top_k_search()
         } else {
           status_ = BMWStatus::FINISHED;
           ret = OB_SUCCESS;
+        }
+      } else if (pivot_cnt >= BMW_FALLBACK_PIVOT_CNT
+                 && 0 == (pivot_cnt % BMW_FALLBACK_PIVOT_CNT)
+                 && skip_range_cnt * BMW_FALLBACK_SKIP_RATIO <= pivot_cnt) {
+        // Block-max pruning is barely paying for itself: fewer than
+        // 1/BMW_FALLBACK_SKIP_RATIO of the pivots so far led to a pruned range,
+        // so the pivot bookkeeping costs more than the candidates it avoids.
+        // The iterators are all positioned on real postings here
+        // (evaluate_pivot already unified the shallow ones), so the remaining
+        // candidates can be merged with the plain DAA T walk into the same
+        // top-k heap.
+        if (OB_FAIL(finish_top_k_with_daat_scan())) {
+        } else {
+          status_ = BMWStatus::FINISHED;
         }
       } else {
         status_ = BMWStatus::FIND_NEXT_PIVOT;
@@ -175,8 +197,6 @@ int ObSRBMWIterImpl::top_k_search()
           ret = OB_SUCCESS;
         }
       } else {
-        // For pivots found next_pivot_range, maybe we can save one evaluate_pivot_range call
-        ++eval_pivot_range_cnt;
         status_ = BMWStatus::FIND_NEXT_PIVOT;
       }
       break;
@@ -187,6 +207,25 @@ int ObSRBMWIterImpl::top_k_search()
     }
   }
 
+  return ret;
+}
+
+int ObSRBMWIterImpl::finish_top_k_with_daat_scan()
+{
+  int ret = OB_SUCCESS;
+  bool need_project = true;
+  double relevance = 0.0;
+  const ObDatum *id_datum = nullptr;
+  while (OB_SUCC(ret) && !merge_heap_->empty()) {
+    if (OB_FAIL(collect_dims_by_id(id_datum, relevance, need_project))) {
+    } else if (OB_FAIL(fill_merge_heap())) {
+      if (OB_UNLIKELY(OB_ITER_END != ret)) {
+        LOG_WARN("failed to fill merge heap", K(ret));
+      } else {
+        ret = OB_SUCCESS;
+      }
+    }
+  }
   return ret;
 }
 

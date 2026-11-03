@@ -26,6 +26,8 @@ namespace storage
 ObSRMergeCmp::ObSRMergeCmp()
   : cmp_func_(nullptr),
     iter_ids_(nullptr),
+    is_uint64_id_(false),
+    is_binary_string_id_(false),
     is_inited_(false)
 {
 }
@@ -39,6 +41,15 @@ int ObSRMergeCmp::init(
     ret = OB_ERR_UNEXPECTED;
   } else {
     iter_ids_ = iter_ids;
+    // Merge comparisons run once per heap operation, so they are on the hot path
+    // of every retrieval.  Two shapes cover almost all indexes:
+    //  - an unsigned integer domain id (no rowkey-doc mapping table), compared
+    //    inline;
+    //  - the fixed width binary document id used by full-text indexes, which the
+    //    binary collation orders exactly like memcmp.
+    is_uint64_id_ = (common::ObUInt64Type == id_meta.type_);
+    is_binary_string_id_ = (common::CS_TYPE_BINARY == id_meta.cs_type_)
+        && (common::ob_is_string_type(id_meta.type_));
     common::ObDatumBasicFuncs *basic_funcs = ObDatumFuncs::get_basic_func(id_meta.type_, id_meta.cs_type_);
     cmp_func_ = basic_funcs->null_first_cmp_;
     if (OB_ISNULL(cmp_func_)) {
@@ -58,6 +69,28 @@ int ObSRMergeCmp::cmp(
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
+  } else if (OB_LIKELY(is_uint64_id_)) {
+    const ObDatum &l_datum = get_id_datum(l.iter_idx_);
+    const ObDatum &r_datum = get_id_datum(r.iter_idx_);
+    const uint64_t l_id = l_datum.get_uint64();
+    const uint64_t r_id = r_datum.get_uint64();
+    cmp_ret = (l_id < r_id) ? -1 : (l_id > r_id ? 1 : 0);
+  } else if (OB_LIKELY(is_binary_string_id_)) {
+    const ObDatum &l_datum = get_id_datum(l.iter_idx_);
+    const ObDatum &r_datum = get_id_datum(r.iter_idx_);
+    const int64_t l_len = l_datum.len_;
+    const int64_t r_len = r_datum.len_;
+    if (OB_LIKELY(l_len == r_len)) {
+      // Binary collation: same length strings compare by memcmp.
+      const int cmp = memcmp(l_datum.ptr_, r_datum.ptr_, l_len);
+      cmp_ret = cmp > 0 ? 1 : (cmp < 0 ? -1 : 0);
+    } else {
+      int tmp_ret = 0;
+      if (OB_FAIL(cmp_func_(l_datum, r_datum, tmp_ret, nullptr))) {
+      } else {
+        cmp_ret = tmp_ret;
+      }
+    }
   } else {
     int tmp_ret = 0;
     if (OB_FAIL(cmp_func_(
@@ -274,6 +307,10 @@ int ObSRDaaTIterImpl::do_one_merge_round(int64_t &count)
 int ObSRDaaTIterImpl::fill_merge_heap()
 {
   int ret = OB_SUCCESS;
+  // Relevance collection is the dominant per-posting work when a score is
+  // needed, and pure overhead when it is not: skip the score lookup entirely on
+  // the score-free path.
+  const bool need_score = nullptr != iter_param_->relevance_expr_;
   ObSRMergeItem item;
   for (int64_t i = 0; OB_SUCC(ret) && i < next_round_cnt_; ++i) {
     const int64_t iter_idx = next_round_iter_idxes_[i];
@@ -286,8 +323,8 @@ int ObSRDaaTIterImpl::fill_merge_heap()
       } else {
         ret = OB_SUCCESS;
       }
-    } else if (OB_FAIL(dim_iter->get_curr_score(item.relevance_))) {
-    } else if (OB_NOT_NULL(iter_param_->dim_weights_) && FALSE_IT(item.relevance_ = item.relevance_ * iter_param_->field_boost_ * iter_param_->dim_weights_->at(iter_idx))) {
+    } else if (need_score && OB_FAIL(dim_iter->get_curr_score(item.relevance_))) {
+    } else if (need_score && OB_NOT_NULL(iter_param_->dim_weights_) && FALSE_IT(item.relevance_ = item.relevance_ * iter_param_->field_boost_ * iter_param_->dim_weights_->at(iter_idx))) {
     } else if (OB_FAIL(dim_iter->get_curr_id(iter_domain_ids_[iter_idx]))) {
     } else if (FALSE_IT(item.iter_idx_ = iter_idx)) {
     } else if (OB_FAIL(merge_heap_->push(item))) {

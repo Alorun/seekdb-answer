@@ -93,31 +93,27 @@ int ObIKQuantifierProcessor::process_CN_count(TokenizeContext &ctx,
   if (need_count_scan(ctx)) {
     if (ObFTCharUtil::CharType::CHINESE == type) {
       // handle existing
-      if (!count_hits_.empty()) {
-        for (ObDATrieHit &hit : count_hits_) {
-          if (OB_FAIL(ret)) {
-            break;
-          } else if (OB_FAIL(quan_dict_.match({char_len, ch}, hit))) {
-          } else if (hit.is_match()) {
-            if (OB_FAIL(ctx.add_token(ctx.fulltext(),
-                                      hit.start_pos_,
-                                      hit.end_pos_ - hit.start_pos_,
-                                      hit.char_cnt_,
-                                      ObIKTokenType::IK_COUNT_TOKEN))) {
-            } else {
-              // add ok
-            }
-          } else if (hit.is_prefix()) {
-            // wait another match
-          } else if (hit.is_unmatch()) {
-            count_hits_.erase(hit);
-          } else {
-            ret = OB_UNEXPECT_INTERNAL_ERROR;
-            LOG_WARN("Reached an imposible state.");
+      for (int64_t i = 0; OB_SUCC(ret) && i < count_hits_.size();) {
+        ObDATrieHit &hit = count_hits_.at(i);
+        if (OB_FAIL(quan_dict_.match({char_len, ch}, hit))) {
+        } else if (hit.is_match()) {
+          if (OB_FAIL(ctx.add_token(ctx.fulltext(),
+                                    hit.start_pos_,
+                                    hit.end_pos_ - hit.start_pos_,
+                                    hit.char_cnt_,
+                                    ObIKTokenType::IK_COUNT_TOKEN))) {
           }
+          ++i;
+        } else if (hit.is_prefix()) {
+          // wait another match
+          ++i;
+        } else if (hit.is_unmatch()) {
+          if (OB_FAIL(count_hits_.erase_at(i))) {
+          }
+        } else {
+          ret = OB_UNEXPECT_INTERNAL_ERROR;
+          LOG_WARN("Reached an imposible state.");
         }
-      } else {
-        // pass
       }
 
       // handle new

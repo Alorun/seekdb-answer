@@ -19,6 +19,7 @@
 
 #include "lib/allocator/ob_allocator.h"
 #include "storage/fts/dict/ob_ft_dict.h"
+#include "storage/fts/ik/ob_ik_hit_array.h"
 #include "storage/fts/ik/ob_ik_processor.h"
 
 namespace oceanbase
@@ -33,7 +34,7 @@ public:
       : hits_(alloc), dict_main_(dict_main), cjk_start_(-1), cjk_end_(-1)
   {
   }
-  ~ObIKCJKProcessor() override { hits_.reset(); }
+  ~ObIKCJKProcessor() override = default;
 
 public:
   int do_process(TokenizeContext &ctx,
@@ -46,7 +47,7 @@ public:
   bool has_pending_hits() const { return !hits_.empty(); }
 
 private:
-  ObList<ObDATrieHit, ObIAllocator> hits_;
+  IKHitArray hits_;
   const ObIFTDict &dict_main_;
   int64_t cjk_start_;
   int64_t cjk_end_;

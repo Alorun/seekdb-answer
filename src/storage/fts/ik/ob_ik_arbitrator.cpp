@@ -296,14 +296,44 @@ int ObIKArbitrator::prepare(TokenizeContext &ctx)
 {
   int ret = OB_SUCCESS;
 
+  // Every document starts from an empty chain map.  The arbitrator is reused
+  // across the documents of a thread, so the previous document has to be
+  // dropped first: clear the entries and rewind the arena that holds the chains.
+  reuse();
+
   int cal_bucket_num = MAX(ctx.fulltext_len() / 100, 10);
   cal_bucket_num = MIN(cal_bucket_num, 100);
-  if (OB_FAIL(chains_.create(cal_bucket_num, ObMemAttr("IK ARBITRATE")))) {
+  if (OB_LIKELY(cal_bucket_num == bucket_num_)) {
+    // Same document size class, the bucket array can be kept.
+  } else if (OB_UNLIKELY(-1 != bucket_num_) && OB_FAIL(chains_.destroy())) {
+  } else if (OB_FAIL(chains_.create(cal_bucket_num, ObMemAttr("IK ARBITRATE")))) {
+    bucket_num_ = -1;
+  } else {
+    bucket_num_ = cal_bucket_num;
   }
   return ret;
 }
 
-ObIKArbitrator::ObIKArbitrator() : alloc_(lib::ObMemAttr("IK Arbitrator")) {}
+// A document leaves a few kilobytes in the arena of the arbitrator.  The pages
+// are kept for the next document of the thread, but a single very large document
+// must not pin its memory until the thread exits.
+constexpr int64_t IK_ARBITRATOR_KEEP_MAX_BYTES = 512 * 1024;
+
+void ObIKArbitrator::reuse()
+{
+  if (-1 != bucket_num_) {
+    // The entries point into the arena that is rewound right below, so the map
+    // has to be emptied first.  clear() keeps the bucket array.
+    chains_.reuse();
+  }
+  if (alloc_.used() > IK_ARBITRATOR_KEEP_MAX_BYTES) {
+    alloc_.reset();
+  } else {
+    alloc_.reuse();
+  }
+}
+
+ObIKArbitrator::ObIKArbitrator() : alloc_(lib::ObMemAttr("IK Arbitrator")), bucket_num_(-1) {}
 
 int ObIKArbitrator::add_chain(ObIKTokenChain *chain)
 {

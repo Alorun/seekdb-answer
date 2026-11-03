@@ -19,6 +19,7 @@
 
 #include "lib/allocator/ob_allocator.h"
 #include "storage/fts/dict/ob_ft_dict.h"
+#include "storage/fts/ik/ob_ik_hit_array.h"
 #include "storage/fts/ik/ob_ik_processor.h"
 
 #include <cstdint>
@@ -34,7 +35,7 @@ public:
       : quan_dict_(quan_dict), count_hits_(alloc), start_(-1), end_(-1), quan_char_cnt_(0)
   {
   }
-  ~ObIKQuantifierProcessor() override { count_hits_.reset(); }
+  ~ObIKQuantifierProcessor() override = default;
 
   int do_process(TokenizeContext &ctx,
                  const char *ch,
@@ -63,7 +64,7 @@ private:
 
 private:
   const ObIFTDict &quan_dict_;
-  ObList<ObDATrieHit, ObIAllocator> count_hits_;
+  IKHitArray count_hits_;
   int64_t start_;
   int64_t end_;
   int64_t quan_char_cnt_;

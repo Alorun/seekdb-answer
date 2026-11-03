@@ -34,6 +34,13 @@ select tokenize('v1.2.3 3.14 1,234 abc-def #tag 一二三十', 'ik');
 select tokenize('ＡＢＣ　１２３', 'beng');
 select tokenize('ひらがな カタカナ 한글', 'ik');
 
+--echo # case folding: non-CJK scripts still fold, caseless CJK ranges are kept in place
+select tokenize('ÀÉÎÕÜ àéîõü', 'beng');
+select tokenize('ΣΟΦΟΣ σοφος', 'beng');
+select tokenize('ПРИВЕТ привет', 'beng');
+select tokenize('中文ＡＢＣ中文', 'ik');
+select tokenize('㐀㐁㐂 、。〈〉ｱｲｳ', 'ik');
+
 --echo # emoji / surrogate pairs must not break tokenisation
 select tokenize('database 😀 engine', 'beng');
 select tokenize('数据库😀索引', 'ik');

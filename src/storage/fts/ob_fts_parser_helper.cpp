@@ -478,7 +478,10 @@ int ObFTParseHelper::segment(
   } else if (OB_ISNULL(cs = common::ObCharset::get_charset(type))) {
     ret = OB_ERR_UNEXPECTED;
   } else {
-    if (clear_words) {
+    // Clearing an empty map is a no-op that would still walk and lock every
+    // bucket, so it is skipped: a freshly created map (the TOKENIZE path) pays
+    // nothing for it.
+    if (clear_words && 0 != words.size()) {
       words.reuse();
     }
     ObAddWord add_word(parser_property_, meta, add_word_flag_, *allocator_, words);

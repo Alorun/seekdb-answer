@@ -45,6 +45,11 @@ protected:
 
   int top_k_search();
   int build_top_k_heap();
+  // Finish the top-k search with a plain DAA T walk from the current iterator
+  // positions, still feeding the same top-k heap.  Used when block-max pruning
+  // turns out to be ineffective, where BMW's per-candidate pivot bookkeeping is
+  // pure overhead.
+  int finish_top_k_with_daat_scan();
   int next_pivot(int64_t &pivot_iter_idx);
   int next_pivot_range(int64_t &skip_range_cnt);
   int evaluate_pivot(const int64_t pivot_iter_idx);

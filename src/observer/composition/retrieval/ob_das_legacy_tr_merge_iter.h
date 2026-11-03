@@ -108,6 +108,10 @@ private:
   int init_topk_limit();
   int init_block_max_iter_param();
   int init_doc_length_est_param();
+  // True when the scan only needs the set of matching documents (no relevance
+  // score, no limit, no boolean filter and a fixed width binary document id), so
+  // the merge can be replaced by a document id bitmap.
+  bool is_doc_id_bitmap_applicable() const;
 private:
   static const int64_t INV_IDX_ROWKEY_COL_CNT = 2;
 private:

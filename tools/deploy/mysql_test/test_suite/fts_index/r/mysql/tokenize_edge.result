@@ -43,6 +43,22 @@ tokenize('ＡＢＣ　１２３', 'beng')
 select tokenize('ひらがな カタカナ 한글', 'ik');
 tokenize('ひらがな カタカナ 한글', 'ik')
 ["ら", "ひ", "な", "タ", "ナ", "한", "カ", "글", "が"]
+# case folding: non-CJK scripts still fold, caseless CJK ranges are kept in place
+select tokenize('ÀÉÎÕÜ àéîõü', 'beng');
+tokenize('ÀÉÎÕÜ àéîõü', 'beng')
+["àéîõü"]
+select tokenize('ΣΟΦΟΣ σοφος', 'beng');
+tokenize('ΣΟΦΟΣ σοφος', 'beng')
+["σοφοσ"]
+select tokenize('ПРИВЕТ привет', 'beng');
+tokenize('ПРИВЕТ привет', 'beng')
+["привет"]
+select tokenize('中文ＡＢＣ中文', 'ik');
+tokenize('中文ＡＢＣ中文', 'ik')
+["中文", "ａｂｃ"]
+select tokenize('㐀㐁㐂 、。〈〉ｱｲｳ', 'ik');
+tokenize('㐀㐁㐂 、。〈〉ｱｲｳ', 'ik')
+["ｱ", "㐂", "ｳ", "㐀", "㐁", "ｲ"]
 # emoji / surrogate pairs must not break tokenisation
 select tokenize('database 😀 engine', 'beng');
 tokenize('database 😀 engine', 'beng')

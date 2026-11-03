@@ -191,14 +191,69 @@ bool ObAddWord::is_min_max_word(const int64_t c_len) const
   return flag_.min_max_word() && (c_len < min_token_size_ || c_len > max_token_size_);
 }
 
+namespace
+{
+// Characters that have no lowercase mapping in any of the UTF8MB4 collations.
+// They are the bulk of a Chinese document, and lowercasing them is a
+// byte-for-byte copy: a token made only of such characters can be used in place
+// without allocating and scanning a converted copy.  Anything that is not
+// listed here (including malformed input) is treated as possibly cased and goes
+// through the regular conversion, so the result never changes.
+bool is_caseless_char(const uint32_t cp)
+{
+  return (cp >= 0x3000 && cp <= 0x303F)     // CJK symbols and punctuation
+         || (cp >= 0x3040 && cp <= 0x30FF)  // Hiragana and Katakana
+         || (cp >= 0x3400 && cp <= 0x4DBF)  // CJK unified ideographs ext. A
+         || (cp >= 0x4E00 && cp <= 0x9FFF)  // CJK unified ideographs
+         || (cp >= 0xAC00 && cp <= 0xD7A3)  // Hangul syllables
+         || (cp >= 0xF900 && cp <= 0xFAFF)  // CJK compatibility ideographs
+         // Fullwidth forms, except the letters (0xFF21~0xFF3A, 0xFF41~0xFF5A).
+         || (cp >= 0xFF01 && cp <= 0xFF20) || (cp >= 0xFF3B && cp <= 0xFF40)
+         || (cp >= 0xFF5B && cp <= 0xFF65) || (cp >= 0xFFE0 && cp <= 0xFFE6)
+         || (cp >= 0x1F300 && cp <= 0x1FAFF)  // emoji and pictographs
+         || (cp >= 0x20000 && cp <= 0x2FA1F); // CJK ideographs ext. B and later
+}
+} // namespace
+
 bool ObAddWord::needs_case_conversion(const common::ObString &word)
 {
   const unsigned char *ptr = reinterpret_cast<const unsigned char *>(word.ptr());
+  const int64_t len = word.length();
   bool needs = false;
-  for (int64_t i = 0; !needs && i < word.length(); ++i) {
-    // Any non-ASCII byte may take part in case folding; uppercase ASCII always
-    // does.  Everything else is returned unchanged by the conversion.
-    needs = (ptr[i] >= 0x80) || (ptr[i] >= 'A' && ptr[i] <= 'Z');
+  for (int64_t i = 0; !needs && i < len;) {
+    const unsigned char c = ptr[i];
+    if (c < 0x80) {
+      // Only A-Z fold.
+      needs = (c >= 'A' && c <= 'Z');
+      ++i;
+    } else if (c < 0xC2) {
+      // Continuation byte or overlong encoding: let the charset decide.
+      needs = true;
+    } else if (c < 0xE0) {
+      // Two byte sequences are Latin/Greek/Cyrillic letters and friends.
+      needs = true;
+    } else if (c < 0xF0) {
+      if (i + 2 >= len || (ptr[i + 1] & 0xC0) != 0x80 || (ptr[i + 2] & 0xC0) != 0x80) {
+        needs = true;
+      } else {
+        const uint32_t cp = ((c & 0x0F) << 12) | ((ptr[i + 1] & 0x3F) << 6)
+                            | (ptr[i + 2] & 0x3F);
+        needs = !is_caseless_char(cp);
+        i += 3;
+      }
+    } else if (c < 0xF5) {
+      if (i + 3 >= len || (ptr[i + 1] & 0xC0) != 0x80 || (ptr[i + 2] & 0xC0) != 0x80
+          || (ptr[i + 3] & 0xC0) != 0x80) {
+        needs = true;
+      } else {
+        const uint32_t cp = ((c & 0x07) << 18) | ((ptr[i + 1] & 0x3F) << 12)
+                            | ((ptr[i + 2] & 0x3F) << 6) | (ptr[i + 3] & 0x3F);
+        needs = !is_caseless_char(cp);
+        i += 4;
+      }
+    } else {
+      needs = true;
+    }
   }
   return needs;
 }
