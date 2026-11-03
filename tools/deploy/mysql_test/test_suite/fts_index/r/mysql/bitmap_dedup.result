@@ -1,0 +1,55 @@
+drop database if exists fts_bitmap;
+create database fts_bitmap;
+use fts_bitmap;
+create table single_t (id int primary key, content text);
+create table part_t (id int primary key, content text) partition by hash(id) partitions 4;
+insert into single_t values
+(1, '数据库 全文索引'),
+(2, '倒排索引 tokenizer'),
+(3, '数据库'),
+(4, '索引 tokenizer'),
+(5, '无关内容'),
+(6, '数据库 tokenizer 索引'),
+(7, 'tokenizer'),
+(8, '数据库 倒排索引');
+insert into part_t select * from single_t;
+alter table single_t add fulltext index f(content) with parser ik;
+alter table part_t add fulltext index f(content) with parser ik;
+# multi token match, no order by and no limit: bitmap dedup path
+select count(*) from single_t where match(content) against('数据库 tokenizer');
+count(*)
+7
+select count(*), sum(id) from single_t where match(content) against('数据库 tokenizer');
+count(*)	sum(id)
+7	31
+select count(*), sum(id) from part_t where match(content) against('数据库 tokenizer');
+count(*)	sum(id)
+7	31
+# single token match: plain merge path, must agree with the bitmap path
+select count(*), sum(id) from single_t where match(content) against('tokenizer');
+count(*)	sum(id)
+4	19
+select count(*), sum(id) from part_t where match(content) against('tokenizer');
+count(*)	sum(id)
+4	19
+# three tokens, one of which matches nothing
+select count(*), sum(id) from single_t where match(content) against('数据库 tokenizer absentword');
+count(*)	sum(id)
+7	31
+select count(*), sum(id) from part_t where match(content) against('数据库 tokenizer absentword');
+count(*)	sum(id)
+7	31
+# predicted token must still be returned by the bitmap path
+select id from single_t where match(content) against('倒排索引') order by id;
+id
+2
+4
+6
+8
+select id from part_t where match(content) against('倒排索引') order by id;
+id
+2
+4
+6
+8
+drop database fts_bitmap;

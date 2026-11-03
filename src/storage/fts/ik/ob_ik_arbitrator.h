@@ -48,6 +48,13 @@ private:
 
   int add_chain(ObIKTokenChain *chain);
 
+  // Answers "does a chain start at this offset" for output_result().  When the
+  // chains were added at strictly increasing offsets (the common case) the
+  // answer comes from a binary search over a small array; otherwise, and for a
+  // document with more chains than the array holds, the hash map is used.
+  // Both paths return exactly what chains_.get_refactored() returned.
+  int lookup_chain(const int64_t offset, ObIKTokenChain *&chain) const;
+
   int optimize(TokenizeContext &ctx,
                ObIKTokenChain *option,
                ObFTSortList::ConstCellIter iter,
@@ -67,6 +74,16 @@ private:
 private:
   ObArenaAllocator alloc_;
   hash::ObHashMap<int64_t, ObIKTokenChain *> chains_;
+  // Chains in insertion order (see lookup_chain).
+  static constexpr int64_t MAX_ORDERED_CHAINS = 256;
+  struct OrderedChain
+  {
+    int64_t offset_;
+    ObIKTokenChain *chain_;
+  };
+  OrderedChain chain_order_[MAX_ORDERED_CHAINS];
+  int64_t chain_count_;
+  bool chain_order_ok_;
   // Bucket count the map was created with, -1 while it is not created.  The
   // bucket count depends on the document length, so a document of a different
   // length has to rebuild the map.

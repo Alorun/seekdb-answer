@@ -179,7 +179,7 @@ int ObTransformPreProcess::transform_one_stmt(common::ObIArray<ObParentDMLStmt> 
     }
     if (OB_SUCC(ret)) {
       if (stmt->get_match_exprs().count() > 0 &&
-          OB_FAIL(preserve_order_for_fulltext_search(stmt, is_happened))) {
+          OB_FAIL(preserve_order_for_fulltext_search(stmt, parent_stmts, is_happened))) {
       } else {
         trans_happened |= is_happened;
       }
@@ -3788,9 +3788,77 @@ int ObTransformPreProcess::do_flatten_conditions(ObDMLStmt *stmt, ObIArray<ObRaw
   return ret;
 }
 
+namespace {
+
+// The relevance-first ORDER BY that preserve_order_for_fulltext_search() adds
+// exists to make the *user visible* row order of a single table MATCH query
+// relevance-first.  When the statement is a subquery whose only consumer is a
+// scalar aggregate over it (e.g. SELECT COUNT(*) FROM (SELECT ... LIMIT n) x),
+// the parent can only observe how many rows the subquery produces, never which
+// ones, so the injected order is not observable.  Dropping it lets the optimizer
+// push the LIMIT into the retrieval scan, which can then stop after n rows
+// instead of running an exact relevance top-k over the whole hit set.
+//
+// Every condition below is required:
+//  - the parent must be a select of one scalar aggregate and nothing else (no
+//    GROUP BY / HAVING / ORDER BY / DISTINCT / window / WHERE), because any of
+//    them could observe or depend on which rows the LIMIT kept;
+//  - the aggregate must be COUNT without DISTINCT and without a non-constant
+//    argument, because COUNT(col) depends on the values of the chosen rows;
+//  - the parent's only table source must be this subquery, because with a join
+//    the chosen rows feed the join and are observable;
+//  - the subquery must have a LIMIT, otherwise dropping the order changes
+//    nothing that is worth a plan difference.
+bool is_fulltext_order_unobservable(
+    const ObDMLStmt &inner_stmt,
+    const common::ObIArray<ObParentDMLStmt> &parent_stmts)
+{
+  bool unobservable = false;
+  const ObDMLStmt *parent_stmt = parent_stmts.empty()
+      ? nullptr : parent_stmts.at(parent_stmts.count() - 1).stmt_;
+  if (nullptr == parent_stmt || !parent_stmt->is_select_stmt() || !inner_stmt.is_select_stmt()) {
+    // top level statement, or the parent is not a query block
+  } else {
+    const ObSelectStmt *parent = static_cast<const ObSelectStmt *>(parent_stmt);
+    const ObSelectStmt *inner = static_cast<const ObSelectStmt *>(&inner_stmt);
+    const ObIArray<TableItem *> &parent_tables = parent->get_table_items();
+    const bool only_this_subquery = 1 == parent_tables.count()
+        && nullptr != parent_tables.at(0)
+        && parent_tables.at(0)->is_generated_table()
+        && parent_tables.at(0)->ref_query_ == inner;
+    const bool count_only = parent->is_scala_group_by()
+        && 1 == parent->get_select_item_size()
+        && 1 == parent->get_aggr_item_size()
+        && parent->get_select_items().at(0).expr_ == parent->get_aggr_items().at(0);
+    if (only_this_subquery
+        && count_only
+        && nullptr != inner->get_limit_expr()
+        && 0 == parent->get_condition_size()
+        && !parent->has_having()
+        && !parent->has_order_by()
+        && !parent->has_distinct()
+        && !parent->has_window_function()) {
+      const ObAggFunRawExpr *count_expr =
+          static_cast<const ObAggFunRawExpr *>(parent->get_aggr_items().at(0));
+      bool observable_argument = count_expr->is_param_distinct();
+      for (int64_t i = 0; !observable_argument && i < count_expr->get_real_param_count(); ++i) {
+        const ObRawExpr *param = count_expr->get_real_param_exprs().at(i);
+        observable_argument = nullptr == param || !param->is_const_expr();
+      }
+      unobservable = !observable_argument && T_FUN_COUNT == count_expr->get_expr_type();
+    }
+  }
+  return unobservable;
+}
+
+} // namespace
+
 // full-text index queries on a single base table are processed with order preservation. 
 // (Order is not preserved in multi-table join scenarios.)
-int ObTransformPreProcess::preserve_order_for_fulltext_search(ObDMLStmt *stmt, bool& trans_happened)
+int ObTransformPreProcess::preserve_order_for_fulltext_search(
+    ObDMLStmt *stmt,
+    const common::ObIArray<ObParentDMLStmt> &parent_stmts,
+    bool& trans_happened)
 {
   int ret = OB_SUCCESS;
   trans_happened = false;
@@ -3937,10 +4005,14 @@ int ObTransformPreProcess::preserve_order_for_fulltext_search(ObDMLStmt *stmt, b
     }
   }
   if (OB_SUCC(ret) && nullptr != match_expr && !static_cast<ObMatchFunRawExpr*>(match_expr)->is_es_match()) {
-    OrderItem item(match_expr, default_desc_direction());
-    if (OB_FAIL(stmt->add_order_item(item))) {
+    if (is_fulltext_order_unobservable(*stmt, parent_stmts)) {
+      // keep the retrieval unordered so its LIMIT can stop the scan early
     } else {
-      trans_happened = true;
+      OrderItem item(match_expr, default_desc_direction());
+      if (OB_FAIL(stmt->add_order_item(item))) {
+      } else {
+        trans_happened = true;
+      }
     }
   } 
   return ret;

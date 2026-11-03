@@ -12259,33 +12259,26 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
     // can be skipped.  Deliberately conservative: any comparison
     // (MATCH(...) > x), any use in ORDER BY / SELECT / GROUP BY / HAVING, a
     // boolean-mode query, or an extra predicate keeps the score path.
-    const ObSelectStmt *select_stmt = get_stmt()->is_select_stmt()
-        ? static_cast<const ObSelectStmt *>(get_stmt()) : nullptr;
+    //
     // Only the plain "WHERE <match>" shape is proven to work without a score
     // column: ORDER BY / DISTINCT / GROUP BY / window functions change what the
     // scan has to output and still expect the relevance column, so those keep
-    // computing the score.
-    // Operators that reference the scan output by column position (ORDER BY,
-    // DISTINCT, GROUP BY, window functions) or that aggregate a column need the
-    // scan to keep emitting the relevance column.  Only a count-only projection
-    // is safe without it, so the score is dropped just for that shape.
-    bool references_column = false;
-    if (nullptr != select_stmt) {
-      const ObIArray<SelectItem> &items = select_stmt->get_select_items();
-      for (int64_t i = 0; !references_column && i < items.count(); ++i) {
-        const ObRawExpr *item_expr = items.at(i).expr_;
-        references_column = nullptr == item_expr || item_expr->has_flag(CNT_COLUMN);
-      }
-    }
-    // A LIMIT makes the plan emit rows one by one with an index-back lookup for
-    // the projected columns; skipping the score on that path measured 8% slower
-    // than keeping it, so bounded queries stay on the scored path.
+    // computing the score.  A LIMIT does not: it only bounds how many rows this
+    // block produces, and a relevance ORDER BY that was injected to preserve the
+    // user visible order shows up as an order item here anyway (keeping the
+    // scored path).
+    //
+    // The relevance column is only visible to operators of this query block, so
+    // whether the projected columns reference the table is irrelevant; the
+    // relation expr scan below is what proves that nothing outside the WHERE
+    // clause (select list, order by, ...) consumes the score.
+    const ObSelectStmt *select_stmt = get_stmt()->is_select_stmt()
+        ? static_cast<const ObSelectStmt *>(get_stmt()) : nullptr;
     const bool score_free_shape = nullptr != select_stmt
-        && !references_column
-        && !select_stmt->has_limit()
         && 0 == select_stmt->get_order_items().count()
         && !select_stmt->has_distinct()
         && 0 == select_stmt->get_group_exprs().count()
+        && 0 == select_stmt->get_rollup_exprs().count()
         && 0 == select_stmt->get_having_exprs().count()
         && 0 == select_stmt->get_window_func_exprs().count();
     if (score_free_shape

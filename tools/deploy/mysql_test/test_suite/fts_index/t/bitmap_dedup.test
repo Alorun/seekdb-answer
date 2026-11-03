@@ -1,0 +1,51 @@
+# owner: fts-perf
+# owner group: storage
+# description: Document-id dedup for score-free MATCH. A multi-token MATCH whose
+#   score is not consumed is answered by OR-ing the postings into a document id
+#   bitmap instead of a k-way merge. The bitmap is kept per tablet, so the same
+#   rows must produce the same result set whether they live in one tablet or in
+#   several partitions.
+
+--disable_warnings
+drop database if exists fts_bitmap;
+create database fts_bitmap;
+use fts_bitmap;
+--enable_warnings
+
+create table single_t (id int primary key, content text);
+create table part_t (id int primary key, content text) partition by hash(id) partitions 4;
+
+insert into single_t values
+  (1, '数据库 全文索引'),
+  (2, '倒排索引 tokenizer'),
+  (3, '数据库'),
+  (4, '索引 tokenizer'),
+  (5, '无关内容'),
+  (6, '数据库 tokenizer 索引'),
+  (7, 'tokenizer'),
+  (8, '数据库 倒排索引');
+insert into part_t select * from single_t;
+
+alter table single_t add fulltext index f(content) with parser ik;
+alter table part_t add fulltext index f(content) with parser ik;
+
+--echo # multi token match, no order by and no limit: bitmap dedup path
+select count(*) from single_t where match(content) against('数据库 tokenizer');
+select count(*), sum(id) from single_t where match(content) against('数据库 tokenizer');
+select count(*), sum(id) from part_t where match(content) against('数据库 tokenizer');
+
+--echo # single token match: plain merge path, must agree with the bitmap path
+select count(*), sum(id) from single_t where match(content) against('tokenizer');
+select count(*), sum(id) from part_t where match(content) against('tokenizer');
+
+--echo # three tokens, one of which matches nothing
+select count(*), sum(id) from single_t where match(content) against('数据库 tokenizer absentword');
+select count(*), sum(id) from part_t where match(content) against('数据库 tokenizer absentword');
+
+--echo # predicted token must still be returned by the bitmap path
+select id from single_t where match(content) against('倒排索引') order by id;
+select id from part_t where match(content) against('倒排索引') order by id;
+
+--disable_warnings
+drop database fts_bitmap;
+--enable_warnings

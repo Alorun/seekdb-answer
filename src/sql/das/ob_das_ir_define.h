@@ -18,6 +18,7 @@
 #define OB_DAS_IR_DEFINE_H_
 
 #include "data_plane/blocksstable/ob_index_block_util.h"
+#include "data_plane/access/ob_tablet_scan.h"
 #include "query/das/ob_das_id_protocol.h"
 #include "ob_das_attach_define.h"
 
@@ -90,6 +91,24 @@ public:
   bool need_block_max_scan() const { return has_block_max_scan_; }
   bool need_avg_doc_len_est() const { return has_avg_doc_len_est_ && nullptr != avg_doc_token_cnt_expr_; }
   bool has_pushdown_topk() const { return nullptr != topk_limit_expr_; }
+  // Whether the retrieval rows are consumed unordered and unfiltered, so that
+  // stopping the scan after the query's row budget cannot change the result:
+  //  - a pushed-down top-k would need every candidate to rank them, so the row
+  //    budget must not cut the candidate stream;
+  //  - a score filter (match_filter_) or a projected relevance score makes the
+  //    surviving rows depend on values computed for candidates the budget would
+  //    skip; a score that is merely computed (relevance_expr_ set) but neither
+  //    filtered nor projected does not, because the rows are a plain prefix of
+  //    the merge stream;
+  //  - boolean mode builds its own candidate stream, so only the plain natural
+  //    language merge is covered here.
+  bool can_pushdown_query_limit() const
+  {
+    return !has_pushdown_topk()
+        && nullptr == match_filter_
+        && nullptr == relevance_proj_col_
+        && NATURAL_LANGUAGE_MODE == mode_flag_;
+  }
   bool is_block_scan_valid() const
   {
     return has_block_max_scan_
@@ -204,7 +223,8 @@ public:
   ObDASIRScanRtDef()
     : ObDASAttachRtDef(DAS_OP_IR_SCAN),
       fts_idx_(OB_INVALID_INDEX),
-      minimum_should_match_(0) {}
+      minimum_should_match_(0),
+      query_limit_param_() {}
 
   virtual ~ObDASIRScanRtDef() {}
 
@@ -255,6 +275,12 @@ public:
   // fts_idx_ is dynamically generated during execution based on the rtdef tree and does not need to be serialized.
   int64_t fts_idx_;
   int64_t minimum_should_match_;
+  // Runtime-only row budget of the enclosing table scan, filled in when the plan
+  // proved that the retrieval rows are consumed unordered and unfiltered (see
+  // ObDASIRScanCtDef::can_pushdown_query_limit).  offset_ is always 0: the table
+  // scan keeps applying its own offset/limit on top, so limit_ carries the total
+  // number of rows it may need from the retrieval.  Not serialized, like fts_idx_.
+  common::ObLimitParam query_limit_param_;
 };
 
 struct ObDASIRAuxLookupCtDef : ObDASAttachCtDef

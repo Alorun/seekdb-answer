@@ -23,6 +23,8 @@
 #include "data_plane/blocksstable/ob_datum_row.h"
 #include "sql/engine/ob_physical_plan.h"
 #include "sql/das/ob_das_attach_define.h"
+#include "sql/das/ob_das_ir_define.h"
+#include "sql/das/ob_das_utils.h"
 #include "sql/das/ob_das_vec_define.h"
 #include "share/geo/ob_geo_utils.h"
 #include "share/ob_ddl_checksum.h"
@@ -846,6 +848,56 @@ int ObTableScanOp::prepare_pushdown_limit_param()
   if (MY_CTDEF.is_das_keep_order_ && OB_NOT_NULL(scan_iter_) && scan_iter_->get_das_task_cnt() > 1) {
     need_final_limit_ = false;
   }
+  if (OB_SUCC(ret) && !MY_SPEC.batch_scan_flag_ && !MY_CTDEF.is_das_keep_order_) {
+    if (OB_FAIL(pushdown_query_limit_to_text_retrieval())) {
+    }
+  }
+  return ret;
+}
+
+int ObTableScanOp::pushdown_query_limit_to_text_retrieval()
+{
+  int ret = OB_SUCCESS;
+  const ObDASBaseCtDef *attach_ctdef = MY_CTDEF.attach_spec_.attach_ctdef_;
+  if (nullptr == attach_ctdef || nullptr == tsc_rtdef_.attach_rtinfo_
+      || !ObDASUtils::is_fts_idx_scan(attach_ctdef)) {
+    // nothing attached, or no text retrieval below this scan
+  } else {
+    const ObDASBaseCtDef *target_ctdef = nullptr;
+    ObDASBaseRtDef *target_rtdef = nullptr;
+    if (OB_FAIL(ObDASUtils::find_child_das_def(attach_ctdef,
+                                               tsc_rtdef_.attach_rtinfo_->attach_rtdef_,
+                                               ObDASOpType::DAS_OP_IR_SCAN,
+                                               target_ctdef,
+                                               target_rtdef))) {
+    } else if (nullptr == target_ctdef || nullptr == target_rtdef) {
+      // no text retrieval below this scan
+    } else {
+      const ObDASIRScanCtDef *ir_ctdef = static_cast<const ObDASIRScanCtDef *>(target_ctdef);
+      ObDASIRScanRtDef *ir_rtdef = static_cast<ObDASIRScanRtDef *>(target_rtdef);
+      // A rescan may change the limit value, so never keep a stale budget.
+      ir_rtdef->query_limit_param_ = common::ObLimitParam();
+      // Only a single plain text retrieval scan can own the whole row budget:
+      // with several retrieval sources, with a functional lookup that fans the
+      // retrieved rows out per range key, or with a vector scan whose pre-filter
+      // is allowed to hand back more rows, no single scan may be truncated.
+      // The remaining checks reject shapes whose rows are not a plain prefix of
+      // the candidate stream (ranked top-k, score filter, batch rescan).
+      if (limit_param_.is_valid()
+          && !MY_SPEC.batch_scan_flag_
+          && !MY_CTDEF.is_das_keep_order_
+          && !ObDASUtils::is_index_merge(attach_ctdef)
+          && !ObDASUtils::is_func_lookup(attach_ctdef)
+          && !ObDASUtils::is_es_match_scan(attach_ctdef)
+          && !ObDASUtils::is_vec_idx_scan(attach_ctdef)
+          && ir_ctdef->can_pushdown_query_limit()) {
+        // Offset is applied by this operator on top, so the retrieval only needs
+        // offset + limit rows and must not skip rows on its own.
+        ir_rtdef->query_limit_param_.offset_ = 0;
+        ir_rtdef->query_limit_param_.limit_ = limit_param_.limit_ + limit_param_.offset_;
+      }
+    }
+  }
   return ret;
 }
 
@@ -1066,6 +1118,13 @@ int ObTableScanOp::init_table_scan_rtdef()
       if (OB_FAIL(tsc_rtdef_.attach_rtinfo_->pushdown_tasks_.push_back(
           tsc_rtdef_.attach_rtinfo_->attach_rtdef_))) {
       }
+    }
+  }
+  // Do this before the iter tree is built: the retrieval picks its execution
+  // mode (document-at-a-time vs term-at-a-time) from this budget, and only the
+  // document-at-a-time merge can stop at it.
+  if (OB_SUCC(ret) && !MY_SPEC.batch_scan_flag_ && !MY_CTDEF.is_das_keep_order_) {
+    if (OB_FAIL(pushdown_query_limit_to_text_retrieval())) {
     }
   }
   return ret;

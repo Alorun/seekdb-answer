@@ -1496,6 +1496,12 @@ int ObDASIterUtils::create_text_retrieval_sub_tree(
     if (ir_scan_ctdef->has_pushdown_topk() && !has_duplicate_boolean_tokens) {
       merge_iter_param.topk_mode_ = 1;
       merge_iter_param.daat_mode_ = 1;
+    } else if (ir_scan_rtdef->query_limit_param_.is_valid()
+               && ir_scan_ctdef->can_pushdown_query_limit()) {
+      // The rows are consumed unordered and unfiltered up to a known budget.
+      // The TAAT path below materialises every candidate before it emits a row,
+      // so it cannot stop at the budget; the document-at-a-time merge can.
+      merge_iter_param.daat_mode_ = 1;
     } else if (ir_scan_ctdef->need_calc_relevance()
         && (merge_iter_param.query_tokens_.count() > OB_MAX_TEXT_RETRIEVAL_TOKEN_CNT
             || (!is_func_lookup && !ir_scan_ctdef->need_proj_relevance_score()))) {
@@ -1786,8 +1792,10 @@ int ObDASIterUtils::create_domain_lookup_sub_tree(ObTableScanParam &scan_param,
 
   if (OB_ISNULL(table_lookup_ctdef) || OB_ISNULL(table_lookup_rtdef)) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_UNLIKELY(table_lookup_ctdef->op_type_ != ObDASOpType::DAS_OP_INDEX_PROJ_LOOKUP ||
-                         table_lookup_rtdef->op_type_ != ObDASOpType::DAS_OP_INDEX_PROJ_LOOKUP)) {
+  } else if (OB_UNLIKELY(table_lookup_ctdef->op_type_ != ObDASOpType::DAS_OP_INDEX_PROJ_LOOKUP
+                         && table_lookup_ctdef->op_type_ != ObDASOpType::DAS_OP_TABLE_LOOKUP)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_UNLIKELY(table_lookup_rtdef->op_type_ != table_lookup_ctdef->op_type_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_UNLIKELY(table_lookup_ctdef->get_rowkey_scan_ctdef()->op_type_ != ObDASOpType::DAS_OP_IR_AUX_LOOKUP)) {
     ret = OB_ERR_UNEXPECTED;

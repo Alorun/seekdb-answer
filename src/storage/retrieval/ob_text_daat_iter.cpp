@@ -154,17 +154,12 @@ int ObTextBMWIter::init_before_wand_process()
 
 ObTextDocIdBitmapIter::ObTextDocIdBitmapIter()
   : ObSRDaaTIterImpl(),
-    bitmap_(nullptr),
-    bitmap_capacity_bits_(0),
-    bitmap_used_bits_(0),
+    tablet_bits_(),
+    total_block_cnt_(0),
+    emit_tablet_idx_(0),
     emit_cursor_bits_(0),
-    tablet_id_(0),
-    tablet_id_inited_(false),
     built_(false),
     building_(false),
-    overflow_sorted_(false),
-    overflow_ids_(),
-    overflow_emit_idx_(0),
     emit_buffer_(nullptr),
     emit_buffer_capacity_(0)
 {
@@ -181,6 +176,8 @@ int ObTextDocIdBitmapIter::init(const ObTextDaaTParam &param)
   } else if (OB_ISNULL(iter_param_->id_proj_expr_) || OB_ISNULL(iter_param_->eval_ctx_)
              || OB_ISNULL(iter_allocator_)) {
     ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(tablet_bits_.reserve(4))) {
+    LOG_WARN("failed to reserve tablet bitmap array", K(ret));
   }
   return ret;
 }
@@ -192,17 +189,12 @@ void ObTextDocIdBitmapIter::reset()
       static_cast<ObTextRetrievalDaaTTokenIter *>(dim_iters_->at(i))->reset();
     }
   }
-  bitmap_ = nullptr;
-  bitmap_capacity_bits_ = 0;
-  bitmap_used_bits_ = 0;
+  tablet_bits_.reset();
+  total_block_cnt_ = 0;
+  emit_tablet_idx_ = 0;
   emit_cursor_bits_ = 0;
-  tablet_id_ = 0;
-  tablet_id_inited_ = false;
   built_ = false;
   building_ = false;
-  overflow_sorted_ = false;
-  overflow_ids_.reset();
-  overflow_emit_idx_ = 0;
   emit_buffer_ = nullptr;
   emit_buffer_capacity_ = 0;
   ObSRDaaTIterImpl::reset();
@@ -215,65 +207,73 @@ void ObTextDocIdBitmapIter::reuse(const bool switch_tablet)
       static_cast<ObTextRetrievalDaaTTokenIter *>(dim_iters_->at(i))->reuse();
     }
   }
-  // The bitmap buffer is allocated from the iterator arena, which outlives
-  // reuse, so keep it and just clear the used part.
-  if (OB_NOT_NULL(bitmap_) && bitmap_capacity_bits_ > 0) {
-    MEMSET(bitmap_, 0, bitmap_capacity_bits_ / 8);
+  // The bitmap blocks are allocated from the iterator arena, which outlives
+  // reuse, so keep them and just clear the used part.
+  for (int64_t i = 0; i < tablet_bits_.count(); ++i) {
+    TabletBits &bits = tablet_bits_.at(i);
+    bits.used_bits_ = 0;
+    for (int64_t b = 0; b < bits.blocks_.count(); ++b) {
+      MEMSET(bits.blocks_.at(b), 0, BLOCK_BITS / 8);
+    }
   }
-  bitmap_used_bits_ = 0;
+  emit_tablet_idx_ = 0;
   emit_cursor_bits_ = 0;
-  tablet_id_ = 0;
-  tablet_id_inited_ = false;
   built_ = false;
   building_ = false;
-  overflow_sorted_ = false;
-  overflow_ids_.reuse();
-  overflow_emit_idx_ = 0;
   ObSRDaaTIterImpl::reuse(switch_tablet);
 }
 
-int ObTextDocIdBitmapIter::ensure_bitmap_capacity(const int64_t bit_cnt)
+int ObTextDocIdBitmapIter::get_tablet_bits(const uint64_t tablet_id, TabletBits *&tablet_bits)
 {
   int ret = OB_SUCCESS;
-  if (bit_cnt <= bitmap_capacity_bits_) {
-  } else {
-    int64_t new_bits = MAX(bit_cnt, MAX(2 * bitmap_capacity_bits_, INIT_BITMAP_BITS));
-    new_bits = (new_bits + 511) & ~((int64_t)511);
-    if (OB_UNLIKELY(new_bits > MAX_BITMAP_BITS)) {
-      new_bits = MAX_BITMAP_BITS;
+  tablet_bits = nullptr;
+  for (int64_t i = 0; i < tablet_bits_.count(); ++i) {
+    if (tablet_bits_.at(i).tablet_id_ == tablet_id) {
+      tablet_bits = &tablet_bits_.at(i);
+      break;
     }
-    void *buf = iter_allocator_->alloc(new_bits / 8);
-    if (OB_ISNULL(buf)) {
-      ret = OB_ALLOCATE_MEMORY_FAILED;
-      LOG_WARN("failed to allocate doc id bitmap", K(ret), K(new_bits));
+  }
+  if (OB_ISNULL(tablet_bits)) {
+    TabletBits fresh;
+    fresh.tablet_id_ = tablet_id;
+    if (tablet_bits_.count() >= MAX_TABLET_CNT) {
+      // A single retrieval task is bound to one tablet; more than a handful of
+      // distinct tablets means the stream is not the shape this iterator is
+      // meant for.  Refuse instead of accumulating one bitmap per tablet.
+      ret = OB_SIZE_OVERFLOW;
+      LOG_WARN("too many tablets in one document id bitmap stream", K(ret), K(tablet_id),
+               K(tablet_bits_.count()));
+    } else if (OB_FAIL(tablet_bits_.push_back(fresh))) {
+      LOG_WARN("failed to record tablet bitmap", K(ret));
     } else {
-      MEMSET(buf, 0, new_bits / 8);
-      if (OB_NOT_NULL(bitmap_) && bitmap_capacity_bits_ > 0) {
-        MEMCPY(buf, bitmap_, bitmap_capacity_bits_ / 8);
-      }
-      bitmap_ = static_cast<char *>(buf);
-      bitmap_capacity_bits_ = new_bits;
+      tablet_bits = &tablet_bits_.at(tablet_bits_.count() - 1);
     }
   }
   return ret;
 }
 
-int ObTextDocIdBitmapIter::add_doc_id_to_overflow(const common::ObDatum &id_datum)
+int ObTextDocIdBitmapIter::ensure_block(TabletBits &tablet_bits, const int64_t block_idx)
 {
   int ret = OB_SUCCESS;
-  const ObString id_str = id_datum.get_string();
-  void *buf = nullptr;
-  if (OB_UNLIKELY(id_str.empty())) {
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_ISNULL(buf = iter_allocator_->alloc(id_str.length()))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
+  if (OB_UNLIKELY(block_idx < 0 || block_idx >= MAX_BLOCKS_PER_TABLET)) {
+    ret = OB_SIZE_OVERFLOW;
+    LOG_WARN("document id beyond the bitmap bound", K(ret), K(block_idx),
+             K(tablet_bits.tablet_id_));
   } else {
-    MEMCPY(buf, id_str.ptr(), id_str.length());
-    const ObString copy(id_str.length(), static_cast<const char *>(buf));
-    if (OB_FAIL(overflow_ids_.push_back(copy))) {
-      LOG_WARN("failed to record document id", K(ret));
-    } else {
-      overflow_sorted_ = false;
+    while (OB_SUCC(ret) && tablet_bits.blocks_.count() <= block_idx) {
+      void *buf = nullptr;
+      if (OB_UNLIKELY(total_block_cnt_ >= MAX_TOTAL_BLOCKS)) {
+        ret = OB_SIZE_OVERFLOW;
+        LOG_WARN("document id bitmap budget exhausted", K(ret), K(total_block_cnt_));
+      } else if (OB_ISNULL(buf = iter_allocator_->alloc(BLOCK_BITS / 8))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to allocate document id bitmap block", K(ret));
+      } else if (OB_FAIL(tablet_bits.blocks_.push_back(static_cast<char *>(buf)))) {
+        LOG_WARN("failed to record bitmap block", K(ret));
+      } else {
+        MEMSET(buf, 0, BLOCK_BITS / 8);
+        ++total_block_cnt_;
+      }
     }
   }
   return ret;
@@ -289,57 +289,22 @@ int ObTextDocIdBitmapIter::add_doc_id(const common::ObDatum &id_datum)
   } else {
     const ObDocId *doc_id = reinterpret_cast<const ObDocId *>(id_str.ptr());
     const uint64_t seq_id = doc_id->seq_id_;
-    if (!tablet_id_inited_) {
-      tablet_id_ = doc_id->tablet_id_;
-      tablet_id_inited_ = true;
-    }
-    if (OB_UNLIKELY(doc_id->tablet_id_ != tablet_id_)
-        || OB_UNLIKELY(seq_id >= static_cast<uint64_t>(MAX_BITMAP_BITS))) {
-      // A different tablet in the same stream cannot share the bitmap domain and
-      // a document id beyond the bitmap bound has no bit to live in; both are
-      // kept exact through the sorted side list.
-      ret = add_doc_id_to_overflow(id_datum);
-    } else if (OB_FAIL(ensure_bitmap_capacity(static_cast<int64_t>(seq_id) + 1))) {
+    TabletBits *tablet_bits = nullptr;
+    if (OB_FAIL(get_tablet_bits(doc_id->tablet_id_, tablet_bits))) {
+    } else if (OB_ISNULL(tablet_bits)) {
+      ret = OB_ERR_UNEXPECTED;
     } else {
-      bitmap_[seq_id >> 3] = static_cast<char>(bitmap_[seq_id >> 3] | (1 << (seq_id & 7)));
-      if (static_cast<int64_t>(seq_id) + 1 > bitmap_used_bits_) {
-        bitmap_used_bits_ = static_cast<int64_t>(seq_id) + 1;
-      }
-    }
-  }
-  return ret;
-}
-
-int ObTextDocIdBitmapIter::finish_overflow_set()
-{
-  int ret = OB_SUCCESS;
-  if (!overflow_sorted_) {
-    // Sort by the same binary order the merge heap uses, then drop duplicates.
-    std::sort(overflow_ids_.begin(), overflow_ids_.end(),
-              [](const ObString &l, const ObString &r) {
-                const int64_t min_len = MIN(l.length(), r.length());
-                const int cmp = (min_len > 0) ? MEMCMP(l.ptr(), r.ptr(), min_len) : 0;
-                return (0 != cmp) ? (cmp < 0) : (l.length() < r.length());
-              });
-    int64_t unique_cnt = 0;
-    for (int64_t i = 0; i < overflow_ids_.count(); ++i) {
-      const ObString &cur = overflow_ids_.at(i);
-      if (unique_cnt > 0) {
-        const ObString &prev = overflow_ids_.at(unique_cnt - 1);
-        if (prev.length() == cur.length()
-            && 0 == MEMCMP(prev.ptr(), cur.ptr(), cur.length())) {
-          continue;
+      const int64_t block_idx = static_cast<int64_t>(seq_id) / BLOCK_BITS;
+      if (OB_FAIL(ensure_block(*tablet_bits, block_idx))) {
+      } else {
+        char *block = tablet_bits->blocks_.at(block_idx);
+        const int64_t in_block = static_cast<int64_t>(seq_id) % BLOCK_BITS;
+        block[in_block >> 3] = static_cast<char>(block[in_block >> 3] | (1 << (in_block & 7)));
+        if (static_cast<int64_t>(seq_id) + 1 > tablet_bits->used_bits_) {
+          tablet_bits->used_bits_ = static_cast<int64_t>(seq_id) + 1;
         }
       }
-      if (unique_cnt != i) {
-        overflow_ids_.at(unique_cnt) = cur;
-      }
-      ++unique_cnt;
     }
-    while (overflow_ids_.count() > unique_cnt) {
-      overflow_ids_.pop_back();
-    }
-    overflow_sorted_ = true;
   }
   return ret;
 }
@@ -373,12 +338,22 @@ int ObTextDocIdBitmapIter::build_doc_id_set()
         }
       }
     }
-    if (OB_SUCC(ret) && OB_FAIL(finish_overflow_set())) {
-    }
     building_ = false;
   }
   return ret;
 }
+
+namespace {
+// The bit at a global word index of one tablet's block based bitmap.
+inline uint64_t bitmap_word_at(const ObTextDocIdBitmapIter::TabletBits &tablet_bits,
+                               const int64_t word_idx)
+{
+  const int64_t words_per_block = ObTextDocIdBitmapIter::BLOCK_BITS / 64;
+  const int64_t block_idx = word_idx / words_per_block;
+  const int64_t word_in_block = word_idx % words_per_block;
+  return reinterpret_cast<const uint64_t *>(tablet_bits.blocks_.at(block_idx))[word_in_block];
+}
+} // namespace
 
 int ObTextDocIdBitmapIter::emit_rows(const int64_t capacity, int64_t &count)
 {
@@ -398,39 +373,34 @@ int ObTextDocIdBitmapIter::emit_rows(const int64_t capacity, int64_t &count)
     sql::ObBitVector &id_flags = id_proj_expr->get_evaluated_flags(*eval_ctx);
     ObEvalCtx::BatchInfoScopeGuard guard(*eval_ctx);
     guard.set_batch_size(real_capacity);
-    const int64_t word_cnt = (bitmap_used_bits_ + 63) >> 6;
-    const uint64_t *words = OB_NOT_NULL(bitmap_)
-        ? reinterpret_cast<const uint64_t *>(bitmap_) : nullptr;
     while (OB_SUCC(ret) && count < real_capacity) {
-      int64_t bit = -1;
-      if (emit_cursor_bits_ >= 0) {
-        int64_t word_idx = emit_cursor_bits_ >> 6;
-        uint64_t word = 0;
-        if (word_idx < word_cnt && OB_NOT_NULL(words)) {
-          word = words[word_idx] & (~static_cast<uint64_t>(0) << (emit_cursor_bits_ & 63));
-        }
-        while (0 == word && ++word_idx < word_cnt) {
-          word = words[word_idx];
-        }
-        if (0 != word) {
-          bit = (word_idx << 6) + __builtin_ctzll(word);
-        }
+      if (emit_tablet_idx_ >= tablet_bits_.count()) {
+        ret = OB_ITER_END;
+        break;
       }
+      const TabletBits &tablet_bits = tablet_bits_.at(emit_tablet_idx_);
+      const int64_t words_per_block = BLOCK_BITS / 64;
+      const int64_t word_cnt = tablet_bits.blocks_.count() * words_per_block;
+      int64_t word_idx = emit_cursor_bits_ >> 6;
+      uint64_t word = 0;
+      if (word_idx < word_cnt) {
+        word = bitmap_word_at(tablet_bits, word_idx)
+            & (~static_cast<uint64_t>(0) << (emit_cursor_bits_ & 63));
+      }
+      while (0 == word && ++word_idx < word_cnt) {
+        word = bitmap_word_at(tablet_bits, word_idx);
+      }
+      if (0 == word) {
+        // this tablet is exhausted, continue with the next one
+        ++emit_tablet_idx_;
+        emit_cursor_bits_ = 0;
+        continue;
+      }
+      const int64_t bit = (word_idx << 6) + __builtin_ctzll(word);
+      const ObDocId doc_id(tablet_bits.tablet_id_, static_cast<uint64_t>(bit));
       char *buf = emit_buffer_ + count * OB_DOC_ID_COLUMN_BYTE_LENGTH;
-      if (bit >= 0) {
-        const ObDocId doc_id(tablet_id_, static_cast<uint64_t>(bit));
-        MEMCPY(buf, &doc_id, OB_DOC_ID_COLUMN_BYTE_LENGTH);
-        emit_cursor_bits_ = bit + 1;
-      } else {
-        emit_cursor_bits_ = -1;
-        if (overflow_emit_idx_ >= overflow_ids_.count()) {
-          ret = OB_ITER_END;
-          break;
-        }
-        const ObString &overflow_id = overflow_ids_.at(overflow_emit_idx_);
-        MEMCPY(buf, overflow_id.ptr(), OB_DOC_ID_COLUMN_BYTE_LENGTH);
-        ++overflow_emit_idx_;
-      }
+      MEMCPY(buf, &doc_id, OB_DOC_ID_COLUMN_BYTE_LENGTH);
+      emit_cursor_bits_ = bit + 1;
       guard.set_batch_idx(count);
       id_datums[count].set_string(buf, static_cast<uint32_t>(OB_DOC_ID_COLUMN_BYTE_LENGTH));
       id_flags.set(count);
@@ -453,8 +423,7 @@ int ObTextDocIdBitmapIter::get_next_rows(const int64_t capacity, int64_t &count)
     count = 0;
   } else if (0 == dim_iters_->count()) {
     ret = OB_ITER_END;
-  } else if (OB_UNLIKELY(built_ && -1 == emit_cursor_bits_
-             && overflow_emit_idx_ >= overflow_ids_.count())) {
+  } else if (OB_UNLIKELY(built_ && emit_tablet_idx_ >= tablet_bits_.count())) {
     ret = OB_ITER_END;
   } else {
     if (!built_) {
@@ -471,8 +440,8 @@ int ObTextDocIdBitmapIter::get_next_rows(const int64_t capacity, int64_t &count)
       if (OB_SUCC(ret) && OB_FAIL(build_doc_id_set())) {
       } else {
         built_ = true;
+        emit_tablet_idx_ = 0;
         emit_cursor_bits_ = 0;
-        overflow_emit_idx_ = 0;
       }
     }
     if (OB_SUCC(ret) && OB_FAIL(emit_rows(capacity, count))) {

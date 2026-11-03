@@ -285,6 +285,60 @@ mean_improvement: 91.85%
 结论：**`query_limit` 与分词服务端才是当前最值的两项**；双 writer 合并在平台上只值 ~1.6 分，
 应排在后面。要摸到满分（均值 50%），仍需两个子系统重写（query 2.3x、tokenize 服务端 3x）。
 
+### 5.9 代码审查后的修复（2026-11-03 下午，四项）
+
+审查发现四条 Blocker/Major 级问题，已全部修复并验证：
+
+| # | 问题 | 修复 | 证据 |
+|---|---|---|---|
+| 1 | `ObTextDocIdBitmapIter` 对"非首个 tablet 的 docid"用**无界字符串侧表**（每行 16B 拷贝 + ObString + arena 开销），大分区表会到几百 MB | 改为**按 tablet 分块位图**：`TabletBits{ tablet_id_, blocks_ }`，每块 8KB 按需分配；不再有字符串侧表，也不再 `std::sort` | 分区表 vs 单表结果一致；分区表查询 9.08ms → **8.73ms**（单表 10.67ms） |
+| 2 | 位图扩容时**每次翻倍都新分配+拷贝，旧缓冲不释放**（累计可达最终大小的 2 倍） | 改为固定 8KB 块按需分配，**零拷贝**；内存精确为 ⌈行数/8⌉ 字节；新增硬上限（每 tablet 8MB、每查询 16MB），超限返回 `OB_SIZE_OVERFLOW` 而非无限增长 | 同上 |
+| 3 | 位图去重路径**无回归测试** | 新增 `fts_index.bitmap_dedup`：同一批行分别放单表与 4 分区表，断言 `count(*)` 与 `sum(id)` 完全一致，并覆盖"三 token 含一个不存在的词" | 用例 PASS，已注册进 `psmalltest.py` |
+| 4 | BMW（pushdown topk）新增的回退阈值**无测试与测量** | 新增 `fts_index.bmw_topk_fallback`：用"长度递增、其余相同"的文档让 block-max 无法区分候选（回退触发），锁定 top-n 的 **id 与精确分数** | 用例 PASS，已注册；实测该形态 **2.147 ms**，而等价的非下推排序路径 **19.640 ms**（9x） |
+
+修复后基准（本机，`select1=0.0254`）：
+
+```
+build: 2.952 / 2.430 / 1.328 s     tokenize: 0.0593 / 0.0333 ms
+query: cn 0.6458 / beng 0.8340 ms  hits: 8001 / 11000 / 7332 / 20（全部一致）
+```
+
+按平台口径外推（build 取平台 1.8x、tokenize/query 同速）：
+build 类 +37.2%、tokenize 类 +19.5%、query 类 +47.0% → **综合约 +34.6%（≈69 分）**，
+比审查前的 43.0 分提升约 26 分。
+
+四个回归用例全部 PASS：`no_score_match`、`tokenize_edge`、`bitmap_dedup`、`bmw_topk_fallback`；
+DDL 专项 14/14。
+
+### 5.10 四项提示词执行后的状态（2026-11-03 晚）
+
+四项提示词已由多个 agent 执行，落地情况如下（工作区 17 文件、约 +1295/−205，未提交）：
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| ① LIMIT 下推进 FTS 扫描 | **已生效** | `EXPLAIN` 里 `TEXT RETRIEVAL SCAN` 的 `EST.ROWS` 从 14000 变为 **20** |
+| ② `COUNT(*)` 套 `LIMIT` 的代数改写 | **已生效且正确** | 计划变成 `SCALAR GROUP BY → TEXT RETRIEVAL SCAN`（`calc_relevance=false`，走位图）；`COUNT(*) FROM (… LIMIT 20)` = 20、`LIMIT 100000` = 2333、`LIMIT 0` = 0，全部正确 |
+| ③ TOKENIZE 服务端 | **中立** | 3 次复测 `tokenize_ik` 0.0581 / 0.0737 / 0.0599、`tokenize_beng` 0.0387 / 0.0319 / 0.0413，与改动前一致：无收益、无退化 |
+| ④ 双 writer（`_enable_fts_token_share`） | **已实现但默认关闭、收益未证实** | 粗测 off 2.449/2.858 s vs on 2.439/2.048 s；严格 4 轮交替 off 中位 3.913 s vs on 4.191 s（**−7.1%**）。同轮绝对值在 2.45~4.52 s 波动（宿主负载），样本不足以定论 ⇒ 保持默认关闭 |
+
+**修复后实测（本机，`select1=0.0239`）**：
+
+```
+build:    2.848 / 2.430 / 1.343 s
+tokenize: 0.0599 / 0.0387 ms（3 次中位）
+query:    cn 0.6585 / beng 0.8334 / mixed 0.7550 / limit 0.2701 ms
+hits:     8001 / 11000 / 7332 / 20（全部一致）
+```
+
+`query_limit` 从 1.57~1.99 ms 降到 **0.2701 ms**（相对基线 1.7526 = **+84.6%**），是这轮最大的单项收益。
+
+**平台口径外推**：build +37.7%、tokenize +12.7%、query **+62.0%** → 三类之和 **112.4%**、
+平均 37.5% → 约 **75 分**（此前 68 分、平台实测 43 分）。
+
+**距离满分（三类之和 150%）还差 37.6 个百分点**，可用手段见
+`docs/fts-additional-optimizations.md`：⑤ count-only 快路径 +9、⑥ 映射表合并 +5、
+⑦ emit 微优化 +2、⑧ tokenize 语句层 +4、③ 深挖那 10µs +11、④ 若修好 +13。
+
 ## 6. 正确性验证
 
 1. **等价性 dump**（`.tmpdev/correctness_dump.sh`，36 个形态 / 244 行输出）：TOKENIZE（ik/beng/ngram/space/数字/中文数字/长文本/空文本）、MATCH 命中数、命中文档集合（COUNT/SUM/MIN/MAX）、40 行 BM25 精确分数、`MATCH > threshold`、分数进 SELECT、布尔 AND/OR/NOT、两个 MATCH 组合、LIMIT/OFFSET、按分数排序。与改动前逐字节一致，唯一差异是 `ORDER BY MATCH(...) DESC, id ASC LIMIT n` 的并列组选取（topk 比较器不含 rowkey 次序键，属既有行为；同分文档物理顺序在并行构建下不可复现，索引内容本身一致）。

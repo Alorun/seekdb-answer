@@ -1597,6 +1597,21 @@
   edit_level: DYNAMIC_EFFECTIVE
   description: "control if enable encode sort"
 
+- name: _enable_fts_token_share
+  type: BOOL
+  default: "False"
+  section: OBSERVER
+  edit_level: DYNAMIC_EFFECTIVE
+  description: "share one fulltext tokenization between the fts_index and fts_doc_word aux table builds of the same fulltext index"
+
+- name: _fts_token_share_mem_limit_mb
+  type: INT
+  default: "128"
+  range: "[0, 4096]"
+  section: OBSERVER
+  edit_level: DYNAMIC_EFFECTIVE
+  description: "memory budget of the shared fulltext tokenization cache in MB, 0 disables the cache. Range: [0, 4096]"
+
 - name: _px_object_sampling
   type: INT
   default: "200"

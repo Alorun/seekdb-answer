@@ -109,7 +109,15 @@ int TokenizeContext::first_valid_char_at(const int64_t offset, int64_t &char_len
 int TokenizeContext::prepare_next_char()
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(first_valid_char_at(cursor_, next_char_len_))) {
+  // UTF8MB4 is the only charset the IK parser is built for; for it, the length
+  // and the class of the character come from one decode.  Anything this fast
+  // path cannot decode (malformed bytes) takes the regular path so that the
+  // error reported is the same as before.
+  if (CHARSET_UTF8MB4 == cs_type_
+      && ObFTCharUtil::classify_first_valid_utf8mb4_char(
+             fulltext_ + cursor_, fulltext_len_ - cursor_, next_char_len_, next_char_type_)) {
+    // done
+  } else if (OB_FAIL(first_valid_char_at(cursor_, next_char_len_))) {
   } else if (OB_FAIL(ObFTCharUtil::classify_first_char(cs_type_,
                                                        fulltext_ + cursor_,
                                                        next_char_len_,

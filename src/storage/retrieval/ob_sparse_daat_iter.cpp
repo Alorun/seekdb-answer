@@ -264,7 +264,16 @@ int ObSRDaaTIterImpl::get_next_rows(const int64_t capacity, int64_t &count)
     }
   } else {
     count = 0;
-    const int64_t real_capacity = MIN(capacity, iter_param_->max_batch_size_);
+    int64_t real_capacity = MIN(capacity, iter_param_->max_batch_size_);
+    // The enclosing table scan normally asks for a full batch even when the
+    // query only keeps `limit` rows, so without this the merge walks candidates
+    // for a whole batch and the surplus is dropped above.  Offset rows are
+    // skipped inside cache_result() without advancing `count`, so the loop below
+    // still runs until `count` reaches real_capacity.
+    const common::ObLimitParam *limit_param = iter_param_->limit_param_;
+    if (OB_NOT_NULL(limit_param) && limit_param->is_valid()) {
+      real_capacity = MIN(real_capacity, MAX(limit_param->limit_, 1));
+    }
     while (OB_SUCC(ret) && count < real_capacity) {
       if (OB_FAIL(do_one_merge_round(count))) {
         if (OB_UNLIKELY(OB_ITER_END != ret)) {

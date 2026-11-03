@@ -107,6 +107,34 @@ int ObIKArbitrator::process(TokenizeContext &ctx)
   return ret;
 }
 
+namespace
+{
+// Length and class of the character that starts at `offset`.  UTF8MB4 is the
+// only charset the IK parser accepts, and for it one decode yields both values;
+// anything the fast path cannot decode (malformed bytes) keeps the original two
+// step handling, including the error it reports.
+int classify_char_at(const TokenizeContext &ctx,
+                     const int64_t offset,
+                     int64_t &char_len,
+                     ObFTCharUtil::CharType &type)
+{
+  int ret = OB_SUCCESS;
+  if (CHARSET_UTF8MB4 == ctx.charset_type()
+      && ObFTCharUtil::classify_first_valid_utf8mb4_char(ctx.fulltext() + offset,
+                                                         ctx.fulltext_len() - offset,
+                                                         char_len,
+                                                         type)) {
+    // done
+  } else if (OB_FAIL(ctx.first_valid_char_at(offset, char_len))) {
+  } else if (OB_FAIL(ObFTCharUtil::classify_first_char(ctx.charset_type(),
+                                                       ctx.fulltext() + offset,
+                                                       char_len,
+                                                       type))) {
+  }
+  return ret;
+}
+} // namespace
+
 int ObIKArbitrator::output_result(TokenizeContext &ctx)
 {
   int ret = OB_SUCCESS;
@@ -116,14 +144,10 @@ int ObIKArbitrator::output_result(TokenizeContext &ctx)
   for (int64_t current = 0; OB_SUCC(ret) && current < ctx.fulltext_len();) {
     ObFTCharUtil::CharType type;
     // maybe not so good to keep single, check it later
-    if (OB_FAIL(ctx.first_valid_char_at(current, char_len))) {
-    } else if (OB_FAIL(ObFTCharUtil::classify_first_char(ctx.charset_type(),
-                                                         ctx.fulltext() + current,
-                                                         char_len,
-                                                         type))) {
+    if (OB_FAIL(classify_char_at(ctx, current, char_len, type))) {
     } else if (ObFTCharUtil::CharType::USELESS == type) {
       current += char_len; // skip useless char
-    } else if (OB_FAIL(chains_.get_refactored(current, chain)) && OB_HASH_NOT_EXIST != ret) {
+    } else if (OB_FAIL(lookup_chain(current, chain)) && OB_HASH_NOT_EXIST != ret) {
     } else if (OB_HASH_NOT_EXIST == ret) {
       ret = OB_SUCCESS;
       if (!keep_single()) {
@@ -321,6 +345,8 @@ constexpr int64_t IK_ARBITRATOR_KEEP_MAX_BYTES = 512 * 1024;
 
 void ObIKArbitrator::reuse()
 {
+  chain_count_ = 0;
+  chain_order_ok_ = true;
   if (-1 != bucket_num_) {
     // The entries point into the arena that is rewound right below, so the map
     // has to be emptied first.  clear() keeps the bucket array.
@@ -333,7 +359,10 @@ void ObIKArbitrator::reuse()
   }
 }
 
-ObIKArbitrator::ObIKArbitrator() : alloc_(lib::ObMemAttr("IK Arbitrator")), bucket_num_(-1) {}
+ObIKArbitrator::ObIKArbitrator()
+  : alloc_(lib::ObMemAttr("IK Arbitrator")), chain_count_(0), chain_order_ok_(true), bucket_num_(-1)
+{
+}
 
 int ObIKArbitrator::add_chain(ObIKTokenChain *chain)
 {
@@ -343,6 +372,40 @@ int ObIKArbitrator::add_chain(ObIKTokenChain *chain)
   } else if (chain->list().is_empty()) {
     // no need to add empty chain
   } else if (OB_FAIL(chains_.set_refactored(chain->min_offset(), chain))) {
+  } else if (chain_count_ < MAX_ORDERED_CHAINS
+             && (0 == chain_count_
+                 || chain->min_offset() > chain_order_[chain_count_ - 1].offset_)) {
+    chain_order_[chain_count_].offset_ = chain->min_offset();
+    chain_order_[chain_count_].chain_ = chain;
+    ++chain_count_;
+  } else {
+    // Duplicate or unordered offset, or too many chains: use the map.
+    chain_order_ok_ = false;
+  }
+  return ret;
+}
+
+int ObIKArbitrator::lookup_chain(const int64_t offset, ObIKTokenChain *&chain) const
+{
+  int ret = OB_HASH_NOT_EXIST;
+  chain = nullptr;
+  if (OB_LIKELY(chain_order_ok_)) {
+    int64_t low = 0;
+    int64_t high = chain_count_ - 1;
+    while (low <= high) {
+      const int64_t mid = (low + high) / 2;
+      if (chain_order_[mid].offset_ == offset) {
+        chain = chain_order_[mid].chain_;
+        ret = OB_SUCCESS;
+        break;
+      } else if (chain_order_[mid].offset_ < offset) {
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+  } else {
+    ret = chains_.get_refactored(offset, chain);
   }
   return ret;
 }

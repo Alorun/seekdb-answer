@@ -44,7 +44,12 @@
 | 复现某个数字 | 同上 §10（自包含命令） |
 | 看分词器重写做了什么、效果如何 | `docs/fts-tokenizer-rewrite-design.md` + `docs/fts-tokenizer-rewrite-report.md` |
 | 看双 writer 合并的设计与被证伪的点 | `docs/fts-dual-writer-design.md` + `docs/fts-dual-writer-plan.md` |
+| **看「一次分词喂两张 aux 表」落地了什么、实测多少、为什么没到 12%** | `docs/fts-token-share-report.md` |
 | **看查询子系统重写做了什么、实测多少**（query_limit 台阶根因 + 位图去重） | `docs/fts-query-subsystem-rewrite-report.md` |
+| **看四项优化的完整实施方案（含代码位置/风险/验收门）** | `docs/fts-next-four-items-plan.md` |
+| **看四项之外的补充优化方向（⑤~⑧，含实测依据与账本）** | `docs/fts-additional-optimizations.md` |
+| **看提示词①（LIMIT 早停）做了什么、实测多少**（探针结论、改动清单、8+4 轮配对 A/B、正确性证据） | `docs/fts-limit-early-stop-report.md` |
+| **四项各自的执行提示词（交给他人的对话）** | `docs/prompt-1-fts-limit-early-stop.md`、`prompt-2-count-limit-rewrite.md`、`prompt-3-tokenize-server-side.md`、`prompt-4-dual-writer-merge.md` |
 | **交给别的对话去做查询子系统重写** | `docs/fts-query-subsystem-rewrite-prompt.md` |
 | **交给别的对话去做分词子系统重写** | `docs/fts-tokenizer-subsystem-rewrite-prompt.md` |
 | 看原始基线 / 当前报告 / 对比 / 评分 | `reports/fts/baseline.txt`、`indextuning.txt`、`indextuning-compare.txt`、`indextuning-score.txt` |
@@ -55,7 +60,7 @@
 |---|---|---|---|---|
 | 1 | ~~**`query_limit` 从 −13.8% 修到 +20%**~~ **已完成（本机 +21.2%，待平台复核）** | 消除唯一负项 | **+5.6** | `docs/fts-query-subsystem-rewrite-report.md` |
 | 2 | **分词服务端 −10%**（CJK 热路径 + 词表 + JSON） | tokenize +12.2% → +22.2% | **+6.7** | `fts-tokenizer-subsystem-rewrite-prompt.md` §4.1~4.4 |
-| 3 | 双 writer 合并（省一次分词/一份行生成） | build −14% | **+1.6** | `fts-dual-writer-design.md`（注意：平台的 build 只有 14% 是分词，收益远小于早先估计） |
+| 3 | 双 writer 合并（省一次分词/一份行生成）——**已实现「共享分词」版本并实测**，结论：wall ±0、CPU −4%，按停止规则不默认启用 | build −14% | **+1.6** | `docs/fts-token-share-report.md`（实现+实测+未达 12% 的账本）；原设计见 `fts-dual-writer-design.md` |
 | 4 | ~~查询整体专用化（整型 docid、内联比较）~~ **已完成（见 Q3；位图路径更进一步）** | 4 项查询各再快 15~25% | +4~6 | `docs/fts-query-subsystem-rewrite-report.md` |
 | 5 | 两个子系统重写（查询 2.3x / 分词服务端 3x） | 才能摸到均值 50% | 到 ~100 | 上面两份 prompt 的完整目标 |
 
@@ -71,8 +76,23 @@
 5. **`build_ik_all` 偶发 9~16s 离群**（约 1/5 概率）：根因是 clog 日志提交拥塞
    （`OB_EAGAIN` 重试），与环境 I/O 相关、与代码无关；正式对比建议连跑 3~5 次取中位。
 
-## 6. 正确性基线（任何改动都要过这三关）
+## 6. 正确性基线（任何改动都要过这几关）
 
 1. **36 形态 correctness dump** 逐字节一致（唯一允许差异：`order_rel` 的并列组选取）；
-2. **两个仓库用例**：`fts_index.no_score_match`（12 形态）、`fts_index.tokenize_edge`（14 组）；
-3. **benchmark 命中数**：`cn=8001 / beng=11000 / mixed=7332 / limit=20`。
+2. **四个仓库用例**（均已注册进 `psmalltest.py`）：
+   `fts_index.no_score_match`（12 形态）、`fts_index.tokenize_edge`（14 组）、
+   `fts_index.bitmap_dedup`（位图去重：单表 vs 4 分区表结果必须一致）、
+   `fts_index.bmw_topk_fallback`（pushdown topk 的 BMW 回退：锁定 top-n 的 id 与精确分数）；
+3. **DDL 专项 14 项**（建索引/分区表/双索引/online DDL 加列/删索引/重建/`SELECT id` 映射）；
+4. **benchmark 命中数**：`cn=8001 / beng=11000 / mixed=7332 / limit=20`。
+
+## 7. 最近一次代码审查的修复（2026-11-03）
+
+| # | 问题 | 修复 |
+|---|---|---|
+| 1 | 位图迭代器对外 tablet 的 docid 用**无界字符串侧表** | 改为**按 tablet 分块位图**（每块 8KB，无字符串侧表、无排序） |
+| 2 | 位图扩容**翻倍拷贝且不释放旧缓冲** | 改为定长块按需分配（零拷贝），内存 = ⌈行数/8⌉ 字节，并有 8MB/tablet、16MB/query 硬上限 |
+| 3 | 去重路径**无回归测试** | 新增 `fts_index.bitmap_dedup` |
+| 4 | BMW 回退阈值**无测试与测量** | 新增 `fts_index.bmw_topk_fallback`；实测该形态 2.147ms vs 非下推排序 19.640ms |
+
+修复后按平台口径外推：build +37.2% / tokenize +19.5% / query +47.0% → **综合 ≈ +34.6%（约 69 分）**。

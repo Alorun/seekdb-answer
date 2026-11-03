@@ -376,7 +376,16 @@ int ObDASLegacyTRMergeIter::create_sparse_retrieval_iter()
 {
   int ret = OB_SUCCESS;
   sr_iter_param_.dim_weights_ = dim_weights_.count() >= 1 ? &dim_weights_ : nullptr;
-  sr_iter_param_.limit_param_ = &ir_rtdef_->get_inv_idx_scan_rtdef()->limit_param_;
+  // The limit of the posting scan cannot be used as the retrieval budget: each
+  // token scan must read its whole posting list.  Prefer the query level budget
+  // that the table scan pushed onto the retrieval when the plan proved that the
+  // output order does not matter; otherwise keep the posting scan's (usually
+  // absent) limit, i.e. read until the merge is exhausted.
+  if (ir_rtdef_->query_limit_param_.is_valid()) {
+    sr_iter_param_.limit_param_ = &ir_rtdef_->query_limit_param_;
+  } else {
+    sr_iter_param_.limit_param_ = &ir_rtdef_->get_inv_idx_scan_rtdef()->limit_param_;
+  }
   sr_iter_param_.eval_ctx_ = ir_rtdef_->eval_ctx_;
   sr_iter_param_.id_proj_expr_ = ir_ctdef_->inv_scan_domain_id_col_;
   sr_iter_param_.relevance_expr_ = ir_ctdef_->relevance_expr_;

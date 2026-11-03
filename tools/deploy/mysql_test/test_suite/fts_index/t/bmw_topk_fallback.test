@@ -1,0 +1,48 @@
+# owner: fts-perf
+# owner group: storage
+# description: Pushdown-topk MATCH (ORDER BY MATCH(...)) executes through the BMW
+#   block-max engine, which falls back to the plain document-at-a-time walk when
+#   its block maxima do not separate the candidates. Both engines must produce
+#   the same top-n ids and the same scores.
+
+--disable_warnings
+drop database if exists fts_bmw;
+create database fts_bmw;
+use fts_bmw;
+--enable_warnings
+
+create table t (id int primary key, content text);
+alter table t add fulltext index f(content) with parser beng;
+
+# Lengths grow with id, so the BM25 scores are all distinct and the top-n is
+# deterministic, while the documents are otherwise identical: block maxima are
+# almost equal, which is the case the BMW fallback exists for.
+insert into t values (1, concat('alpha beta gamma ', repeat('x', 1)));
+insert into t values (2, concat('alpha beta gamma ', repeat('x', 2)));
+insert into t values (3, concat('alpha beta gamma ', repeat('x', 3)));
+insert into t values (4, concat('alpha beta gamma ', repeat('x', 4)));
+insert into t values (5, concat('alpha beta gamma ', repeat('x', 5)));
+insert into t values (6, concat('alpha beta gamma ', repeat('x', 6)));
+insert into t values (7, concat('alpha beta gamma ', repeat('x', 7)));
+insert into t values (8, concat('alpha beta gamma ', repeat('x', 8)));
+insert into t values (9, concat('alpha beta gamma ', repeat('x', 9)));
+insert into t values (10, concat('alpha beta gamma ', repeat('x', 10)));
+
+--echo # top-n ids and scores through the pushdown topk engine
+select id, round(match(content) against('alpha'), 6) as s from t
+  where match(content) against('alpha') order by s desc, id limit 5;
+
+--echo # two tokens, same ordering
+select id, round(match(content) against('alpha beta'), 6) as s from t
+  where match(content) against('alpha beta') order by s desc, id limit 3;
+
+--echo # the same ranking must be reachable without the topk pushdown
+select id, round(match(content) against('alpha'), 6) as s from t
+  where match(content) against('alpha') and id <= 10 order by s desc, id limit 5;
+
+--echo # a token that matches nothing
+select id from t where match(content) against('absent') order by id limit 5;
+
+--disable_warnings
+drop database if exists fts_bmw;
+--enable_warnings

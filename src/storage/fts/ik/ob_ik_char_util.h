@@ -60,6 +60,21 @@ public:
                                  const uint8_t char_len,
                                  CharType &type);
 
+  // Per character fast path of the UTF8MB4 parsers: a single decode yields both
+  // the byte length of the first character and its CharType, instead of decoding
+  // it once more to validate the length (well_formed_len) and once to classify
+  // it.  The returned pair is exactly the one produced by
+  // first_valid_char_at() followed by classify_first_char().
+  //
+  // Returns false when the bytes at `input` are not a well formed character.
+  // The caller must then fall back to the regular two step path: malformed
+  // input has to keep its previous diagnostics and error code, and this fast
+  // path deliberately makes no attempt at interpreting it.
+  static bool classify_first_valid_utf8mb4_char(const char *input,
+                                                const int64_t remain,
+                                                int64_t &char_len,
+                                                CharType &type);
+
   static int check_cn_number(ObCollationType coll_type,
                              const char *input,
                              const uint8_t char_len,
@@ -587,6 +602,33 @@ inline void ObFTCharUtil::classify_unicode(const ob_wc_t unicode, CharType &type
   } else {
     // keep USELESS
   }
+}
+
+inline bool ObFTCharUtil::classify_first_valid_utf8mb4_char(const char *input,
+                                                             const int64_t remain,
+                                                             int64_t &char_len,
+                                                             CharType &type)
+{
+  bool found = false;
+  char_len = 0;
+  type = CharType::USELESS;
+  if (OB_LIKELY(nullptr != input && remain > 0)) {
+    const unsigned char *ustart = reinterpret_cast<const unsigned char *>(input);
+    ob_wc_t unicode = 0;
+    const int code_size
+        = common::ob_charset_decode_unicode<CHARSET_UTF8MB4>(ustart, ustart + remain, unicode);
+    if (OB_LIKELY(code_size > 0)) {
+      char_len = code_size;
+      if (1 == code_size && static_cast<unsigned char>(input[0]) < 0x80) {
+        // Same table the classification fast path uses for ASCII.
+        type = ob_ik_char_util_private::ASCII_CHAR_TYPES[static_cast<unsigned char>(input[0])];
+      } else {
+        classify_unicode<CHARSET_UTF8MB4>(unicode, type);
+      }
+      found = true;
+    }
+  }
+  return found;
 }
 
 template <ObCharsetType CS_TYPE>

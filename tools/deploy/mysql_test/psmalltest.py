@@ -65,6 +65,8 @@ psmall_test=[
 'fin',
 'foreign_key.dml_147',
 'fts_index.basic_dml',
+'fts_index.bitmap_dedup',
+'fts_index.bmw_topk_fallback',
 'fts_index.basic_dml_sequel',
 'fts_index.cn_word',
 'fts_index.create_fts_index_afterward',
