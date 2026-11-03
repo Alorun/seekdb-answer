@@ -42,7 +42,7 @@ ABS_MIN="0.95,0.95"
 
 usage()
 {
-  sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  awk 'NR > 1 { if (/^#/) { sub(/^# ?/, ""); print } else { exit } }' "${BASH_SOURCE[0]}"
   exit "${1:-2}"
 }
 
