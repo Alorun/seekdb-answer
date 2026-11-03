@@ -322,6 +322,60 @@ int ObJsonBin::get_total_value(ObStringBuffer &result) const
   return ret;
 }
 
+int ObJsonBin::print_string_array(ObJsonBuffer &j_buf, bool &handled) const
+{
+  INIT_SUCC(ret);
+  handled = false;
+  if (J_ARRAY_V0 != get_vertype()) {
+    // not a binary array; the caller keeps the regular path
+  } else {
+    const int64_t cnt = static_cast<int64_t>(element_count());
+    const uint8_t var_type = entry_var_type();
+    const int64_t var_size = static_cast<int64_t>(ObJsonVar::get_var_size(var_type));
+    const int64_t start_len = static_cast<int64_t>(j_buf.length());
+    bool are_all_strings = true;
+    if (OB_FAIL(j_buf.append("["))) {
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && are_all_strings && i < cnt; ++i) {
+      // ObJsonBaseUtil::append_comma(j_buf, false) appends a comma followed by
+      // one space; keep that byte for byte.
+      if (i > 0 && OB_FAIL(j_buf.append(", "))) {
+      } else {
+        const int64_t entry_off = pos_ + static_cast<int64_t>(get_value_entry_offset(i));
+        uint64_t value_offset = 0;
+        uint8_t value_type = 0;
+        // [type(uint8_t)][vi64 length][data], the same layout decoded by
+        // init_string_node_v0 for a (non-inlined) string element.
+        int64_t data_off = 0;
+        int64_t str_len = 0;
+        ObString data;
+        if (OB_FAIL(ObJsonVar::read_var(cursor_, entry_off, var_type, &value_offset))) {
+        } else if (OB_FAIL(cursor_->read_i8(entry_off + var_size,
+                                            reinterpret_cast<int8_t *>(&value_type)))) {
+        } else if (J_STRING_V0 != value_type) {
+          // Some element needs the regular printer: drop what has been appended
+          // and let the caller redo the whole array from scratch.
+          are_all_strings = false;
+        } else if (FALSE_IT(data_off = pos_ + static_cast<int64_t>(value_offset)
+                                     + static_cast<int64_t>(sizeof(uint8_t)))) {
+        } else if (OB_FAIL(cursor_->decode_vi64(data_off, &str_len))) {
+        } else if (OB_FAIL(cursor_->get(data_off, str_len, data))) {
+        } else if (OB_FAIL(ObJsonBaseUtil::add_double_quote(j_buf, data.ptr(), str_len))) {
+        }
+      }
+    }
+    if (OB_SUCC(ret) && are_all_strings) {
+      if (OB_FAIL(j_buf.append("]"))) {
+      } else {
+        handled = true;
+      }
+    }
+    if (OB_SUCC(ret) && !handled && OB_FAIL(j_buf.set_length(start_len))) {
+    }
+  }
+  return ret;
+}
+
 int ObJsonBin::get_array_element(uint64_t index, ObIJsonBase *&value) const
 {
   INIT_SUCC(ret);

@@ -601,6 +601,7 @@ protected:
   int prepare_all_das_tasks();
   int prepare_pushdown_limit_param();
   int pushdown_query_limit_to_text_retrieval();
+  int pushdown_count_only_to_text_retrieval();
   bool has_das_scan_op(const ObDASTabletLoc *tablet_loc, ObDASScanOp *&das_op);
   int create_one_das_task(ObDASTabletLoc *tablet_loc);
   int pushdown_normal_lookup_to_das(ObDASScanOp &target_op);

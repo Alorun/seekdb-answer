@@ -28,6 +28,7 @@
 | Q1 | `query_limit`：BMW 剪枝无效即回退 DAA T top-k（根因：LIMIT 触发 topk 下推） | `src/storage/retrieval/ob_sparse_bmw_iter.{h,cpp}` | 本机 8 轮配对 **+21.2%** |
 | Q2 | 无分数形态改为 doc id 位图去重（删掉 k 路归并/比较/取分） | `src/storage/retrieval/ob_text_daat_iter.{h,cpp}`、`src/observer/composition/retrieval/ob_das_legacy_tr_merge_iter.{h,cpp}` | 本机 8 轮配对 **cn +48.7% / beng +57.3% / mixed +51.5%** |
 | Q3 | 归并比较快路径（二进制 doc id 用 memcmp、整型内联）+ 无分数跳过 `get_curr_score` | `src/storage/retrieval/ob_sparse_daat_iter.{h,cpp}` | 含在上面三项内 |
+| Q4 | `COUNT(*)` 的 count-only 快路径：不物化 id datum + 位图按 word popcount 计数 | `src/sql/engine/table/ob_table_scan_op.cpp`、`src/storage/retrieval/ob_text_daat_iter.{h,cpp}`、`ob_das_ir_define.h` | 本机 8 轮配对 **cn +10% / beng +14% / mixed +9%**（见 `fts-count-only-fast-path-report.md`） |
 
 **已修复的两处自身回归**：
 1. 去掉 relevance 列导致输出列位置前移 → `ORDER BY`/`DISTINCT`/`sum(col)`/DML 子查询报 4016；
@@ -48,6 +49,10 @@
 | **看查询子系统重写做了什么、实测多少**（query_limit 台阶根因 + 位图去重） | `docs/fts-query-subsystem-rewrite-report.md` |
 | **看四项优化的完整实施方案（含代码位置/风险/验收门）** | `docs/fts-next-four-items-plan.md` |
 | **看四项之外的补充优化方向（⑤~⑧，含实测依据与账本）** | `docs/fts-additional-optimizations.md` |
+| **交给 agent：⑤ count-only 快路径（query +9）** | `docs/prompt-5-count-only-fast-path.md` |
+| **看 ⑤ count-only 快路径做了什么、实测多少**（判定条件、三形态探针、4 组 8 轮配对、正确性证据） | `docs/fts-count-only-fast-path-report.md` |
+| **交给 agent：③深挖 → ⑥映射表合并 → ⑧语句层 → ④排查** | `docs/prompt-6-to-9-followup-four.md` |
+| **看 ③⑥⑧④ 做了什么、实测多少**（A1 四段计时证伪「未归属 9µs」、⑧ JSON 直写 tokenize −9.6%、⑥ 实测墙钟上限 0、④ 删除共享路径） | `docs/prompt-6-to-9-followup-four-report.md` |
 | **看提示词①（LIMIT 早停）做了什么、实测多少**（探针结论、改动清单、8+4 轮配对 A/B、正确性证据） | `docs/fts-limit-early-stop-report.md` |
 | **四项各自的执行提示词（交给他人的对话）** | `docs/prompt-1-fts-limit-early-stop.md`、`prompt-2-count-limit-rewrite.md`、`prompt-3-tokenize-server-side.md`、`prompt-4-dual-writer-merge.md` |
 | **交给别的对话去做查询子系统重写** | `docs/fts-query-subsystem-rewrite-prompt.md` |

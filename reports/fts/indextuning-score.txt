@@ -1,18 +1,18 @@
 FTS Large Benchmark Score
 =========================
 score: 100.00 / 100
-mean_improvement: 91.85%
+mean_improvement: 93.06%
 full_score_improvement: 50.00%
 
-build_improvement: 91.36%
-  build_ik_all_sec: baseline=35.2836, current=2.952, improvement=91.63%
-  build_ik_content_sec: baseline=28.3764, current=2.431, improvement=91.43%
-  build_beng_en_sec: baseline=14.7578, current=1.328, improvement=91.00%
-tokenize_improvement: 92.02%
-  tokenize_ik_avg_ms: baseline=0.76478, current=0.058, improvement=92.42%
-  tokenize_beng_avg_ms: baseline=0.42262, current=0.0354, improvement=91.62%
-query_improvement: 92.18%
-  query_cn_avg_ms: baseline=16.6628, current=1.035, improvement=93.79%
-  query_beng_avg_ms: baseline=24.3042, current=1.5285, improvement=93.71%
-  query_mixed_avg_ms: baseline=17.5593, current=1.1775, improvement=93.29%
-  query_limit_avg_ms: baseline=16.2334, current=1.9584, improvement=87.94%
+build_improvement: 91.43%
+  build_ik_all_sec: baseline=35.2836, current=2.849, improvement=91.93%
+  build_ik_content_sec: baseline=28.3764, current=2.436, improvement=91.42%
+  build_beng_en_sec: baseline=14.7578, current=1.334, improvement=90.96%
+tokenize_improvement: 90.68%
+  tokenize_ik_avg_ms: baseline=0.76478, current=0.0558, improvement=92.70%
+  tokenize_beng_avg_ms: baseline=0.42262, current=0.0479, improvement=88.67%
+query_improvement: 97.07%
+  query_cn_avg_ms: baseline=16.6628, current=0.5688, improvement=96.59%
+  query_beng_avg_ms: baseline=24.3042, current=0.7811, improvement=96.79%
+  query_mixed_avg_ms: baseline=17.5593, current=0.6228, improvement=96.45%
+  query_limit_avg_ms: baseline=16.2334, current=0.2517, improvement=98.45%

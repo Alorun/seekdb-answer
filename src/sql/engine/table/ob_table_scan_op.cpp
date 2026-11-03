@@ -901,6 +901,41 @@ int ObTableScanOp::pushdown_query_limit_to_text_retrieval()
   return ret;
 }
 
+int ObTableScanOp::pushdown_count_only_to_text_retrieval()
+{
+  int ret = OB_SUCCESS;
+  const ObDASBaseCtDef *attach_ctdef = MY_CTDEF.attach_spec_.attach_ctdef_;
+  if (nullptr == attach_ctdef || nullptr == tsc_rtdef_.attach_rtinfo_
+      || !ObDASUtils::is_fts_idx_scan(attach_ctdef)) {
+    // nothing attached, or no text retrieval below this scan
+  } else if (ObDASOpType::DAS_OP_IR_SCAN != attach_ctdef->op_type_) {
+    // A lookup, sort or merge task sits above the retrieval and consumes the
+    // document ids it produces, so they must keep being materialized.
+  } else if (MY_SPEC.batch_scan_flag_) {
+    // a batch rescan drives several ranges through the same rtdef tree
+  } else if (!MY_SPEC.output_.empty() || !MY_SPEC.filters_.empty()) {
+    // The scan projects or filters rows, so at least one expression above the
+    // retrieval reads a row value.  A bare row count is the only shape in which
+    // nothing above the retrieval ever reads the document id.
+  } else {
+    const ObDASBaseCtDef *target_ctdef = nullptr;
+    ObDASBaseRtDef *target_rtdef = nullptr;
+    if (OB_FAIL(ObDASUtils::find_child_das_def(attach_ctdef,
+                                               tsc_rtdef_.attach_rtinfo_->attach_rtdef_,
+                                               ObDASOpType::DAS_OP_IR_SCAN,
+                                               target_ctdef,
+                                               target_rtdef))) {
+    } else if (nullptr == target_ctdef || nullptr == target_rtdef) {
+      // no text retrieval below this scan
+    } else {
+      // Only the rows are consumed, never their document ids: the retrieval may
+      // skip materializing the document id datum for every returned row.
+      static_cast<ObDASIRScanRtDef *>(target_rtdef)->count_only_ = true;
+    }
+  }
+  return ret;
+}
+
 int ObTableScanOp::prepare_das_task()
 {
   int ret = OB_SUCCESS;
@@ -1125,6 +1160,12 @@ int ObTableScanOp::init_table_scan_rtdef()
   // document-at-a-time merge can stop at it.
   if (OB_SUCC(ret) && !MY_SPEC.batch_scan_flag_ && !MY_CTDEF.is_das_keep_order_) {
     if (OB_FAIL(pushdown_query_limit_to_text_retrieval())) {
+    }
+  }
+  // Also before the iter tree is built: this decides whether the retrieval has
+  // to materialize a document id for each row it returns.
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(pushdown_count_only_to_text_retrieval())) {
     }
   }
   return ret;

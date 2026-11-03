@@ -1,0 +1,82 @@
+# owner: fts-perf
+# owner group: storage
+# description: Row-count fast path for score-free MATCH. A bare COUNT(*) over a
+#   multi-token MATCH has no expression above the retrieval that reads the
+#   document id, so the bitmap merge does not materialize the document id datum
+#   for each emitted row and only advances its cursor and row counters. Shapes
+#   whose result depends on the ids (SELECT id, aggregates over id, any filter
+#   on the row) must keep the datum and stay identical to the id based answers.
+
+--disable_warnings
+drop database if exists fts_count_only;
+create database fts_count_only;
+use fts_count_only;
+--enable_warnings
+
+create table single_t (id int primary key, content text);
+create table part_t (id int primary key, content text) partition by hash(id) partitions 4;
+
+insert into single_t values
+  (1, '数据库 全文索引'),
+  (2, '倒排索引 tokenizer'),
+  (3, '数据库'),
+  (4, '索引 tokenizer'),
+  (5, '无关内容'),
+  (6, '数据库 tokenizer 索引'),
+  (7, 'tokenizer'),
+  (8, '数据库 倒排索引');
+insert into part_t select * from single_t;
+
+alter table single_t add fulltext index f(content) with parser ik;
+alter table part_t add fulltext index f(content) with parser ik;
+
+--echo # shape 1: bare COUNT(*) is answered without materializing the id
+select count(*) from single_t where match(content) against('数据库 tokenizer');
+select count(*) from part_t where match(content) against('数据库 tokenizer');
+
+--echo # shape 2: SELECT id keeps materializing it
+select id from single_t where match(content) against('数据库 tokenizer') order by id;
+select id from part_t where match(content) against('数据库 tokenizer') order by id;
+
+--echo # shape 3: an aggregate over id keeps materializing it
+select count(*), sum(id), min(id), max(id) from single_t where match(content) against('数据库 tokenizer');
+select count(*), sum(id), min(id), max(id) from part_t where match(content) against('数据库 tokenizer');
+
+--echo # the id based shapes see exactly the rows the count-only shape counts
+select count(*) from (select id from single_t where match(content) against('数据库 tokenizer')) t;
+
+--echo # a filter on the row also reads it, so count(*) with a filter must agree
+select count(*) from single_t where match(content) against('数据库 tokenizer') and id > 3;
+select count(*) from part_t where match(content) against('数据库 tokenizer') and id > 3;
+
+--echo # single token match runs the plain merge path and must agree
+select count(*) from single_t where match(content) against('tokenizer');
+select count(*) from part_t where match(content) against('tokenizer');
+
+--echo # repeated execution of the count-only shape must stay stable
+select count(*) from single_t where match(content) against('数据库 tokenizer');
+select count(*) from single_t where match(content) against('数据库 tokenizer');
+
+--echo # many rows over four tablets: the count must survive batch boundaries and
+--echo # tablet switches (1024 rows, several 256 row batches per tablet)
+create table big_t (id int primary key, content text) partition by hash(id) partitions 4;
+insert into big_t values
+  (1, '数据库 tokenizer'), (2, '数据库 tokenizer'), (3, '数据库 tokenizer'),
+  (4, '数据库 tokenizer'), (5, '数据库 tokenizer'), (6, '数据库 tokenizer'),
+  (7, '数据库 tokenizer'), (8, '数据库 tokenizer');
+insert into big_t select id + 8, content from big_t;
+insert into big_t select id + 16, content from big_t;
+insert into big_t select id + 32, content from big_t;
+insert into big_t select id + 64, content from big_t;
+insert into big_t select id + 128, content from big_t;
+insert into big_t select id + 256, content from big_t;
+insert into big_t select id + 512, content from big_t;
+alter table big_t add fulltext index f(content) with parser ik;
+select count(*) from big_t where match(content) against('数据库 tokenizer');
+select count(*), sum(id), min(id), max(id) from big_t where match(content) against('数据库 tokenizer');
+select count(*) from big_t where match(content) against('数据库 tokenizer') and id > 500;
+select count(*) from big_t where match(content) against('tokenizer');
+
+--disable_warnings
+drop database fts_count_only;
+--enable_warnings

@@ -392,6 +392,14 @@ int ObDASLegacyTRMergeIter::create_sparse_retrieval_iter()
   sr_iter_param_.relevance_proj_expr_ = ir_ctdef_->relevance_proj_col_;
   sr_iter_param_.filter_expr_ = ir_ctdef_->match_filter_;
   sr_iter_param_.topk_limit_ = topk_limit_;
+  // The enclosing table scan only counts the retrieved rows, so the merge does
+  // not need to materialize the document id datum.  Keep the flag inside the
+  // same gate as the bitmap merge: that iterator is the only consumer, and the
+  // row set (hence the count) is unaffected by skipping the datum writes.
+  sr_iter_param_.count_only_ = ir_rtdef_->count_only_
+                               && !topk_mode_
+                               && daat_mode_
+                               && is_doc_id_bitmap_applicable();
   if (OB_NOT_NULL(ir_ctdef_->field_boost_expr_)) {
     ObDatum *boost_datum = nullptr;
     if (OB_FAIL(ir_ctdef_->field_boost_expr_->eval(*ir_rtdef_->eval_ctx_, boost_datum))) {

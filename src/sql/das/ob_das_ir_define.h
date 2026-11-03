@@ -224,7 +224,8 @@ public:
     : ObDASAttachRtDef(DAS_OP_IR_SCAN),
       fts_idx_(OB_INVALID_INDEX),
       minimum_should_match_(0),
-      query_limit_param_() {}
+      query_limit_param_(),
+      count_only_(false) {}
 
   virtual ~ObDASIRScanRtDef() {}
 
@@ -281,6 +282,13 @@ public:
   // scan keeps applying its own offset/limit on top, so limit_ carries the total
   // number of rows it may need from the retrieval.  Not serialized, like fts_idx_.
   common::ObLimitParam query_limit_param_;
+  // Runtime-only: the enclosing table scan consumes the retrieval stream as a
+  // bare row count (empty output list, no filter, the retrieval scan itself is
+  // the root of the attached task), so no expression above ever reads the
+  // document id datum.  Filled in by ObTableScanOp before the iterator tree is
+  // built, see ObTableScanOp::pushdown_count_only_to_text_retrieval().
+  // Not serialized, like fts_idx_: a remote task keeps materializing the datum.
+  bool count_only_;
 };
 
 struct ObDASIRAuxLookupCtDef : ObDASAttachCtDef

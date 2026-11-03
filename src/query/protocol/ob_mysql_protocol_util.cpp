@@ -468,8 +468,10 @@ int ObSMUtils::build_cell_value(const ObObj &obj, MYSQL_PROTOCOL_TYPE type,
         ObIJsonBase *json_base = &json_bin;
         ObJsonBuffer json_buf(&allocator);
         json_bin.set_seek_flag(true);
+        bool fast_done = false;
         if (OB_FAIL(json_bin.reset_iter())) {
-        } else if (OB_FAIL(json_base->print(json_buf, true, value.length()))) {
+        } else if (OB_FAIL(json_bin.print_string_array(json_buf, fast_done))) {
+        } else if (!fast_done && OB_FAIL(json_base->print(json_buf, true, value.length()))) {
         } else {
           ret = set_copied_bytes(scratch_allocator,
                                  ObMySQLCellValueKind::LENENC_BYTES,

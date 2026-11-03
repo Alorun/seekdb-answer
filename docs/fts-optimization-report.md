@@ -339,6 +339,50 @@ hits:     8001 / 11000 / 7332 / 20（全部一致）
 `docs/fts-additional-optimizations.md`：⑤ count-only 快路径 +9、⑥ 映射表合并 +5、
 ⑦ emit 微优化 +2、⑧ tokenize 语句层 +4、③ 深挖那 10µs +11、④ 若修好 +13。
 
+### 5.11 当前综合优化统计（2026-11-03 23:16，权威快照）
+
+三次完整基准（`select1` 0.0224~0.0254，与基线录制时的 0.0241 几乎一致，**本次可直接与本地基线对比**）：
+
+| 指标 | 基线 | 三次实测 | 中位 | 提升 |
+|---|---|---|---|---|
+| `build_ik_all_sec` | 3.7540 | 2.848 / 2.848 / 2.847 | **2.8480** | **+24.1%** |
+| `build_ik_content_sec` | 2.9540 | 2.434 / 2.434 / 2.433 | **2.4340** | **+17.6%** |
+| `build_beng_en_sec` | 1.6400 | 1.444 / 1.346 / 1.346 | **1.3460** | **+17.9%** |
+| `tokenize_ik_avg_ms` | 0.0720 | 0.0610 / 0.0572 / 0.0519 | **0.0572** | **+20.6%** |
+| `tokenize_beng_avg_ms` | 0.0423 | 0.0384 / 0.0476 / 0.0380 | **0.0384** | **+9.2%** |
+| `query_cn_avg_ms` | 1.3914 | 0.6477 / 0.6476 / 0.5195 | **0.6476** | **+53.5%** |
+| `query_beng_avg_ms` | 1.9911 | 0.7132 / 0.7471 / 0.7489 | **0.7471** | **+62.5%** |
+| `query_mixed_avg_ms` | 1.5970 | 0.6497 / 0.5946 / 0.6783 | **0.6497** | **+59.3%** |
+| `query_limit_avg_ms` | 1.7526 | 0.2489 / 0.2918 / 0.2675 | **0.2675** | **+84.7%** |
+
+命中数：8001 / 11000 / 7332 / 20（全部一致）。
+
+**两类口径的结论**：
+
+| 口径 | build | tokenize | query | 三类之和 | 综合 | 得分 |
+|---|---|---|---|---|---|---|
+| 本地基线（`reports/fts/baseline.txt`） | +19.9% | +14.9% | **+65.0%** | **99.8%** | +33.26% | **66.5** |
+| 平台口径（build 按实测 1.8 倍标定） | **+37.6%** | +14.9% | **+65.0%** | **117.5%** | +39.16% | **≈78.3** |
+
+官方评分脚本（`fts_large_bench_score.py`，其 json 基线来自更慢的 CI 机器）：
+`score 100.00 / 100`、`mean_improvement 93.06%`（build 91.43% / tokenize 90.68% / query 91.98%）。
+
+**本轮新增的三项落地**（相对上一快照 112.4% → 117.5%）：
+1. **⑤ count-only 快路径**：`COUNT(*)` 不再物化 id datum（`ob_text_daat_iter.cpp`、`ob_table_scan_op.cpp`、
+   `ob_i_sparse_retrieval_iter.h`），新增用例 `fts_index.count_only_fast_path`；
+2. **⑧/③ JSON 二进制直写**：`ob_json_bin.cpp +54`、`ob_mysql_protocol_util.cpp`（结果序列化路径），
+   `tokenize_ik` 0.0599 → **0.0572**（+4.7%）、`tokenize_beng` 0.0387 → **0.0384**；
+3. **④ 双 writer 排查结论：删除**。交替 4 对实测 on 比 off 慢 7.1%（3.913 vs 4.191 s），
+   判定为"合并后牺牲了两个扫描线程的并行度、在 2~4 vCPU 租户上是净损失"，
+   已删除 `ob_das_domain_utils.cpp` 中 822 行共享路径与
+   `_enable_fts_token_share` / `_fts_token_share_mem_limit_mb` 两个参数。
+
+**正确性**：5 个仓库用例全 PASS（新增 `count_only_fast_path`）、DDL 专项 14/14、命中数不变。
+
+**距离满分还差**：平台口径三类之和 117.5% → 需 150%，差 **32.5 个百分点**。
+剩余可用手段（见 `docs/fts-additional-optimizations.md`）：⑥ 映射表合并 +5（build）、
+③ 深挖 tokenize 未归属成本 +11、⑧ 语句层 +4、以及 build 的 DDL 固定开销（4 个子任务编排）。
+
 ## 6. 正确性验证
 
 1. **等价性 dump**（`.tmpdev/correctness_dump.sh`，36 个形态 / 244 行输出）：TOKENIZE（ik/beng/ngram/space/数字/中文数字/长文本/空文本）、MATCH 命中数、命中文档集合（COUNT/SUM/MIN/MAX）、40 行 BM25 精确分数、`MATCH > threshold`、分数进 SELECT、布尔 AND/OR/NOT、两个 MATCH 组合、LIMIT/OFFSET、按分数排序。与改动前逐字节一致，唯一差异是 `ORDER BY MATCH(...) DESC, id ASC LIMIT n` 的并列组选取（topk 比较器不含 rowkey 次序键，属既有行为；同分文档物理顺序在并行构建下不可复现，索引内容本身一致）。

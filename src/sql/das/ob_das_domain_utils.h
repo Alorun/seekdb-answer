@@ -62,10 +62,6 @@ private:
   // parser tokens, while output rows are separately allocated in merge_memctx_.
   // Rows survive map reuse, but not reuse/reset of the context.
   storage::ObFTWordMap word_map_;
-  // Identity of the tokenizer this cache was opened with (parser name + parser
-  // properties).  Tokenization only depends on (text, parser, collation), so it
-  // keys the cross build tokenization sharing cache.
-  uint64_t parser_sig_;
   bool is_inited_;
 
   DISALLOW_COPY_AND_ASSIGN(ObFTIndexRowCache);

@@ -365,6 +365,10 @@ int ObTextDocIdBitmapIter::emit_rows(const int64_t capacity, int64_t &count)
                                     eval_ctx->max_batch_size_);
   if (OB_UNLIKELY(real_capacity <= 0)) {
     ret = OB_ERR_UNEXPECTED;
+  } else if (iter_param_->count_only_) {
+    // When the scan output is only a row count, the enclosing operator counts
+    // the returned rows and no expression ever reads the document id datum.
+    ret = emit_rows_count_only(real_capacity, count);
   } else if (OB_UNLIKELY(real_capacity > emit_buffer_capacity_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("emit buffer too small", K(ret), K(real_capacity), K(emit_buffer_capacity_));
@@ -413,6 +417,69 @@ int ObTextDocIdBitmapIter::emit_rows(const int64_t capacity, int64_t &count)
   return ret;
 }
 
+// Counting-only emit: the whole stream is consumed as a row count, so the
+// document ids never leave this iterator and neither the emit buffer nor the
+// projected datum is touched.  The cursor still advances by exactly the rows
+// that are counted: whole words are consumed with a popcount, and only a batch
+// boundary inside a word needs the set bits to be located one by one.
+int ObTextDocIdBitmapIter::emit_rows_count_only(const int64_t capacity, int64_t &count)
+{
+  int ret = OB_SUCCESS;
+  count = 0;
+  const int64_t words_per_block = BLOCK_BITS / 64;
+  while (OB_SUCC(ret) && count < capacity) {
+    if (emit_tablet_idx_ >= tablet_bits_.count()) {
+      ret = OB_ITER_END;
+      break;
+    }
+    const TabletBits &tablet_bits = tablet_bits_.at(emit_tablet_idx_);
+    const int64_t word_cnt = tablet_bits.blocks_.count() * words_per_block;
+    int64_t word_idx = emit_cursor_bits_ >> 6;
+    if (word_idx >= word_cnt) {
+      // this tablet is exhausted, continue with the next one
+      ++emit_tablet_idx_;
+      emit_cursor_bits_ = 0;
+      continue;
+    }
+    uint64_t word = bitmap_word_at(tablet_bits, word_idx);
+    const int64_t bit_offset = emit_cursor_bits_ & 63;
+    if (0 != bit_offset) {
+      word &= (~static_cast<uint64_t>(0) << bit_offset);
+    }
+    if (0 == word) {
+      while (++word_idx < word_cnt && 0 == (word = bitmap_word_at(tablet_bits, word_idx))) {
+      }
+      if (0 == word) {
+        ++emit_tablet_idx_;
+        emit_cursor_bits_ = 0;
+        continue;
+      }
+    }
+    const int64_t remain = capacity - count;
+    const int64_t word_bit_cnt = __builtin_popcountll(word);
+    if (word_bit_cnt <= remain) {
+      // The whole word fits in this batch: count it and leave the cursor at the
+      // head of the following word.
+      count += word_bit_cnt;
+      emit_cursor_bits_ = (word_idx + 1) << 6;
+    } else {
+      // The batch boundary falls inside this word: stop right after the
+      // remain-th set bit so the next call resumes exactly there.
+      int64_t taken = 0;
+      while (taken < remain) {
+        const int64_t bit = (word_idx << 6) + __builtin_ctzll(word);
+        word &= word - 1;
+        emit_cursor_bits_ = bit + 1;
+        ++taken;
+      }
+      count += taken;
+    }
+  }
+  output_row_cnt_ += count;
+  input_row_cnt_ += count;
+  return ret;
+}
+
 int ObTextDocIdBitmapIter::get_next_rows(const int64_t capacity, int64_t &count)
 {
   int ret = OB_SUCCESS;
@@ -427,7 +494,7 @@ int ObTextDocIdBitmapIter::get_next_rows(const int64_t capacity, int64_t &count)
     ret = OB_ITER_END;
   } else {
     if (!built_) {
-      if (OB_SUCC(ret) && OB_ISNULL(emit_buffer_)) {
+      if (OB_SUCC(ret) && !iter_param_->count_only_ && OB_ISNULL(emit_buffer_)) {
         const int64_t capacity_rows = MAX(iter_param_->max_batch_size_, 1);
         void *buf = iter_allocator_->alloc(capacity_rows * OB_DOC_ID_COLUMN_BYTE_LENGTH);
         if (OB_ISNULL(buf)) {

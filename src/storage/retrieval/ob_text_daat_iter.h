@@ -135,6 +135,7 @@ private:
   int get_tablet_bits(const uint64_t tablet_id, TabletBits *&tablet_bits);
   int ensure_block(TabletBits &tablet_bits, const int64_t block_idx);
   int emit_rows(const int64_t capacity, int64_t &count);
+  int emit_rows_count_only(const int64_t capacity, int64_t &count);
 private:
   common::ObSEArray<TabletBits, 4> tablet_bits_;
   int64_t total_block_cnt_;

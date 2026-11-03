@@ -69,6 +69,7 @@ psmall_test=[
 'fts_index.bmw_topk_fallback',
 'fts_index.basic_dml_sequel',
 'fts_index.cn_word',
+'fts_index.count_only_fast_path',
 'fts_index.create_fts_index_afterward',
 'fts_index.create_table_with_fts_index',
 'fts_index.drop_index',

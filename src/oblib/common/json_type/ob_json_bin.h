@@ -605,6 +605,14 @@ public:
   int get_raw_binary(common::ObString &out, ObIAllocator *allocator) const;
   int get_raw_binary_v0(common::ObString &out, ObIAllocator *allocator) const;
   int get_value_binary(ObString &out) const;
+  // Fast path for a flat JSON array whose elements are all plain strings: the
+  // text form is appended straight from the binary value entries instead of
+  // building (and re-parsing) one ObJsonBin per element.  `handled` is only set
+  // to true when the whole array fits that shape; the appended bytes are then
+  // identical to ObIJsonBase::print(is_quoted=true, is_pretty=false).  When the
+  // array does not fit, nothing is appended and the caller uses the regular
+  // path.
+  int print_string_array(ObJsonBuffer &j_buf, bool &handled) const;
   int get_area_size(uint64_t& size) const;
   int get_serialize_size(uint64_t &size) const;
   int array_remove(uint64_t index) override;
