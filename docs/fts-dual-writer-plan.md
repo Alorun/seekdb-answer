@@ -119,6 +119,197 @@ T_after  = 1 × scan + 1 × segment + 2 × sort + 2 × write + fixed
 
 总量：693,336 行/表（34.7 词/文档），两表合计 ~4.6 CPU-s，墙钟 2.45 s（CPU/wall ≈ 2.2，非算力受限）。
 
+### 2.4.1 扫描前端内部拆解（M0b，比 §2.4 更精确）
+
+同一个 20k 文档构建，在扫描算子内部逐相位计时（每张分词表各一个线程）：
+
+| 相位 | 表 A（fts_index） | 表 B（fts_doc_word） | 占前端 |
+|---|---|---|---|
+| 源行扫描 `inner_get_next_row_implement` | 29.4 ms | 30.0 ms | 3% |
+| LOB 物化 | 0.3 ms | 0.3 ms | 0% |
+| **`segment()` 合计** | **492 ms** | **528 ms** | **55%** |
+| ├─ `ObFTParseHelper::segment`（IK 分词 + 词表插入） | **420 ms** | **452 ms** | **47%** |
+| └─ 行生成（`ObDatumRow` 分配 + 4 列填充） | 36 ms | 37 ms | 4% |
+| `fill_generated_fts_cols`（4 个 datum 拷到输出列） | 47 ms | 45 ms | 5% |
+| gap（exchange 发送 + 背压） | 293 ms | 315 ms | 33% |
+| 扫描线程存活合计 | 894 ms | 949 ms | 100% |
+
+结论修正：
+1. **前端的主项是 IK 分词 + 词表（47%）**，不是行生成（4%）。所以"合并两次分词"省下的是分词本身的 CPU，
+   但两张表的分词**本来就是并行的**（各自一个扫描线程），**省不到墙钟**。
+2. 前端第二项是 exchange 发送/背压（33%），属 PX 通用通道，合并后会变成"一个线程发两路"，反而更长（§2.5）。
+3. 行生成/填充合计仅 9%，不值得优化。
+
+### 2.4.2 `enable_newsort` 已被证伪（5 块交替 A/B）
+
+`build_ik_content`（20k 文档，每次全新实例 + 灌数 + 单次 ALTER，命中数 3333 作有效性校验）：
+
+| 臂 | 5 次墙钟（s） | 中位 |
+|---|---|---|
+| 现状 `enable_newsort=false` | 2.451 / 2.449 / 2.562 / 2.449 / 2.551 | **2.451** |
+| 试验 `enable_newsort=true` | 2.452 / 2.453 / 2.549 / 2.450 / 2.448 | **2.450** |
+
+配对差 +0/+4/−13/+1/−103 ms ⇒ **零收益**。已回退（回退后二进制 md5 与基线一致）。
+
+### 2.4.3 写路径内部拆解（b3 专项，693,336 行/表）
+
+| 环节 | 耗时 | 每行 |
+|---|---|---|
+| `build_multi_version_row`（4 列拷贝到存储 row） | 15.3 ms | 0.022 µs |
+| `convert_to_storage_row`（arena reuse + lob/reshape 检查 + NULL/长度校验） | 12.7 ms | 0.018 µs |
+| **`ObTabletSliceWriter::append_row`（宏块构建）** | **455.4 ms** | **0.657 µs** |
+
+三者合计 483 ms，**其中 94% 在宏块构建**（`ObMacroBlockWriter::append_row`：`check_order` 比主键 + 逐行 checksum + `save_last_key` 拷主键 + 微块切分判断）。
+另一 worker（497,337 行）同样为 0.657 µs/行，与行数线性。
+
+### 2.4.4 b3（批量写入）的结论：不可行/收益极小
+
+1. `ObMacroBlockWriter::append_batch` 内部仍是 **逐行 `to_datum_row` + `append_row_inner`**（`ob_macro_block_writer.cpp:708-721`），
+   批量接口**不会**降低 0.657 µs/行的宏块构建成本。
+2. SQL 侧可批量的只有 `build_multi_version_row` + `convert_to_storage_row`，合计 **28 ms/表（4%）**。
+3. 要让"分行发送"变成"批量发送"，必须让扫描端矢量化，而 CG 对 FTS aux 构建是**显式关闭**的：
+   `ob_static_engine_cg.cpp:3684  spec.max_batch_size_ = 0; // TODO ... after support post-building fts index vectorization`；
+   PDML 插入算子全家也无 `inner_get_next_batch`（探针实测 `insert_max_batch=0`，其子算子 `child_max_batch=16` 已具备批量能力）。
+4. 因此 b3 的收益上限 ≈ transmit 0.30 + eval 0.15 + fill 0.05 ≈ 0.5 s/表，**且需要端到端矢量化（多天工作量）才能拿到，
+   实际落地约 3~5%**。已关闭该方向。
+
+### 2.4.5 DDL 固定开销的修正（此前高估）
+
+按 DDL 任务日志时间线（同一次 2.551 s 的 `ALTER ... ADD FULLTEXT INDEX`）：
+
+| 阶段 | 时间 |
+|---|---|
+| `init` → `prepare_aux_index_tables`（提交 4 个子任务） | **77 ms** |
+| 4 个 aux 子任务构建 + `wait_aux_table_complement` 轮询 | **~2.2 s** |
+| checksum / enable_index / 收尾（最后 3 个 `remove_ddl_task`） | **~0.25 s** |
+
+即固定开销只有 **~0.3 s（12%）**，不是早先"beng 零行对照"推出来的 ~40%——那次对照把
+"实例首次建 FTS 索引的一次性成本（建词典表等）"算进去了。**合并 DDL 子任务（b2）最多只能拿回 ~0.2 s（8%）。**
+
+### 2.4.6 并行构建切片（第 1 项）的验证与 P3 实验
+
+**价值验证（同一实例、同一份 20k 数据、都不是首次建索引）**
+
+| 表形态 | `ALTER ... ADD FULLTEXT INDEX (content) WITH PARSER ik` | 命中 |
+|---|---|---|
+| 非分区（每表 1 个扫描线程） | 2.540 / 2.438 s | 3333 |
+| 4 分区（每 tablet 一个扫描线程） | **1.864 / 1.847 s** | 3333 |
+
+⇒ 让整条 per-tablet 流水线并行 = **−27%**。
+
+**P3（docid 幂等公式）单独落地失败——实测证据**
+
+在 `ObExprDocID::generate_doc_id` 里把 DDL 构建期的 docid 改为
+`generate_idempotent_value(K=1, idx=0, interval=10000, row_idx)`（每 exec ctx 一个计数器，tablet 变化时重置），
+20k 三索引构建直接报 **`ERROR 1062 Duplicated primary key`**。
+
+探针（`FTS_DOCID_PROBE`，逐次打印 tablet / 计数器 / ddl_task_id）给出**精确根因**：
+
+- 两张**分词表**：docid 在**扫描期**生成（`ObTableScanOp::fetch_next_fts_index_rows` 里 eval `T_FUN_SYS_DOC_ID`），
+  每张表 1 个扫描任务 ⇒ 一个计数器，0..19999 正常；
+- 两张**映射表**（rowkey_doc / doc_rowkey）：docid 在该 PDML 插入算子的 **2 个 insert worker** 里 eval
+  （生成列被推迟到 `eval_current_row`），两个 worker 各自的 exec ctx 都从 `row_idx=0` 开始 ⇒ docid 0..9999 出现两遍 ⇒ 主键冲突。
+
+即：**docid 的生成点在不同 aux 表之间都不一致（扫描期 vs 插入期），切片也不一致（1 vs 2）**。
+因此"按切片幂等的 docid"必须先满足两个前提：
+
+1. **四张 aux 表的 docid 都在同一位置、同一套切片下生成**（推荐全部前移到扫描期，扫描任务数即切片数）；
+2. **P1/P2/P3 同一次落地**：父任务算出数据表 PK 的 K 段切点 → 四张表按同一组切点并行扫描 → docid 用
+   `generate_idempotent_value(K, slice_idx, interval, row_in_slice)`；表间切片一致才能保证 docid 一致。
+
+该实验已回退，工作区与二进制回到已验证基线（`7362740e2902…`）。**下一步的第一件事是"把映射表的 docid 也前移到扫描期"**
+（让扫描算子投影 docid 生成列），否则任何切片化 docid 都会在映射表上重复。
+
+### 2.4.7 docid 位置无关化的两次尝试（P0' 实验记录）
+
+目标：让 docid 变成 `(tablet, rowkey)` 的纯函数，从而与扫描顺序/并行度无关，这是并行构建切片的**地基**。
+
+**尝试 A：exec ctx 计数器 + 幂等公式（K=1）** → **`ERROR 1062 Duplicated primary key`**。
+反汇编/backtrace（`ObPxTransmitOp::fetch_first_row` → `ObOperator::get_next_row` → `ObExpr::eval`）证明：
+两张**映射表**的 docid 由 PDML 插入算子的 **2 个 worker** 逐行 eval（生成列被推迟到 insert），
+两张**分词表**的 docid 由**扫描期** eval（1 个扫描任务）。生成点与切片数都不同 ⇒ 计数器各自从 0 开始 ⇒ 重复。
+
+**尝试 B（架构上正确）：把 rowkey 作为 DOC_ID 的第二个参数**
+- `ObFuncExprOperator` 新增 arity `ZERO_OR_TWO`（`ob_expr_operator.h` + `ob_raw_expr.cpp` 的 `check_param_num`）；
+- `ObExprDocID::generate_doc_id`：2 个参数时 `seq = (uint64)rowkey`（仅单列整型主键，其余回落序列）；
+- `ObDMLResolver::fill_doc_id_expr_param` 追加 rowkey 列引用作为第二参数。
+→ **`ERROR 4019 Size overflow`**（ALTER 在 ~0.34 s 内失败，服务端日志里没有对应的 -4019，说明发生在生成列表达式/解析期路径上）。
+
+**尝试 C（B1 路线：改生成列文本）** → **`ERROR 4016 Internal error`**
+- `ObFtsIndexBuilderUtil::generate_doc_id_column` 把生成列文本改成 `DOC_ID(`pk`)`（仅单列整型主键）；
+- `ObExprDocID` 支持 2 参数（arity `ZERO_OR_TWO`），2 参数时 `seq = (uint64)rowkey`；
+- `ObDMLResolver::fill_doc_id_expr_param` 检测到解析出的 rowkey 参数时，用 `set_param_exprs(tablet_expr, rowkey)` 保留它；
+- 另把 rowkey 记为 docid 列的 **cascaded column**（让构建 SQL 一并 select 出来）。
+→ 构建能跑起来（耗时 7.8 s，说明 aux 构建确实执行了），但最终报 4016；服务端日志里没有对应的错误明细。
+**疑似根因**：`fill_doc_id_expr_param` 里对 schema 解析出的 rowkey 参数做 `CopySchemaExpr` 复制，
+得到的列引用不在 stmt 的 table item/计划列集合里 → 求值时 4016。正确做法应像 `part_expr` 那样
+**从 stmt 的 table item 构造列引用**（`ColumnItem`/`get_column_expr`），而不是复制 schema 表达式。
+
+**结论**：要改 docid 语义，不能走"DML 解析期给 DOC_ID 加参数"这条路（会踩生成列的表达式校验/长度路径）。
+**尝试 D（B1 修正版）**：把 rowkey 列引用改为从 stmt 的 column item 取（`get_column_expr_by_id`），
+仍报 **4016**，且这次在 ~0.3 s 内失败 ⇒ 失败点在 **CREATE INDEX / 建 aux schema**，不是构建 SQL。
+
+**决定性证据（`oceanbase.__all_column` 元数据）**：docid 生成列在**所有表里是同一列（column_id 18）**：
+
+| 表 | column_id 16 | 列 18（docid） | 列 19..21 |
+|---|---|---|---|
+| 数据表 `t` (500003) | `id` | `__doc_id_...` flags=4194305 | word_segment/word_count/doc_length |
+| rowkey_doc (500006) | `id` | `__doc_id_...` flags=4325376 | 无 |
+| fts_index (500008) | **无** | `__doc_id_...` flags=4194304 | word_segment/word_count/doc_length |
+| doc_word (500009) | **无** | `__doc_id_...` flags=4194304 | 同 fts_index |
+
+即：**docid 是数据表与三张 aux 表共享同一个 column_id 的生成列**，而两张分词表 aux **没有 rowkey 列**。
+把生成列表达式改成引用 rowkey（`DOC_ID(`id`)`）会让 aux 表上的列依赖指向不存在的列 ⇒ 建 aux schema 直接失败（4016）。
+
+**结论（架构级）**：在"不改 aux 表 schema"的约束下，**docid 无法做到位置无关**——
+共享生成列要求表达式只能依赖两张分词表也有的列（即无依赖）。因此：
+
+- 任何"并行扫描 + 序列 docid"都会破坏四张表之间的 docid 一致性；
+- 任何"位置无关 docid"都要改 aux 表的 docid 列为普通列（= 改 aux schema）；
+- 想拿 27%，只能在放开该约束后做（把 aux 的 docid 改成普通列 + 扫描期按切片幂等生成），
+  或保留现状。
+
+已试四条（1062 / 4019 / 4016 / 4016），可行的两条：
+1. **改生成列文本**：aux 表创建时把数据表的 docid 生成列定义为 `DOC_ID(<pk_col>)`
+   （`ObFtsIndexBuilderUtil::generate_doc_id_column` 里目前硬编码 `"DOC_ID()"`），
+   解析器天然得到 2 个参数；需要处理已存在该生成列（`col_exists`）的表（重建索引时列已存在，文本不能改）。
+2. **不动 docid**：把四张 aux 表统一到同一套扫描切片（映射表也从 2 个 worker 改为同一切片），
+   即 P1+P2 先行；docid 仍用序列但保证四张表的行消费顺序一致。
+
+### 2.4.8 放开"aux docid 列可为普通列"约束后的实施结果（B1 完整路线）
+
+放开约束后按四步实施，逐步实测：
+
+| 步骤 | 改动 | 结果 |
+|---|---|---|
+| S1 | **aux/index 的 docid 列改为普通列**（`ObIndexBuilderUtil::del_column_flags_and_default_value` 对 `is_doc_id_column()` 清 flag+默认值） | ✅ **构建成功**（单独开启即可用，不报错） |
+| S2 | 构建 SQL 里 rowkey_doc 的插入列表**补上 docid 列**（`generate_build_replica_sql` 里去掉 `is_doc_id_column` 的跳过） | ✅ 生成的 SQL 变成 `INTO ... (id, __doc_id_...) SELECT id, __doc_id_ ...`（已在日志确认） |
+| S3 | 数据表 docid 生成列表达式改为 **`DOC_ID(pk)`** + rowkey 记为 cascaded 列 | ❌ 仍 **`ERROR 4016`** |
+| S4 | 打开 docid 生成列的依赖解析（`cascaded_generated_column` 去掉 `!is_doc_id_column()`） | ❌ 仍 **4016** |
+
+失败点判定：S1+S2 下 aux 构建 SQL 已经带上 docid（日志可见），但一旦数据表的 docid 表达式引用 rowkey，
+构建 SQL 的**计划阶段**就失败（探针 `DOCID_CG_PROBE`/`DOCID_EVAL_PROBE` 均未触发 ⇒ 未进入执行）。
+即：**PDML insert-select 计划里对 docid 生成列的求值尚不支持列参数**，需要改
+`ObDMLResolver` 的生成列求值路径 / `ObOptimizer` 对该生成列的列投影，而不是 schema 层（schema 已能建出来）。
+
+**结论**：27% 的剩余工作已经收敛成"让 PDML 计划能求值带 rowkey 参数的 docid 生成列"这一件事：
+S1、S2 已验证可用，S3 的 schema 文本也已被接受，卡点仅在计划阶段（4016）。所有改动已回退，工作区回到已验证基线。
+
+### 2.4.9 最终结论：27% 的两条可行路径与各自的硬约束
+
+**已证实的价值**：4 分区（每 tablet 一个扫描线程）比非分区快 **27%**（1.86 s vs 2.44~2.54 s，命中一致）。
+要让非分区表拿到同样的并行度，必须让"一次 ALTER 的四张 aux 表"在**同一套数据表切片**下并行扫描，
+而 docid 必须在四个构建之间保持一致。围绕 docid 已做 6 次实现尝试，结论收敛为：
+
+| 路径 | 内容 | 硬约束 |
+|---|---|---|
+| **P-A：docid 位置无关**（`seq = f(rowkey)`） | aux docid 改普通列（✅ 已验证可用）+ 构建 SQL 补 docid 插入列（✅ 已验证可用）+ 数据表生成列 `DOC_ID(pk)` | ❌ 计划期 4016：**fts 扫描模式的 CG 只接受 docid 表达式的固定形态**（探针确认未进入执行）；要放开需改 `ObTscCgService` 的 docid 特化 + `ObDMLResolver` 的生成列求值 |
+| **P-B：切片幂等 docid**（`f(K, slice, row_in_slice)`） | 扫描期设置切片参数（`ObExecContext::set_ddl_idempotent_autoinc_params` 已具备）+ K 段扫描切片 | ❌ 映射表的 docid 与分词表**生成位置不同**（映射表在插入算子、分词表在扫描期），必须先把映射表也改成扫描期生成，且四张表共用同一切片 |
+
+两条路径都各有一步"必须改造 SQL 引擎内部"的工作（P-A 的计划期 docid 求值 / P-B 的映射表 docid 前移），
+都不是存储层或 DDL 状态机的改动。**在此之前，构建侧已无可落地的 >5% 优化**：
+压缩参数、宏块快路径、`enable_newsort`、重复分词合并（前端已并行）均已实测关闭。
+
 ### 2.5 对合并方案的影响（实测后的修正）
 
 1. **省一次分词 = 省 0.49 CPU-s ≈ 4.6 CPU-s 的 ~11% ⇒ 墙钟 ~0.22 s ≈ 9%**；

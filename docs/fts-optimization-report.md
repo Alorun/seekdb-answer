@@ -138,6 +138,40 @@ cmake --build build_release --target seekdb -j24
 
 `build_ik_all 3.858 / build_ik_content 2.654 / build_beng_en 1.428`；`tokenize_ik 0.0828 / tokenize_beng 0.0436`；`query_cn 1.0649 / query_beng 1.6668 / query_mixed 1.2475 / query_limit 1.9817`；命中数 8001 / 11000 / 7332 / 20 与基线完全一致。
 
+### 5.3 最终实测对比（2026-11-03，含分词器重写）
+
+基线：`reports/fts/baseline.txt`（2026-11-01 19:14，`git_head=75ce4f4af`）。
+当前代码：`b7cc5dbe6` + 未提交工作区改动（C1 / D1 / A2 / B1 / 分词器重写）。
+build 与 query 取 3 次完整基准中位，tokenize 取 8 次中位（该指标run间波动最大）。
+
+| 指标 | 基线 | 当前 | 提升 |
+|---|---|---|---|
+| `build_ik_all_sec` | 3.7540 | **3.0540** | **+18.6%** |
+| `build_ik_content_sec` | 2.9540 | **2.4420** | **+17.3%** |
+| `build_beng_en_sec` | 1.6400 | **1.3280** | **+19.0%** |
+| `tokenize_ik_avg_ms` | 0.0720 | **0.0610** | **+15.3%** |
+| `tokenize_beng_avg_ms` | 0.0423 | **0.0398** | **+5.9%** |
+| `query_cn_avg_ms` | 1.3914 | **1.0187** | **+26.8%** |
+| `query_beng_avg_ms` | 1.9911 | **1.5611** | **+21.6%** |
+| `query_mixed_avg_ms` | 1.5970 | **1.2096** | **+24.3%** |
+| `query_limit_avg_ms` | 1.7526 | 2.0146 | −14.9%（见下） |
+| **类别平均** | | | build **+18.3%** / tokenize **+10.6%** / query **+14.4%** |
+| **综合（三类等权）** | | | **+14.45%**（题面公式约 **28.9 / 100**） |
+
+**关于 `query_limit`**：该形态（`COUNT(*) FROM (SELECT id … LIMIT n)`）**从未走 B1 的无分数路径**
+（gate 中已用 `!has_stmt->has_limit()` 排除），代码路径与基线一致，因此不存在真实退化。原始 −14.9%
+与机器漂移同量级：本次 `select1_avg_ms` 在 0.0204~0.0274 之间波动（基线 0.0241，即 ±15%），按
+`select1` 归一后 `query_limit` 约为 0~−5%，即基本持平。
+
+**关于漂移**：本机 `select1` 相对基线偏慢 0~14%，会系统性压低所有绝对指标。若按 `select1`
+归一（仅作参考，不作为结论），构建约 +28%、查询约 +30%、分词约 +15%。
+
+**命中数校验**（必须与基线一致，用于确认语义未变）：
+`cn=8001/8001  beng=11000/11000  mixed=7332/7332  limit=20/20` ✓
+
+对比明细文件：`reports/fts/indextuning-compare.txt`；官方单跑报告：`reports/fts/indextuning.txt`
+（2026-11-03 13:59 重新生成，此前为 11-02 的旧数据）。
+
 ## 6. 正确性验证
 
 1. **等价性 dump**（`.tmpdev/correctness_dump.sh`，36 个形态 / 244 行输出）：TOKENIZE（ik/beng/ngram/space/数字/中文数字/长文本/空文本）、MATCH 命中数、命中文档集合（COUNT/SUM/MIN/MAX）、40 行 BM25 精确分数、`MATCH > threshold`、分数进 SELECT、布尔 AND/OR/NOT、两个 MATCH 组合、LIMIT/OFFSET、按分数排序。与改动前逐字节一致，唯一差异是 `ORDER BY MATCH(...) DESC, id ASC LIMIT n` 的并列组选取（topk 比较器不含 rowkey 次序键，属既有行为；同分文档物理顺序在并行构建下不可复现，索引内容本身一致）。
