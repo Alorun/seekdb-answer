@@ -132,6 +132,9 @@ public:
 private:
   int build_doc_id_set();
   int add_doc_id(const common::ObDatum &id_datum);
+  int add_doc_id_batch(const common::ObDatum *id_datums,
+                       const sql::ObBitVector *skip,
+                       const int64_t count);
   int get_tablet_bits(const uint64_t tablet_id, TabletBits *&tablet_bits);
   int ensure_block(TabletBits &tablet_bits, const int64_t block_idx);
   int emit_rows(const int64_t capacity, int64_t &count);

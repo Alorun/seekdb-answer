@@ -51,6 +51,10 @@ public:
   int append_row(const blocksstable::ObDatumRow &curr_row);
   int append_batch(const blocksstable::ObBatchDatumRows &curr_rows);
   int close();
+  void set_micro_block_merge_verify_level(const int64_t level)
+  {
+    macro_block_writer_.set_micro_block_merge_verify_level(level);
+  }
   bool is_inited() const { return is_inited_; }
   int64_t get_last_macro_seq() const { return macro_block_writer_.get_last_macro_seq(); }
   TO_STRING_KV(K(is_inited_), K(macro_block_writer_), KP(ddl_redo_callback_), K(index_builder_), K(data_desc_));

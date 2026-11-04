@@ -24,7 +24,7 @@ namespace oceanbase
 namespace storage
 {
 // Only for UTF16
-class ObIKSurrogateProcessor : public ObIIKProcessor
+class ObIKSurrogateProcessor final : public ObIIKProcessor
 {
 public:
   ObIKSurrogateProcessor() {}

@@ -309,6 +309,62 @@ int ObTextDocIdBitmapIter::add_doc_id(const common::ObDatum &id_datum)
   return ret;
 }
 
+namespace {
+bool text_bitmap_batch_add_enabled()
+{
+  static const bool enabled = []() -> bool {
+    const char *value = ::getenv("OB_FTS_QUERY_BATCH_ADD");
+    return !(nullptr != value && '0' == value[0]);
+  }();
+  return enabled;
+}
+} // namespace
+
+int ObTextDocIdBitmapIter::add_doc_id_batch(const common::ObDatum *id_datums,
+                                            const sql::ObBitVector *skip,
+                                            const int64_t count)
+{
+  int ret = OB_SUCCESS;
+  TabletBits *cached_bits = nullptr;
+  uint64_t cached_tablet_id = 0;
+  for (int64_t k = 0; OB_SUCC(ret) && k < count; ++k) {
+    if (OB_LIKELY(nullptr == skip || !skip->at(k))) {
+      const ObString id_str = id_datums[k].get_string();
+      if (OB_UNLIKELY(id_str.length() != OB_DOC_ID_COLUMN_BYTE_LENGTH)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected document id length", K(ret), K(id_str.length()));
+      } else {
+        const ObDocId *doc_id = reinterpret_cast<const ObDocId *>(id_str.ptr());
+        const uint64_t seq_id = doc_id->seq_id_;
+        if (OB_UNLIKELY(nullptr == cached_bits || cached_tablet_id != doc_id->tablet_id_)) {
+          if (OB_FAIL(get_tablet_bits(doc_id->tablet_id_, cached_bits))) {
+          } else if (OB_ISNULL(cached_bits)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected null tablet bitmap", K(ret));
+          } else {
+            cached_tablet_id = doc_id->tablet_id_;
+          }
+        }
+        if (OB_SUCC(ret)) {
+          const int64_t block_idx = static_cast<int64_t>(seq_id) / BLOCK_BITS;
+          if (OB_UNLIKELY(block_idx >= static_cast<int64_t>(cached_bits->blocks_.count()))
+              && OB_FAIL(ensure_block(*cached_bits, block_idx))) {
+            LOG_WARN("failed to ensure bitmap block", K(ret));
+          } else {
+            char *block = cached_bits->blocks_.at(block_idx);
+            const int64_t in_block = static_cast<int64_t>(seq_id) % BLOCK_BITS;
+            block[in_block >> 3] = static_cast<char>(block[in_block >> 3] | (1 << (in_block & 7)));
+            if (static_cast<int64_t>(seq_id) + 1 > cached_bits->used_bits_) {
+              cached_bits->used_bits_ = static_cast<int64_t>(seq_id) + 1;
+            }
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObTextDocIdBitmapIter::build_doc_id_set()
 {
   int ret = OB_SUCCESS;
@@ -331,9 +387,14 @@ int ObTextDocIdBitmapIter::build_doc_id_set()
           // valid until its next refill: walk them directly.  This is the same
           // row set the row interface would produce, minus the per-posting
           // virtual calls and the datum copy into the dimension buffer.
-          for (int64_t k = 0; OB_SUCC(ret) && k < batch_count; ++k) {
-            if (OB_LIKELY(nullptr == skip || !skip->at(k))) {
-              if (OB_FAIL(add_doc_id(id_datums[k]))) {
+          if (text_bitmap_batch_add_enabled()) {
+            if (OB_FAIL(add_doc_id_batch(id_datums, skip, batch_count))) {
+            }
+          } else {
+            for (int64_t k = 0; OB_SUCC(ret) && k < batch_count; ++k) {
+              if (OB_LIKELY(nullptr == skip || !skip->at(k))) {
+                if (OB_FAIL(add_doc_id(id_datums[k]))) {
+                }
               }
             }
           }

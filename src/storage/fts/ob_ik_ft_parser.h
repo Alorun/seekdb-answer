@@ -18,6 +18,7 @@
 #define _OCEANBASE_STORAGE_FTS_OB_IK_FT_PARSER_H_
 
 #include "lib/allocator/ob_allocator.h"
+#include "lib/allocator/page_arena.h"
 #include "storage/fts/dict/ob_ft_cache_container.h"
 #include "storage/fts/dict/ob_ft_dict.h"
 #include "storage/fts/dict/ob_ft_dict_def.h"
@@ -41,6 +42,8 @@ class ObIKFTParser final : public ObITokenIterator
 public:
   ObIKFTParser(ObIAllocator &allocator, ObFTDictHub *hub)
       : allocator_(allocator),
+        doc_alloc_(lib::ObMemAttr("IKDocPool")),
+        use_doc_pool_(doc_pool_enabled()),
         is_inited_(false),
         coll_type_(ObCollationType::CS_TYPE_INVALID),
         ctx_(nullptr),
@@ -101,6 +104,20 @@ private:
   // Drops the per document state but keeps the (immutable) dictionaries.
   void reset_document_state();
 
+  // True when the per document objects may come from the recyclable arena
+  // below.  Gray release switch: OB_FTS_IK_DOC_POOL=0 restores the previous
+  // behaviour (everything from the parser allocator).
+  static bool doc_pool_enabled();
+
+  // Allocator for the objects that are rebuilt for every document (tokenize
+  // context and processors).  They are destroyed at the end of the document, so
+  // their memory can be handed back wholesale; keeping them out of the parser
+  // allocator stops that arena from growing by a few kilobytes per document.
+  ObIAllocator &doc_alloc()
+  {
+    return use_doc_pool_ ? static_cast<ObIAllocator &>(doc_alloc_) : allocator_;
+  }
+
   void destroy_dicts();
 
   bool should_read_newest_table() const;
@@ -112,6 +129,9 @@ private:
 private:
   static constexpr int SEGMENT_LIMIT = 1000;
   ObIAllocator &allocator_;
+  // Recycled once per document, see doc_alloc().
+  ObArenaAllocator doc_alloc_;
+  bool use_doc_pool_;
   bool is_inited_;
 
   ObCollationType coll_type_;

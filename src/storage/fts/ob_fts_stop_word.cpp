@@ -15,6 +15,8 @@
  */
 
 #include "object/ob_object.h"
+#include <cstdlib>
+
 #define USING_LOG_PREFIX STORAGE_FTS
 
 #include "share/rc/ob_server_runtime.h"
@@ -34,11 +36,57 @@ ObStopWordChecker::~ObStopWordChecker()
   destroy();
 }
 
+bool ObStopWordChecker::prefilter_enabled()
+{
+  static const bool enabled = []() -> bool {
+    const char *value = ::getenv("OB_FTS_STOPWORD_PREFILTER");
+    return !(nullptr != value && '0' == value[0]);
+  }();
+  return enabled;
+}
+
+namespace
+{
+// Sets the bit of every case variant of the given first/last byte pair.  The
+// stopword set is compared case insensitively, so a token may reach it in either
+// case; a pair that is not set here is guaranteed not to match anything.
+OB_INLINE uint8_t fold_case(const uint8_t c)
+{
+  return static_cast<uint8_t>((c >= 'a' && c <= 'z') ? (c - ('a' - 'A')) : c);
+}
+
+OB_INLINE void set_first_last_pair(uint8_t *mask, const uint8_t first, const uint8_t last)
+{
+  // The stopword list is lower case, the token may be in either case.
+  const uint8_t firsts[2] = {first, fold_case(first)};
+  const uint8_t lasts[2] = {last, fold_case(last)};
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0; j < 2; ++j) {
+      const uint32_t key = (static_cast<uint32_t>(firsts[i]) << 8) | lasts[j];
+      mask[key >> 3] |= static_cast<uint8_t>(1u << (key & 7));
+    }
+  }
+}
+} // namespace
+
+bool ObStopWordChecker::prefilter_rejects(const common::ObString &word) const
+{
+  const int64_t len = word.length();
+  bool rejects = false;
+  if (len < min_stopword_len_ || len > max_stopword_len_) {
+    rejects = true;
+  } else {
+    const uint32_t key = (static_cast<uint32_t>(static_cast<uint8_t>(word.ptr()[0])) << 8)
+                         | static_cast<uint8_t>(word.ptr()[len - 1]);
+    rejects = 0 == (first_last_mask_[key >> 3] & static_cast<uint8_t>(1u << (key & 7)));
+  }
+  return rejects;
+}
+
 int ObStopWordChecker::init()
 {
   int ret = OB_SUCCESS;
-  
-  
+  MEMSET(first_last_mask_, 0, sizeof(first_last_mask_));
 
   if (inited_) {
     ret = OB_INIT_TWICE;
@@ -59,6 +107,17 @@ int ObStopWordChecker::init()
       }
       ObFTWord stopword(stopword_len, stopword_str, stopword_type_);
       if (OB_FAIL(stopword_set_.set_refactored(stopword))) {
+      } else if (OB_UNLIKELY(0 == stopword_len)) {
+      } else {
+        if (0 == min_stopword_len_ || stopword_len < min_stopword_len_) {
+          min_stopword_len_ = stopword_len;
+        }
+        if (stopword_len > max_stopword_len_) {
+          max_stopword_len_ = stopword_len;
+        }
+        set_first_last_pair(first_last_mask_,
+                            static_cast<uint8_t>(stopword_str[0]),
+                            static_cast<uint8_t>(stopword_str[stopword_len - 1]));
       }
     }
     if (OB_SUCC(ret)) {
@@ -96,6 +155,9 @@ int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
     const common::ObString word_str = word.get_word().get_string();
     bool may_match = true;
     if (stopwords_all_ascii_) {
+      if (prefilter_enabled() && prefilter_rejects(word_str)) {
+        may_match = false;
+      }
       for (int64_t i = 0; may_match && i < word_str.length(); ++i) {
         may_match = (static_cast<unsigned char>(word_str.ptr()[i]) < 0x80);
       }

@@ -48,6 +48,10 @@ private:
 
   int add_chain(ObIKTokenChain *chain);
 
+  // Gray release switch of the lazy chain map (see add_chain).  Unset or any
+  // value other than "0" enables it.
+  static bool lazy_map_enabled();
+
   // Answers "does a chain start at this offset" for output_result().  When the
   // chains were added at strictly increasing offsets (the common case) the
   // answer comes from a binary search over a small array; otherwise, and for a

@@ -1036,6 +1036,14 @@ int ObMacroBlockWriter::check_meta_macro_block_need_rewrite(bool &need_rewrite) 
   return ret;
 }
 
+void ObMacroBlockWriter::set_micro_block_merge_verify_level(const int64_t level)
+{
+  micro_helper_.set_micro_block_merge_verify_level(level);
+  if (OB_NOT_NULL(micro_writer_)) {
+    micro_writer_->set_micro_block_merge_verify_level(level);
+  }
+}
+
 int ObMacroBlockWriter::close()
 {
   int ret = OB_SUCCESS;

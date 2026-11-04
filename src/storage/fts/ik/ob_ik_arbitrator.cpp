@@ -28,6 +28,8 @@
 #include "storage/fts/ik/ob_ik_processor.h"
 #include "storage/fts/ik/ob_ik_token.h"
 
+#include <cstdlib>
+
 namespace oceanbase
 {
 namespace storage
@@ -345,9 +347,13 @@ constexpr int64_t IK_ARBITRATOR_KEEP_MAX_BYTES = 512 * 1024;
 
 void ObIKArbitrator::reuse()
 {
+  // In lazy mode the map only holds entries when the ordered array could not
+  // answer the previous document, so an untouched map must not be cleared (the
+  // clear walks every bucket under its lock).
+  const bool map_used = lazy_map_enabled() ? !chain_order_ok_ : true;
   chain_count_ = 0;
   chain_order_ok_ = true;
-  if (-1 != bucket_num_) {
+  if (map_used && -1 != bucket_num_) {
     // The entries point into the arena that is rewound right below, so the map
     // has to be emptied first.  clear() keeps the bucket array.
     chains_.reuse();
@@ -357,6 +363,15 @@ void ObIKArbitrator::reuse()
   } else {
     alloc_.reuse();
   }
+}
+
+bool ObIKArbitrator::lazy_map_enabled()
+{
+  static const bool enabled = []() -> bool {
+    const char *value = ::getenv("OB_FTS_IK_LAZY_CHAIN_MAP");
+    return !(nullptr != value && '0' == value[0]);
+  }();
+  return enabled;
 }
 
 ObIKArbitrator::ObIKArbitrator()
@@ -371,16 +386,40 @@ int ObIKArbitrator::add_chain(ObIKTokenChain *chain)
     ret = OB_INVALID_ARGUMENT;
   } else if (chain->list().is_empty()) {
     // no need to add empty chain
-  } else if (OB_FAIL(chains_.set_refactored(chain->min_offset(), chain))) {
-  } else if (chain_count_ < MAX_ORDERED_CHAINS
+  } else if (!lazy_map_enabled()) {
+    if (OB_FAIL(chains_.set_refactored(chain->min_offset(), chain))) {
+    } else if (chain_count_ < MAX_ORDERED_CHAINS
+               && (0 == chain_count_
+                   || chain->min_offset() > chain_order_[chain_count_ - 1].offset_)) {
+      chain_order_[chain_count_].offset_ = chain->min_offset();
+      chain_order_[chain_count_].chain_ = chain;
+      ++chain_count_;
+    } else {
+      // Duplicate or unordered offset, or too many chains: use the map.
+      chain_order_ok_ = false;
+    }
+  } else if (chain_order_ok_ && chain_count_ < MAX_ORDERED_CHAINS
              && (0 == chain_count_
                  || chain->min_offset() > chain_order_[chain_count_ - 1].offset_)) {
+    // The ordered array answers every lookup of this document, so the hash map -
+    // one locked insert per chain plus a clear per document - is not needed.
+    // output_result() only ever looks a chain up by offset, so which structure
+    // holds it cannot change the result.
     chain_order_[chain_count_].offset_ = chain->min_offset();
     chain_order_[chain_count_].chain_ = chain;
     ++chain_count_;
   } else {
-    // Duplicate or unordered offset, or too many chains: use the map.
-    chain_order_ok_ = false;
+    if (chain_order_ok_) {
+      // First chain of this document that the ordered array cannot hold:
+      // materialise the map with everything added so far, then keep it complete.
+      chain_order_ok_ = false;
+      for (int64_t i = 0; OB_SUCC(ret) && i < chain_count_; ++i) {
+        if (OB_FAIL(chains_.set_refactored(chain_order_[i].offset_, chain_order_[i].chain_))) {
+        }
+      }
+    }
+    if (OB_SUCC(ret) && OB_FAIL(chains_.set_refactored(chain->min_offset(), chain))) {
+    }
   }
   return ret;
 }

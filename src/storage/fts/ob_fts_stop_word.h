@@ -90,6 +90,22 @@ private:
   // non-ASCII byte can then never match, so the hash lookup is skipped.
   bool stopwords_all_ascii_ = false;
 
+  // Cheap prefilter of the ASCII stopword lookup, derived from the same word
+  // list the set is built from: a word can only be a stopword when its length is
+  // within the range of the configured words and its (first, last) byte pair is
+  // one of theirs.  A word rejected here would also miss in the set, so the
+  // filter never changes the answer; it only skips the hash lookup for the
+  // majority of the words of a document.  Uppercase variants are included
+  // because the comparison is case insensitive.
+  // OB_FTS_STOPWORD_PREFILTER=0 disables it.
+  static bool prefilter_enabled();
+  bool prefilter_rejects(const common::ObString &word) const;
+
+  static const int64_t FIRST_LAST_MASK_BYTES = 65536 / 8;
+  int64_t min_stopword_len_ = 0;
+  int64_t max_stopword_len_ = 0;
+  uint8_t first_last_mask_[FIRST_LAST_MASK_BYTES];
+
   bool inited_ = false;
 
   static_assert(sizeof(ob_stop_word_list) / sizeof(ob_stop_word_list[0]) <= DEFAULT_STOPWORD_BUCKET_NUM,

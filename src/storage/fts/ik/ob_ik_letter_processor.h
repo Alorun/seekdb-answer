@@ -23,7 +23,7 @@ namespace oceanbase
 {
 namespace storage
 {
-class ObIKLetterProcessor : public ObIIKProcessor
+class ObIKLetterProcessor final : public ObIIKProcessor
 {
 public:
   ObIKLetterProcessor();

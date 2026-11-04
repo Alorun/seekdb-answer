@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
 
 #include "lib/utility/ob_macro_utils.h"
 
@@ -105,7 +106,11 @@ public:
 
   OB_INLINE uint32_t child(const uint32_t node, const char *ptr, const uint8_t len) const
   {
-    const uint32_t key = pack_key(ptr, len);
+    return child_slow(node, pack_key(ptr, len));
+  }
+
+  OB_INLINE uint32_t child_slow(const uint32_t node, const uint32_t key) const
+  {
     uint32_t begin = nodes_[node] & OFF_MASK;
     const uint32_t end = nodes_[node + 1] & OFF_MASK;
     if (end - begin <= 8) {
@@ -135,6 +140,15 @@ public:
   OB_INLINE bool has_child(const uint32_t node) const
   {
     return (nodes_[node] & OFF_MASK) != (nodes_[node + 1] & OFF_MASK);
+  }
+
+  // The node word holds both the "word ends here" bit and the children offset,
+  // so one load answers both questions.
+  OB_INLINE uint32_t node_word(const uint32_t node) const { return nodes_[node]; }
+  OB_INLINE bool is_word_of(const uint32_t word) const { return 0 != (word & WORD_FLAG); }
+  OB_INLINE bool has_child_of(const uint32_t child_begin_word, const uint32_t child_end_word) const
+  {
+    return (child_begin_word & OFF_MASK) != (child_end_word & OFF_MASK);
   }
 
 public:

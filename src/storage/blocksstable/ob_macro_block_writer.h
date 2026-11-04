@@ -76,6 +76,7 @@ public:
   int compress_micro_block(ObMicroBlockDesc &micro_block_desc);
   int dump_micro_block_writer_buffer(const char *buf, const int64_t size);
   void reset();
+  void set_micro_block_merge_verify_level(const int64_t level) { micro_block_merge_verify_level_ = level; }
 private:
   int prepare_micro_block_reader(
       const char *buf,
@@ -205,6 +206,10 @@ public:
   int check_data_macro_block_need_merge(const ObMacroBlockDesc &macro_desc, bool &need_merge) const;
   int check_meta_macro_block_need_rewrite(bool &need_rewrite) const;
   int close();
+  // Override the micro-block merge verification level of this writer (both the
+  // micro-block writer that computes row checksums and the buffer helper that
+  // verifies the written block).
+  void set_micro_block_merge_verify_level(const int64_t level);
   void dump_block_and_writer_buffer();
   inline ObMacroBlocksWriteCtx &get_macro_block_write_ctx() { return block_write_ctx_; }
   inline int64_t get_last_macro_seq() const { return OB_ISNULL(macro_seq_generator_) ? -1 : macro_seq_generator_->get_current(); } /* save our seq num */

@@ -146,7 +146,7 @@ private:
   DISALLOW_COPY_AND_ASSIGN(IKFastHitArray);
 };
 
-class ObIKCJKProcessor : public ObIIKProcessor
+class ObIKCJKProcessor final : public ObIIKProcessor
 {
 public:
   ObIKCJKProcessor(const ObIFTDict &dict_main, ObIAllocator &alloc)

@@ -50,6 +50,9 @@
 | **看四项优化的完整实施方案（含代码位置/风险/验收门）** | `docs/fts-next-four-items-plan.md` |
 | **看四项之外的补充优化方向（⑤~⑧，含实测依据与账本）** | `docs/fts-additional-optimizations.md` |
 | **看距满分还差什么（剩余空间定量分析 + 达标路径）** | `docs/fts-remaining-levers-analysis.md` |
+| **看正式方案：目标 156%（预留 6 点抗波动）与七项分配** | `docs/fts-plan-target-156.md` |
+| **交给 agent P1：分词侧 D1 beng + D2/D3/D4 IK（与 P2 并行）** | `docs/prompt-P1-tokenize-four-items.md` |
+| **交给 agent P2：构建 D5/D6 + 查询 D7（与 P1 并行）** | `docs/prompt-P2-build-and-query-three-items.md` |
 | **交给 agent：⑤ count-only 快路径（query +9）** | `docs/prompt-5-count-only-fast-path.md` |
 | **看 ⑤ count-only 快路径做了什么、实测多少**（判定条件、三形态探针、4 组 8 轮配对、正确性证据） | `docs/fts-count-only-fast-path-report.md` |
 | **交给 agent：③深挖 → ⑥映射表合并 → ⑧语句层 → ④排查** | `docs/prompt-6-to-9-followup-four.md` |
@@ -57,6 +60,7 @@
 | **交给 agent：构建侧 B-1 每行成本 + B-2 收尾合并（可与 C2/C3 并行）** | `docs/prompt-C1-build-perrow-and-finalize.md` |
 | **交给 agent：分词侧算法级 T-1 IK + T-2 beng（可与 C1/C3 并行）** | `docs/prompt-C2-tokenize-algorithmic.md` |
 | **交给 agent：查询侧 Q-1 批次 + Q-2 emit（可与 C1/C2 并行）** | `docs/prompt-C3-query-batch-and-emit.md` |
+| **交给 agent：路线 A 收尾（tokenize_ik 0.0473→0.0410，补最后 8.9 个点）** | `docs/prompt-A2-tokenize-ik-finish.md` |
 | **交给 agent B：分词侧两项（③ 深挖内部 + ⑧ 语句层）** | `docs/prompt-B-tokenize-side-two-items.md` |
 | **看本轮构建侧两项做了什么**（⑥ 墙钟上限 0、前提证伪未实施；DDL 固定开销：删 100ms sleep + 10ms 轮询，clean A/B +4.11%/+3.85%/+11.84%） | `docs/fts-build-side-round2-report.md` |
 | **看本轮分词侧两项做了什么**（③ 四段计时再次证伪未归属 9µs；官方口径 0.0537/0.0385 未达标；0 行代码改动） | `docs/fts-tokenize-side-round2-report.md` |

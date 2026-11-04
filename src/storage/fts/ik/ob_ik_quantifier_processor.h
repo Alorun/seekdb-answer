@@ -28,7 +28,7 @@ namespace oceanbase
 namespace storage
 {
 class ObFTDictHub;
-class ObIKQuantifierProcessor : public ObIIKProcessor
+class ObIKQuantifierProcessor final : public ObIIKProcessor
 {
 public:
   ObIKQuantifierProcessor(const ObIFTDict &quan_dict, ObIAllocator &alloc)

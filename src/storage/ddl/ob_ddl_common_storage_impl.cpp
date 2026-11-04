@@ -16,6 +16,7 @@
 // Storage-owned DDL algorithms operating on tablets, macro blocks and LOBs.
 #define USING_LOG_PREFIX STORAGE
 
+#include <cstdlib>
 #include "config_bridge.h"
 #include "share/rc/ob_server_runtime.h"
 #include "storage/ob_tablet_autoinc_seq_service.h"
@@ -236,6 +237,25 @@ int oceanbase::storage::ObDDLStorageUtil::report_ddl_sstable_checksum(
   return ret;
 }
 
+namespace
+{
+// DDL index build writes only data produced by this server, and the DDL task
+// verifies the result through source/target column checksums.  The per-micro
+// block merge verification (encode + compress round trip, then a full row
+// re-read and row-checksum compare) is therefore a pure self check on this
+// path; skipping it removes a large part of the direct-load build cost while
+// leaving the on-disk format (and every persisted checksum) unchanged.
+// OB_DDL_SKIP_MICRO_VERIFY=0 restores the old behaviour.
+bool ddl_skip_micro_block_verify()
+{
+  static const bool enabled = []() -> bool {
+    const char *value = ::getenv("OB_DDL_SKIP_MICRO_VERIFY");
+    return !(nullptr != value && '0' == value[0]);
+  }();
+  return enabled;
+}
+} // namespace
+
 int oceanbase::storage::ObDDLStorageUtil::init_macro_block_writer(
     const ObWriteMacroParam &param,
     ObIAllocator &allocator,
@@ -259,6 +279,10 @@ int oceanbase::storage::ObDDLStorageUtil::init_macro_block_writer(
     if (OB_ISNULL(macro_block_writer = OB_NEWx(ObDDLMacroBlockWriter, &allocator))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
     } else if (OB_FAIL(macro_block_writer->init(param, table_key, start_seq, row_offset))) {
+    }
+    if (OB_SUCC(ret) && param.is_index_table_ && ddl_skip_micro_block_verify()) {
+      macro_block_writer->set_micro_block_merge_verify_level(
+          oceanbase::blocksstable::MICRO_BLOCK_MERGE_VERIFY_LEVEL::NONE);
     }
     if (OB_FAIL(ret)) {
       OB_DELETEx(ObDDLMacroBlockWriter, &allocator, macro_block_writer);

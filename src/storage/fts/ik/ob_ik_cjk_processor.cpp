@@ -348,9 +348,12 @@ int ObIKCJKProcessor::do_process_fast(TokenizeContext &ctx,
         if (OB_FAIL(fast_hits_.erase_at(i))) {
         }
       } else {
+        // is_word() and has_child() are both answered by the node word; loading
+        // it once saves two dependent loads per character.
+        const uint32_t next_word = dict.node_word(next);
         hit.node_ = next;
         ++hit.char_cnt_;
-        if (dict.is_word(next)) {
+        if (dict.is_word_of(next_word)) {
           if (OB_FAIL(ctx.add_token(ctx.fulltext(),
                                     hit.start_,
                                     ctx.get_cursor() + char_len - hit.start_,
@@ -359,7 +362,7 @@ int ObIKCJKProcessor::do_process_fast(TokenizeContext &ctx,
           }
         }
         if (OB_SUCC(ret)) {
-          if (dict.has_child(next)) {
+          if (dict.has_child_of(next_word, dict.node_word(next + 1))) {
             ++i;
           } else if (OB_FAIL(fast_hits_.erase_at(i))) {
           }
@@ -369,7 +372,8 @@ int ObIKCJKProcessor::do_process_fast(TokenizeContext &ctx,
     if (OB_SUCC(ret)) {
       const uint32_t node = dict.root_child(ch, char_len);
       if (0 != node) {
-        if (dict.is_word(node)) {
+        const uint32_t node_word = dict.node_word(node);
+        if (dict.is_word_of(node_word)) {
           if (OB_FAIL(ctx.add_token(ctx.fulltext(),
                                     ctx.get_cursor(),
                                     char_len,
@@ -377,7 +381,7 @@ int ObIKCJKProcessor::do_process_fast(TokenizeContext &ctx,
                                     ObIKTokenType::IK_CHINESE_TOKEN))) {
           }
         }
-        if (OB_SUCC(ret) && dict.has_child(node)) {
+        if (OB_SUCC(ret) && dict.has_child_of(node_word, dict.node_word(node + 1))) {
           IKFastHitArray::Hit hit;
           hit.start_ = ctx.get_cursor();
           hit.node_ = node;
