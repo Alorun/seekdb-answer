@@ -139,6 +139,13 @@ bool brute_algo(long n) {
   }
   return n <= 400000;
 }
+// Diagnostic-only graph: a ring over the dataset, no distance computation.  It
+// exists to measure the DDL/snapshot/persistence floor of the timed build with
+// an almost-free GPU stage; Recall is meaningless with it.
+bool floor_algo() {
+  const char* algo = std::getenv("SK_CUVS_BUILD_ALGO");
+  return algo != nullptr && std::strcmp(algo, "floor") == 0;
+}
 struct BruteForceIndex {
   cuvsBruteForceIndex_t p = nullptr;
   BruteForceIndex() { check(cuvsBruteForceIndexCreate(&p), "BruteForceIndexCreate"); }
@@ -318,6 +325,11 @@ extern "C" int seekdb_cuvs_custom_build(cuvsResources_t resources, const float* 
           knn(row, col) = buffer.data_handle()[size_t(row) * extended + col];
     } else if (use_brute) {
       build_knn_bruteforce(resources, base, n, dim, knn_degree, knn);
+    } else if (floor_algo()) {
+      #pragma omp parallel for
+      for (long row = 0; row < n; ++row)
+        for (int col = 0; col < knn_degree; ++col)
+          knn(row, col) = static_cast<uint32_t>((row + 1 + col) % n);
     } else {
       Params params;
       Index index;
