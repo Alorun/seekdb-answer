@@ -125,14 +125,19 @@ const Tuning& tuning() {
 // (GPU GEMM + device-side k-selection); the CAGRA graph optimizer then prunes
 // those exact candidates down to the requested final degree and adds the
 // reverse edges, and the fixed library search implementation serves queries.
-bool brute_algo() {
-  static const bool value = [] {
-    const char* algo = std::getenv("SK_CUVS_BUILD_ALGO");
-    if (algo == nullptr || algo[0] == '\0') return false;
+// Default algorithm for the contest-sized offline DDL path (n <= 400K): the
+// exact-kNN build is cheaper than 50 NN-descent iterations there.  Larger
+// datasets keep the library NN-descent path because all-pairs cost grows with
+// n^2.  SK_CUVS_BUILD_ALGO=nnd forces the old path, the brute names force this
+// one.
+bool brute_algo(long n) {
+  const char* algo = std::getenv("SK_CUVS_BUILD_ALGO");
+  if (algo != nullptr && algo[0] != '\0') {
+    if (std::strcmp(algo, "nnd") == 0) return false;
     return std::strcmp(algo, "brute") == 0 || std::strcmp(algo, "bruteforce") == 0 ||
            std::strcmp(algo, "bf") == 0;
-  }();
-  return value;
+  }
+  return n <= 400000;
 }
 struct BruteForceIndex {
   cuvsBruteForceIndex_t p = nullptr;
@@ -277,11 +282,18 @@ extern "C" int seekdb_cuvs_custom_build(cuvsResources_t resources, const float* 
       throw std::runtime_error("custom builder currently requires wave32");
     const Tuning& tune = tuning();
     const auto start = Clock::now();
-    auto knn = raft::make_host_matrix<uint32_t, int64_t>(n, tune.degree);
-    int64_t ds[] = {n, dim}, gs[] = {n, tune.degree};
+    const bool use_gnnd = (flags & 2) != 0;
+    const bool use_brute = !use_gnnd && brute_algo(n);
+    // The exact-kNN path defaults to a 128-degree candidate list, which is the
+    // smallest list that makes the optimizer take its exact-degree fast path
+    // (no detour prune) while keeping the graph quality of the 256 list.
+    const int knn_degree = use_brute ? env_int("SK_CUVS_BF_DEGREE", 128, 32, 256) : tune.degree;
+    const int final_degree = std::min(tune.final_degree, knn_degree);
+    auto knn = raft::make_host_matrix<uint32_t, int64_t>(n, knn_degree);
+    int64_t ds[] = {n, dim}, gs[] = {n, knn_degree};
     auto dataset = tensor(const_cast<float*>(base), ds, kDLFloat);
     auto graph = tensor(knn.data_handle(), gs, kDLUInt);
-    if (flags & 2) {
+    if (use_gnnd) {
       namespace own = seekdb_cagra_build::nnd;
       // Same get_build_config arithmetic as the frozen NN-descent path.
       const size_t extended = own::roundUp64(static_cast<size_t>(tune.degree * 1.3));
@@ -304,8 +316,8 @@ extern "C" int seekdb_cuvs_custom_build(cuvsResources_t resources, const float* 
       for (long row = 0; row < n; ++row)
         for (int col = 0; col < tune.degree; ++col)
           knn(row, col) = buffer.data_handle()[size_t(row) * extended + col];
-    } else if (brute_algo()) {
-      build_knn_bruteforce(resources, base, n, dim, tune.degree, knn);
+    } else if (use_brute) {
+      build_knn_bruteforce(resources, base, n, dim, knn_degree, knn);
     } else {
       Params params;
       Index index;
@@ -325,12 +337,12 @@ extern "C" int seekdb_cuvs_custom_build(cuvsResources_t resources, const float* 
                                              data_view, knn.view());
     raft::resource::sync_stream(res);
     const auto sorted = Clock::now();
-    auto final_graph = raft::make_host_matrix<uint32_t, int64_t>(n, tune.final_degree);
+    auto final_graph = raft::make_host_matrix<uint32_t, int64_t>(n, final_degree);
     seekdb_cagra_build::graph::optimize(res, knn.view(), final_graph.view(),
                                       false, true, flags & 1, flags & 4);
     raft::resource::sync_stream(res);
     const auto pruned = Clock::now();
-    int64_t final_shape[] = {n, tune.final_degree};
+    int64_t final_shape[] = {n, final_degree};
     auto final_tensor = tensor(final_graph.data_handle(), final_shape, kDLUInt);
     check(cuvsCagraIndexFromArgs(resources, L2Expanded, &final_tensor, &dataset, output),
           "CagraIndexFromArgs");
@@ -339,8 +351,8 @@ extern "C" int seekdb_cuvs_custom_build(cuvsResources_t resources, const float* 
     log_line("SEEKDB_GPU_BUILD flags=%u n=%ld dim=%ld niter=%d degree=%d "
              "internal_degree=%d final_degree=%d "
              "nnd_sec=%.6f sort_sec=%.6f prune_reverse_sec=%.6f attach_sec=%.6f total_sec=%.6f\n",
-             flags, n, dim, tune.iterations, tune.degree, tune.internal_degree,
-             tune.final_degree, seconds(start, joined), seconds(joined, sorted),
+             flags, n, dim, tune.iterations, knn_degree, tune.internal_degree,
+             final_degree, seconds(start, joined), seconds(joined, sorted),
              seconds(sorted, pruned), seconds(pruned, end), seconds(start, end));
     return 0;
   } catch (const std::exception& error) {

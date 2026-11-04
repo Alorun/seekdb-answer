@@ -63,13 +63,14 @@ sha256sum "$SRC/tools/hipvs_bridge/kernel_build/custom_builder.hip" \
   || { say "FAILED: bridge build"; tail -n 40 "$W2/bridge.log"; exit 1; }
 say "bridge ok"
 
-CFGS="bf${DEG}:0:${DEG}:384:128"
-[[ "$DEG" != "128" ]] && CFGS="$CFGS bf128:0:128:128:128"
-say "== sweep: brute ($CFGS) on sift128 + syn256 =="
+# No SK_CUVS_BUILD_ALGO / SK_CUVS_BF_* here: this exercises the exact code path
+# the evaluator takes (fixed DDL with no tuning environment).
+CFGS="sub:0:256:384:128"
+say "== sweep: submission default ($CFGS) on sift128 + syn256 =="
 ( cd "$SRC" && tools/bench/run_contest_sweep.sh \
     --observer build_release/src/observer/seekdb --bridge "$BR" \
     --work "$W" --memory 32G --port "$PORT" \
-    --extra-env "SK_CUVS_TIMING_FILE=$W2/timing.log,SK_CUVS_BUILD_ALGO=brute" \
+    --extra-env "SK_CUVS_TIMING_FILE=$W2/timing.log" \
     --configs "$CFGS" ) >"$W2/sweep.log" 2>&1
 say "== sweep done =="
 echo "---- build_ms / recall ----"
