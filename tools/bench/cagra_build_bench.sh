@@ -40,6 +40,7 @@ INDEX_NAME=idx_items
 GENERATE_ARGS=""
 ABS_MIN="0.95,0.95"
 EXTRA_ENV=""
+PRE_SQL=""
 
 usage()
 {
@@ -64,6 +65,7 @@ while (($# > 0)); do
     --skip-gen) SKIP_GEN=1; shift ;;
     --abs-min) ABS_MIN=$2; shift 2 ;;
     --extra-env) EXTRA_ENV=$2; shift 2 ;;
+    --pre-sql) PRE_SQL=$2; shift 2 ;;
     --generate-args) GENERATE_ARGS+=" $2"; shift 2 ;;
     -h|--help) usage 0 ;;
     *) echo "unknown argument: $1" >&2; usage ;;
@@ -282,7 +284,9 @@ PY
   log_offset=$(($(wc -l < "$LOG") + 1))
 
   create_start=$(now_ms)
-  if ! mysql_cmd -e "create vector index $INDEX_NAME on $DB.$TABLE(v) with (distance=l2, type=hnsw, lib=cuvs, m=16, ef_construction=200, ef_search=64);" \
+  create_sql="create vector index $INDEX_NAME on $DB.$TABLE(v) with (distance=l2, type=hnsw, lib=cuvs, m=16, ef_construction=200, ef_search=64);"
+  [[ -n "$PRE_SQL" ]] && create_sql="$PRE_SQL; $create_sql"
+  if ! mysql_cmd -e "$create_sql" \
       >/dev/null 2>"$EVIDENCE/$label-create.err"; then
     echo "[bench] $label CREATE failed; continuing" >&2
     tail -n 3 "$EVIDENCE/$label-create.err" >&2 || true
