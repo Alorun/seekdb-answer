@@ -26,6 +26,7 @@
 #include "storage/tx_storage/ob_ls_service.h"
 #include "query/engine/expr/ob_expr_lob_utils.h"
 #include <cstdlib>
+#include <cstdio>
 #include "query/engine/expr/ob_array_expr_utils.h"
 
 using namespace oceanbase::storage;
@@ -960,6 +961,16 @@ int ObHNSWIndexAppendBufferOperator::append_row(
   return ret;
 }
 
+static bool vec_param_is_cuvs(const common::ObString &param)
+{
+  if (param.length() <= 0 || param.ptr() == nullptr) { return false; }
+  const char *p = param.ptr();
+  for (int64_t i = 0; i + 4 <= param.length(); ++i) {
+    if (p[i] == 'c' && p[i+1] == 'u' && p[i+2] == 'v' && p[i+3] == 's') { return true; }
+  }
+  return false;
+}
+
 int ObHNSWIndexAppendBufferOperator::append_row_file(ObDDLRowFile *row_file, ObDDLTabletContext *tablet_context)
 {
   int ret = OB_SUCCESS;
@@ -1021,8 +1032,9 @@ int ObHNSWIndexAppendBufferOperator::append_row_file(ObDDLRowFile *row_file, ObD
       } else if (OB_ISNULL(adaptor = adaptor_guard.get_adatper())) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get null adaptor", K(ret));
-      } else if (!adaptor->is_cuvs_index() || adaptor->is_sparse_vector_index_type() ||
-                 extra_column_idx_types_.count() > 0) {
+      } else if ((!adaptor->is_cuvs_index() &&
+                  !vec_param_is_cuvs(tablet_context->vector_index_ctx_->vec_idx_param_)) ||
+                 adaptor->is_sparse_vector_index_type()) {
         for (int64_t i = 0; OB_SUCC(ret) && i < total_row_count; ++i) {
           if (OB_FAIL(append_row(i, vectors, tablet_context))) {
           }
@@ -1032,7 +1044,33 @@ int ObHNSWIndexAppendBufferOperator::append_row_file(ObDDLRowFile *row_file, ObD
             sizeof(float) * static_cast<int64_t>(vec_dim_) * total_row_count));
         int64_t *vid_buf = static_cast<int64_t *>(
             row_allocator_.alloc(sizeof(int64_t) * total_row_count));
+        const int64_t extra_count = extra_column_idx_types_.count();
+        ObVecExtraInfoObj *extra_objs = nullptr;
+        if (extra_count > 0) {
+          char *extra_buf = static_cast<char *>(
+              row_allocator_.alloc(sizeof(ObVecExtraInfoObj) * extra_count * total_row_count));
+          if (OB_ISNULL(extra_buf)) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+            LOG_WARN("allocate bulk extra info buffer failed", K(ret), K(extra_count), K(total_row_count));
+          } else {
+            extra_objs = new (extra_buf) ObVecExtraInfoObj[extra_count * total_row_count];
+          }
+        }
         int64_t bulk_count = 0;
+        static int bulk_batch_logged = 0;
+        if (!bulk_batch_logged) {
+          const char *timing_path = ::getenv("SK_CUVS_TIMING_FILE");
+          if (timing_path != nullptr && timing_path[0] != '\0') {
+            FILE *tf = ::fopen(timing_path, "a");
+            if (tf != nullptr) {
+              ::fprintf(tf, "SEEKDB_DDL_BATCH rows=%ld extra=%ld is_cuvs=%d bulk_env=%d\n",
+                        static_cast<long>(total_row_count), static_cast<long>(extra_count),
+                        static_cast<int>(adaptor->is_cuvs_index()), static_cast<int>(bulk_append));
+              ::fclose(tf);
+            }
+          }
+          bulk_batch_logged = 1;
+        }
         if (OB_ISNULL(vec_buf) || OB_ISNULL(vid_buf)) {
           ret = OB_ALLOCATE_MEMORY_FAILED;
           LOG_WARN("allocate bulk append buffer failed", K(ret), K(total_row_count), K(vec_dim_));
@@ -1056,12 +1094,21 @@ int ObHNSWIndexAppendBufferOperator::append_row_file(ObDDLRowFile *row_file, ObD
             MEMCPY(reinterpret_cast<char *>(vec_buf) + bulk_count * vec_dim_ * sizeof(float),
                    vec_str.ptr(), vec_str.length());
             vid_buf[bulk_count] = vec_vid;
+            for (int64_t ej = 0; OB_SUCC(ret) && ej < extra_count; ++ej) {
+              const ObIVector &extra_vector =
+                  *vectors.at(extra_column_idx_types_.at(ej).idx_);
+              if (OB_FAIL(extra_objs[bulk_count * extra_count + ej].from_vector(
+                      extra_vector, i, extra_column_idx_types_.at(ej).type_,
+                      &row_allocator_))) {
+              }
+            }
             ++bulk_count;
           }
         }
         if (OB_FAIL(ret) || bulk_count <= 0) {
           // nothing to append
-        } else if (OB_FAIL(adaptor->add_snap_index(vec_buf, vid_buf, nullptr, 0,
+        } else if (OB_FAIL(adaptor->add_snap_index(vec_buf, vid_buf, extra_objs,
+                                                   extra_count,
                                                    static_cast<int>(bulk_count)))) {
           LOG_WARN("bulk add snap index failed", K(ret), K(bulk_count));
         }
