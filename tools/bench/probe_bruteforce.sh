@@ -44,15 +44,21 @@ rm -f "$W2"/*-timing.log "$W2/timing.log" 2>/dev/null
 
 BUILDER=$HERE/custom_builder.hip
 BRIDGEC=$HERE/seekdb_cuvs_bridge.c
-[[ -f "$BUILDER"  ]] || BUILDER=$HERE/../hipvs_bridge/kernel_build/custom_builder.hip
-[[ -f "$BRIDGEC"  ]] || BRIDGEC=$HERE/../hipvs_bridge/seekdb_cuvs_bridge.c
-[[ -f "$BUILDER" && -f "$BRIDGEC" ]] || { say "FAILED: bridge sources not next to this script"; exit 1; }
+GRAPH=$HERE/graph_core.cuh
+[[ -f "$BUILDER" ]] || BUILDER=$HERE/../hipvs_bridge/kernel_build/custom_builder.hip
+[[ -f "$BRIDGEC" ]] || BRIDGEC=$HERE/../hipvs_bridge/seekdb_cuvs_bridge.c
+[[ -f "$GRAPH"   ]] || GRAPH=$HERE/../hipvs_bridge/kernel_build/vendor/cpp/src/neighbors/detail/cagra/graph_core.cuh
+[[ -f "$BUILDER" && -f "$BRIDGEC" && -f "$GRAPH" ]] \
+  || { say "FAILED: bridge sources not next to this script"; exit 1; }
 
 say "== install bridge sources, rebuild bridge =="
 cp "$BUILDER" "$SRC/tools/hipvs_bridge/kernel_build/custom_builder.hip" || exit 1
 cp "$BRIDGEC" "$SRC/tools/hipvs_bridge/seekdb_cuvs_bridge.c" || exit 1
+cp "$GRAPH"   "$SRC/tools/hipvs_bridge/kernel_build/vendor/cpp/src/neighbors/detail/cagra/graph_core.cuh" || exit 1
 sha256sum "$SRC/tools/hipvs_bridge/kernel_build/custom_builder.hip" \
-          "$SRC/tools/hipvs_bridge/seekdb_cuvs_bridge.c" | sed 's/^/  installed /'
+          "$SRC/tools/hipvs_bridge/seekdb_cuvs_bridge.c" \
+          "$SRC/tools/hipvs_bridge/kernel_build/vendor/cpp/src/neighbors/detail/cagra/graph_core.cuh" \
+  | sed 's/^/  installed /'
 ( cd "$SRC" && tools/hipvs_bridge/build.sh "$BR" ) >"$W2/bridge.log" 2>&1 \
   || { say "FAILED: bridge build"; tail -n 40 "$W2/bridge.log"; exit 1; }
 say "bridge ok"

@@ -1352,7 +1352,19 @@ void optimize(
     }
   }
 
-  {
+  if (knn_graph_degree == output_graph_degree) {
+    // Exact-degree fast path: the candidate list already has the output degree,
+    // so there is nothing to prune and the 2-hop detour ranking would only
+    // reorder the same edges.  Keep the distance-sorted exact candidates; the
+    // reverse-edge step below still protects the nearest half and replaces the
+    // tail.  This skips the detour pass and its O(degree^2) host selection.
+#pragma omp parallel for
+    for (uint64_t i = 0; i < graph_size; i++) {
+      for (uint64_t j = 0; j < output_graph_degree; j++) {
+        output_graph_ptr[i * output_graph_degree + j] = knn_graph(i, j);
+      }
+    }
+  } else {
     raft::common::nvtx::range<cuvs::common::nvtx::domain::cuvs> block_scope(
       "cagra::graph::optimize/prune");
     const double time_prune_start = cur_time();
