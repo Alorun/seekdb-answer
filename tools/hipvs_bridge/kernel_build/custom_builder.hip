@@ -14,8 +14,10 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <vector>
 #include <cstring>
+#include <type_traits>
+#include <cmath>
+#include <hip/hip_fp16.h>
 #include <cuvs/core/c_api.h>
 #include <cuvs/neighbors/brute_force.h>
 #include <cuvs/neighbors/nn_descent.h>
@@ -139,15 +141,20 @@ struct BruteForceIndex {
     if (p) cuvsBruteForceIndexDestroy(p);
   }
 };
-// Returns a host knn graph of `degree` columns per row.  The brute-force
-// search includes each row itself as its nearest neighbour, so the self edge
-// is replaced by duplicating the nearest real neighbour; the graph optimizer
-// deduplicates it, which leaves degree-1 exact neighbours to prune from.
-// Queries are streamed in chunks: the pairwise distance tile of the frozen
-// brute-force path is the largest allocation, so keeping the per-query output
-// small keeps the peak device footprint below the frozen NN-descent baseline.
-void build_knn_bruteforce(cuvsResources_t resources, const float* base, long n, long dim,
-                          int degree, raft::host_matrix<uint32_t, int64_t>& knn) {
+// FP32 -> FP16 conversion for the candidate GEMM.  The distance matrix and
+// norms stay FP32, so this only changes the precision of the multiply inputs.
+__global__ void float_to_half_kernel(const float* input, half* output, size_t count, float scale) {
+  const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index < count) output[index] = __float2half_rn(input[index] * scale);
+}
+// Typed implementation: the candidate GEMM runs in ElementType while the
+// pairwise distances and norms stay FP32 (DistanceT defaults to float), so a
+// half candidate search is safe even for SIFT (values 0..255) and the exact
+// re-sort in sort_knn_graph still runs on the original FP32 dataset.
+template <typename ElementType>
+void build_knn_bruteforce_typed(cuvsResources_t resources, const float* base, long n, long dim,
+                                int degree, uint8_t bits,
+                                raft::host_matrix<uint32_t, int64_t>& knn) {
   auto& res = *reinterpret_cast<raft::resources*>(resources);
   auto stream = raft::resource::get_cuda_stream(res);
   const auto start = Clock::now();
@@ -156,19 +163,37 @@ void build_knn_bruteforce(cuvsResources_t resources, const float* base, long n, 
   // full `degree` of distinct candidates.  k must stay <= 256: above that the
   // frozen library falls back from warp-sort to a multi-pass radix selection.
   const int request = degree < 256 ? degree + 1 : degree;
-  auto d_base = raft::make_device_matrix<float, int64_t>(res, n, dim);
-  raft::copy(d_base.data_handle(), base, static_cast<size_t>(n) * dim, stream);
+  auto d_base = raft::make_device_matrix<ElementType, int64_t>(res, n, dim);
+  const size_t element_count = static_cast<size_t>(n) * dim;
+  if constexpr (std::is_same_v<ElementType, float>) {
+    raft::copy(d_base.data_handle(), base, element_count, stream);
+  } else {
+    // Power-of-two rescale keeps every multiply input well inside the FP16
+    // range even when the hidden dataset is not normalized; L2 ranking is
+    // invariant under a positive uniform scale and the exact re-sort uses FP32.
+    float max_abs = 0.0f;
+    #pragma omp parallel for reduction(max : max_abs)
+    for (long i = 0; i < n * dim; ++i) max_abs = std::max(max_abs, std::fabs(base[i]));
+    const float limit = std::sqrt(30000.0f / static_cast<float>(dim));
+    float scale = 1.0f;
+    if (max_abs > limit && std::isfinite(max_abs))
+      scale = std::exp2(std::floor(std::log2(limit / max_abs)));
+    auto d_float = raft::make_device_matrix<float, int64_t>(res, n, dim);
+    raft::copy(d_float.data_handle(), base, element_count, stream);
+    const int threads = 256;
+    const int blocks = static_cast<int>((element_count + threads - 1) / threads);
+    float_to_half_kernel<<<blocks, threads, 0, stream>>>(
+        d_float.data_handle(), d_base.data_handle(), element_count, scale);
+  }
   check(cuvsStreamSync(resources), "BruteForce dataset upload sync");
   const auto uploaded = Clock::now();
   BruteForceIndex index;
   {
     int64_t dataset_shape[] = {n, dim};
-    DLManagedTensor dataset = device_tensor(d_base.data_handle(), dataset_shape, kDLFloat, 32);
+    DLManagedTensor dataset = device_tensor(d_base.data_handle(), dataset_shape, kDLFloat, bits);
     check(cuvsBruteForceBuild(resources, &dataset, L2Expanded, 0.0f, index.p), "BruteForceBuild");
   }
   const auto built = Clock::now();
-  // The C API requires int64 neighbours; k <= 256 keeps the selection on the
-  // fast warp-sort path of the frozen library.
   std::vector<int64_t> staging(static_cast<size_t>(std::min<long>(chunk, n)) * request);
   for (long row_start = 0; row_start < n; row_start += chunk) {
     const long rows = std::min<long>(chunk, n - row_start);
@@ -177,7 +202,7 @@ void build_knn_bruteforce(cuvsResources_t resources, const float* base, long n, 
     int64_t query_shape[] = {rows, dim};
     int64_t output_shape[] = {rows, request};
     DLManagedTensor queries = device_tensor(
-        d_base.data_handle() + static_cast<size_t>(row_start) * dim, query_shape, kDLFloat, 32);
+        d_base.data_handle() + static_cast<size_t>(row_start) * dim, query_shape, kDLFloat, bits);
     DLManagedTensor neighbors = device_tensor(d_neighbors.data_handle(), output_shape, kDLInt, 64);
     DLManagedTensor distances =
         device_tensor(d_distances.data_handle(), output_shape, kDLFloat, 32);
@@ -206,12 +231,37 @@ void build_knn_bruteforce(cuvsResources_t resources, const float* base, long n, 
     }
   }
   const auto end = Clock::now();
-  log_line("SEEKDB_BF_BUILD n=%ld dim=%ld degree=%d k=%d chunk=%ld upload_sec=%.6f "
+  log_line("SEEKDB_BF_BUILD n=%ld dim=%ld degree=%d k=%d bits=%d chunk=%ld upload_sec=%.6f "
            "build_sec=%.6f search_sec=%.6f sec=%.6f\n",
-           n, dim, degree, request, chunk, seconds(start, uploaded), seconds(uploaded, built),
-           seconds(built, end), seconds(start, end));
-  log_line("SEEKDB_BF_DONE n=%ld dim=%ld degree=%d sec=%.6f\n", n, dim, degree,
-           seconds(start, end));
+           n, dim, degree, request, static_cast<int>(bits), chunk, seconds(start, uploaded),
+           seconds(uploaded, built), seconds(built, end), seconds(start, end));
+}
+
+// Returns a host knn graph of `degree` columns per row.  The brute-force
+// search includes each row itself as its nearest neighbour, so the self edge
+// is replaced by duplicating the nearest real neighbour; the graph optimizer
+// deduplicates it.  Queries are streamed in chunks: the pairwise distance tile
+// of the frozen brute-force path is the largest allocation, so keeping the
+// per-query output small keeps the peak device footprint below the frozen
+// NN-descent baseline.  The half candidate search falls back to FP32 if the
+// frozen library rejects it.
+void build_knn_bruteforce(cuvsResources_t resources, const float* base, long n, long dim,
+                          int degree, raft::host_matrix<uint32_t, int64_t>& knn) {
+  const auto start = Clock::now();
+  if (env_int("SK_CUVS_BF_FP16", 1, 0, 1) != 0) {
+    try {
+      build_knn_bruteforce_typed<half>(resources, base, n, dim, degree, 16, knn);
+      log_line("SEEKDB_BF_DONE n=%ld dim=%ld degree=%d fp16=1 sec=%.6f\n", n, dim, degree,
+               seconds(start, Clock::now()));
+      return;
+    } catch (const std::exception& error) {
+      log_line("SEEKDB_BF_FP16_FALLBACK n=%ld dim=%ld degree=%d: %s\n", n, dim, degree,
+               error.what());
+    }
+  }
+  build_knn_bruteforce_typed<float>(resources, base, n, dim, degree, 32, knn);
+  log_line("SEEKDB_BF_DONE n=%ld dim=%ld degree=%d fp16=0 sec=%.6f\n", n, dim, degree,
+           seconds(start, Clock::now()));
 }
 }
 

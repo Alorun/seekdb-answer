@@ -32,8 +32,9 @@ for C in /work/cagra-sweep /work/algo-probe-run/sweep /work/sweep /work/bench /w
 done
 [[ -n "$SIFT" ]] || { say "FAILED: no data-sift250k/meta.json found"; exit 1; }
 mkdir -p "$W"
-rm -f "$W/data-sift250k" "$W/data-syn256"
-ln -s "$SIFT" "$W/data-sift250k"
+[[ -L "$W/data-sift250k" ]] && rm -f "$W/data-sift250k"
+[[ -L "$W/data-syn256"  ]] && rm -f "$W/data-syn256"
+ln -sfn "$SIFT" "$W/data-sift250k"
 say "sift=$SIFT syn=<generated if missing> degree=$DEG port=$PORT"
 
 export HIPVS_ROOT=/opt/hipvs ROCM_ROOT=/opt/rocm
