@@ -64,14 +64,38 @@ static int sk_env_int(const char* name, int fallback, int low, int high)
   return (int)value;
 }
 
-/* SK_CUVS_BUILD_ALGO=ivfpq switches the graph build to the library's native
- * IVF-PQ all-neighbours path (no NN-descent iterations at all). */
-static int sk_build_algo_ivfpq(void)
+/* SK_CUVS_BUILD_ALGO selects the library graph build:
+ *   nn (default) -> our custom NN-descent builder
+ *   library-nn   -> the library's own NN-descent
+ *   ivfpq        -> IVF-PQ all-neighbours
+ *   iterative    -> ITERATIVE_CAGRA_SEARCH (IVF-PQ seed + CAGRA search refine) */
+static enum cuvsCagraGraphBuildAlgo sk_build_algo(void)
+{
+  static enum cuvsCagraGraphBuildAlgo cached = (enum cuvsCagraGraphBuildAlgo)-1;
+  if ((int)cached < 0) {
+    const char* algo = getenv("SK_CUVS_BUILD_ALGO");
+    if (algo == NULL || algo[0] == '\0' || strcmp(algo, "nn") == 0) {
+      cached = NN_DESCENT;
+    } else if (strcmp(algo, "library-nn") == 0) {
+      cached = NN_DESCENT;
+    } else if (strcmp(algo, "ivfpq") == 0 || strcmp(algo, "IVF_PQ") == 0) {
+      cached = IVF_PQ;
+    } else if (strcmp(algo, "iterative") == 0) {
+      cached = ITERATIVE_CAGRA_SEARCH;
+    } else {
+      cached = AUTO_SELECT;
+    }
+  }
+  return cached;
+}
+
+static int sk_use_custom_builder(void)
 {
   static int cached = -1;
   if (cached < 0) {
     const char* algo = getenv("SK_CUVS_BUILD_ALGO");
-    cached = (algo != NULL && (strcmp(algo, "ivfpq") == 0 || strcmp(algo, "IVF_PQ") == 0)) ? 1 : 0;
+    cached = (sk_build_algo() == NN_DESCENT &&
+              (algo == NULL || algo[0] == '\0' || strcmp(algo, "nn") == 0)) ? 1 : 0;
   }
   return cached;
 }
@@ -94,18 +118,19 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   dset.dl_tensor.dtype.code = kDLFloat; dset.dl_tensor.dtype.bits = 32; dset.dl_tensor.dtype.lanes = 1;
   dset.dl_tensor.shape = ds; dset.dl_tensor.strides = 0; dset.dl_tensor.byte_offset = 0;
 
-  const int ivfpq = sk_build_algo_ivfpq();
+  const enum cuvsCagraGraphBuildAlgo build_algo = sk_build_algo();
+  const int custom_builder = sk_use_custom_builder();
   struct timespec build_start;
   struct timespec build_end;
   clock_gettime(CLOCK_MONOTONIC, &build_start);
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
-  h->ip->build_algo = ivfpq ? IVF_PQ : NN_DESCENT;
+  h->ip->build_algo = build_algo;
   h->ip->graph_degree = (size_t)sk_env_int("SK_CUVS_FINAL_DEGREE", 128, 16, 512);
   h->ip->intermediate_graph_degree =
       (size_t)sk_env_int("SK_CUVS_NND_INTERNAL_DEGREE", 256, 32, 512);
   h->ip->nn_descent_niter = 100;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
-  if (n >= 1024 && !ivfpq) {
+  if (n >= 1024 && custom_builder) {
     h->idx->dtype.code = kDLFloat;
     h->idx->dtype.bits = 32;
     h->idx->dtype.lanes = 1;
@@ -117,8 +142,10 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   }
   clock_gettime(CLOCK_MONOTONIC, &build_end);
   sk_timing("SEEKDB_BRIDGE_BUILD algo=%s n=%ld dim=%ld graph_degree=%zu intermediate=%zu sec=%.3f\n",
-            ivfpq ? "ivfpq" : "nnd_custom", n, dim, h->ip->graph_degree,
-            h->ip->intermediate_graph_degree, sk_seconds(&build_start, &build_end));
+            custom_builder ? "nnd_custom" : (build_algo == IVF_PQ ? "ivfpq"
+                            : (build_algo == ITERATIVE_CAGRA_SEARCH ? "iterative" : "library")),
+            n, dim, h->ip->graph_degree, h->ip->intermediate_graph_degree,
+            sk_seconds(&build_start, &build_end));
   h->n = n; h->dim = dim;
   return h;
 
@@ -199,7 +226,7 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     static int search_width = -1;
     size_t required_itopk = 0;
     if (itopk_floor < 0) itopk_floor = sk_env_int("SK_CUVS_SEARCH_ITOPK", 512, 32, 4096);
-    if (search_width < 0) search_width = sk_env_int("SK_CUVS_SEARCH_WIDTH", 4, 1, 32);
+    if (search_width < 0) search_width = sk_env_int("SK_CUVS_SEARCH_WIDTH", 16, 1, 32);
     required_itopk = (size_t)topk * 4;
     if (required_itopk < (size_t)itopk_floor) required_itopk = (size_t)itopk_floor;
     h->search_params->itopk_size = h->default_itopk > required_itopk
