@@ -25,6 +25,7 @@ CONFIGS="current:100:256:384:128 floor:4:64:64:64 it50:50:256:384:128 it30:30:25
 SKIP_SIFT=0
 SKIP_SYN=0
 EXTRA_ENV=""
+PRE_SQL=""
 SYN_DIM=256
 
 while (($# > 0)); do
@@ -43,6 +44,7 @@ while (($# > 0)); do
     --skip-sift) SKIP_SIFT=1; shift ;;
     --skip-syn) SKIP_SYN=1; shift ;;
     --extra-env) EXTRA_ENV=$2; shift 2 ;;
+    --pre-sql) PRE_SQL=$2; shift 2 ;;
     -h|--help) awk 'NR > 1 { if (/^#/) { sub(/^# ?/, ""); print } else { exit } }' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -80,6 +82,7 @@ run_suite()
   echo "================ $tag (data=$data) extra_env=${EXTRA_ENV:-none} ================"
   local -a extra_args=()
   [[ -n "$EXTRA_ENV" ]] && extra_args=(--extra-env "$EXTRA_ENV")
+  [[ -n "$PRE_SQL" ]] && extra_args+=(--pre-sql "$PRE_SQL")
   "$HERE/cagra_build_bench.sh" \
     --observer "$OBSERVER" \
     --bridge "$BRIDGE" \
