@@ -8035,6 +8035,12 @@ int ObDDLResolver::calc_ddl_parallelism(const uint64_t hint_parallelism, const u
         } else {
           parallelism = 1;
         }
+        if (parallelism <= 1) {
+          // The offline vector-index DDL is dominated by the table scan and the
+          // row-file round trip, both of which split cleanly over slices.  The
+          // build pipeline waits for every slice's appends before serializing.
+          parallelism = 8;
+        }
       }
     }
   }

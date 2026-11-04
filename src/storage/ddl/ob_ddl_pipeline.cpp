@@ -26,6 +26,7 @@
 #include "storage/tx_storage/ob_ls_service.h"
 #include "query/engine/expr/ob_expr_lob_utils.h"
 #include <cstdlib>
+#include <unistd.h>
 #include <cstdio>
 #include "query/engine/expr/ob_array_expr_utils.h"
 
@@ -1191,6 +1192,28 @@ int ObHNSWIndexBuildOperator::serialize_vector_index(
                                                               &ctx.vec_idx_param_,
                                                               ctx.vec_dim_))) {
   } else {
+    {
+      // Parallel DDL creates the append pipelines as siblings of this build
+      // pipeline, so wait until every row of the tablet has been appended
+      // before the snapshot is serialized.
+      ObPluginVectorIndexAdaptor *wait_adp = adaptor_guard.get_adatper();
+      int64_t snap_rows = 0;
+      const int64_t wait_deadline = ObTimeUtility::current_time() + 120LL * 1000 * 1000;
+      while (nullptr != wait_adp) {
+        if (OB_FAIL(wait_adp->get_snap_index_row_cnt(snap_rows))) {
+          LOG_WARN("failed to get snapshot row count", K(ret));
+          break;
+        } else if (snap_rows >= ctx.row_cnt_) {
+          break;
+        } else if (ObTimeUtility::current_time() > wait_deadline) {
+          ret = OB_TIMEOUT;
+          LOG_WARN("wait snapshot append timeout", K(ret), K(snap_rows), K(ctx.row_cnt_));
+          break;
+        } else {
+          ::usleep(1000);
+        }
+      }
+    }
     ObHNSWSerializeCallback callback;
     ObOStreamBuf::Callback cb = callback;
 
