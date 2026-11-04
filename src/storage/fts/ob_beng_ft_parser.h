@@ -39,7 +39,10 @@ public:
       english_analyzer_(),
       doc_(),
       token_stream_(nullptr),
-      is_inited_(false)
+      is_inited_(false),
+      fast_ascii_(false),
+      out_buf_(nullptr),
+      scan_pos_(0)
   {}
   ~ObBEngFTParser() { reset(); }
 
@@ -56,6 +59,20 @@ private:
   int segment(
       const common::ObDatum &doc,
       share::ObITokenStream *&token_stream);
+
+  // ASCII fast path, used when the whole document is ASCII.  For ASCII the
+  // charset classification is the C one: every byte below 0x80 is either
+  // [0-9A-Za-z] or one of the whitespace/control/punctuation bytes the
+  // whitespace tokenizer splits on, and the basic English normalizer only
+  // lowercases it.  The path therefore produces the very same token sequence
+  // (same bytes, same order, same frequency) with a single scan and one table
+  // lookup per byte, without the analyzer pipeline.
+  static bool fast_ascii_enabled();
+  static bool is_pure_ascii(const char *ptr, const int64_t len);
+  int get_next_token_ascii(const char *&word,
+                           int64_t &word_len,
+                           int64_t &char_len,
+                           int64_t &word_freq);
 private:
   common::ObIAllocator &allocator_;
   share::ObTextAnalysisCtx analysis_ctx_;
@@ -63,6 +80,11 @@ private:
   common::ObDatum doc_;
   share::ObITokenStream *token_stream_;
   bool is_inited_;
+  // ASCII fast path state: the lowercased token copies are owned by the
+  // caller's allocator, which is the same lifetime the normalizer used.
+  bool fast_ascii_;
+  char *out_buf_;
+  int64_t scan_pos_;
 
   DISALLOW_COPY_AND_ASSIGN(ObBEngFTParser);
 };

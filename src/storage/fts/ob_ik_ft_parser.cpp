@@ -463,6 +463,15 @@ int ObIKFTParser::init_segmenter(const ObFTParserParam &param)
   ObIKQuantifierProcessor *cnqsg = nullptr;
   ObIKCJKProcessor *cjksg = nullptr;
   ObIKSurrogateProcessor *surrogate_seg = nullptr;
+  // The compact trie is built from the UTF8MB4 word list of the built-in IK main
+  // dictionary, which is exactly the dictionary dict_main_ was built from (see
+  // init_dict), so it accepts the same words.  It is only selected for UTF8MB4
+  // documents, the only charset the IK dictionary is meant for; a null pointer
+  // keeps the double array trie path.
+  const IKFastDict *fast_dict = nullptr;
+  if (IKFastDict::enabled() && CHARSET_UTF8MB4 == ObCharset::charset_type_by_coll(coll_type_)) {
+    fast_dict = IKFastDict::get();
+  }
   if (OB_ISNULL(letter_seg = OB_NEWx(ObIKLetterProcessor, &allocator_))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
   } else if (OB_ISNULL(dict_quan_)) {
@@ -473,6 +482,7 @@ int ObIKFTParser::init_segmenter(const ObFTParserParam &param)
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_ISNULL(cjksg = OB_NEWx(ObIKCJKProcessor, &allocator_, *dict_main_, allocator_))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (OB_FALSE_IT(cjksg->set_fast_dict(fast_dict))) {
   } else if (OB_ISNULL(surrogate_seg = OB_NEWx(ObIKSurrogateProcessor, &allocator_))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
   } else if (OB_FAIL(segmenters_.push_back(letter_seg))) {

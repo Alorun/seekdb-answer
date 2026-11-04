@@ -543,6 +543,42 @@ int ObTextRetrievalDaaTTokenIter::save_docids()
   return ret;
 }
 
+// Hand the buffered batch to a consumer that only walks it once.  The datums
+// point into the scan's expression frame, so they stay valid exactly until the
+// next refill; the caller must drain the whole batch before asking again.
+int ObTextRetrievalDaaTTokenIter::get_next_id_batch(const common::ObDatum *&ids,
+                                                    const sql::ObBitVector *&skip,
+                                                    int64_t &count)
+{
+  int ret = OB_SUCCESS;
+  ids = nullptr;
+  skip = nullptr;
+  count = 0;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+  } else if (OB_UNLIKELY(!eval_ctx_->is_vectorized())) {
+    ret = OB_NOT_IMPLEMENT;
+  } else if (OB_UNLIKELY(cur_idx_ >= 0 && cur_idx_ < count_)) {
+    // The caller must consume a whole batch before asking for the next one.
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(token_iter_->get_next_batch(max_batch_size_, count_))) {
+    if (OB_UNLIKELY(OB_ITER_END != ret)) {
+    } else {
+      count_ = 0;
+    }
+  } else if (OB_UNLIKELY(count_ <= 0)) {
+    ret = OB_ITER_END;
+  }
+  if (OB_SUCC(ret)) {
+    const ObDatumVector &doc_id_datum = inv_scan_domain_id_col_->locate_expr_datumvector(*eval_ctx_);
+    ids = doc_id_datum.at(0);
+    skip = token_iter_->get_skip();
+    count = count_;
+    cur_idx_ = count_;
+  }
+  return ret;
+}
+
 int ObTextRetrievalDaaTTokenIter::get_next_batch(const int64_t capacity, int64_t &count)
 {
   return OB_NOT_IMPLEMENT;

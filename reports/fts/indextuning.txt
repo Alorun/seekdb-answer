@@ -1,9 +1,9 @@
 ========================================
 FTS Large Benchmark Report
 ========================================
-timestamp:              2026-11-03 23:16:16
+timestamp:              2026-11-04 11:33:56
 label:                  indextuning
-git_head:               967455316
+git_head:               4445d48e5
 git_dirty:              1
 rows:                   20000
 batch:                  500
@@ -13,32 +13,32 @@ samples:                3
 warmup:                 30
 skip_load:              0
 ----------------------------------------
-select1_avg_ms:         0.0216
-select1_stdev_ms:       0.0011
-raw_load_sec:           0.241
-raw_load_rows_per_sec:  82987.6
-build_ik_all_sec:       2.849
-build_ik_content_sec:   2.436
-build_beng_en_sec:      1.334
-build_total_sec:        6.636
+select1_avg_ms:         0.0239
+select1_stdev_ms:       0.0038
+raw_load_sec:           0.248
+raw_load_rows_per_sec:  80645.2
+build_ik_all_sec:       2.740
+build_ik_content_sec:   2.304
+build_beng_en_sec:      1.183
+build_total_sec:        6.240
 ----------------------------------------
-tokenize_ik_avg_ms:     0.0558
-tokenize_ik_median_ms:  0.0554
-tokenize_ik_stdev_ms:   0.0036
-tokenize_beng_avg_ms:   0.0479
-tokenize_beng_median_ms:0.0457
-tokenize_beng_stdev_ms: 0.0032
+tokenize_ik_avg_ms:     0.0537
+tokenize_ik_median_ms:  0.0521
+tokenize_ik_stdev_ms:   0.0070
+tokenize_beng_avg_ms:   0.0421
+tokenize_beng_median_ms:0.0353
+tokenize_beng_stdev_ms: 0.0135
 ----------------------------------------
 query_cn_hits:          8001
-query_cn_avg_ms:        0.5688
-query_cn_stdev_ms:      0.0421
+query_cn_avg_ms:        0.5445
+query_cn_stdev_ms:      0.0372
 query_beng_hits:        11000
-query_beng_avg_ms:      0.7811
-query_beng_stdev_ms:    0.1054
+query_beng_avg_ms:      0.7548
+query_beng_stdev_ms:    0.0488
 query_mixed_hits:       7332
-query_mixed_avg_ms:     0.6228
-query_mixed_stdev_ms:   0.0378
+query_mixed_avg_ms:     0.6121
+query_mixed_stdev_ms:   0.0279
 query_limit_hits:       20
-query_limit_avg_ms:     0.2517
-query_limit_stdev_ms:   0.0216
+query_limit_avg_ms:     0.2234
+query_limit_stdev_ms:   0.0303
 ========================================

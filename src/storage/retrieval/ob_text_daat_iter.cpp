@@ -322,13 +322,33 @@ int ObTextDocIdBitmapIter::build_doc_id_set()
         ret = OB_ERR_UNEXPECTED;
       }
       while (OB_SUCC(ret)) {
-        const ObDatum *id_datum = nullptr;
-        int tmp_ret = dim_iter->get_next_row();
+        const ObDatum *id_datums = nullptr;
+        const sql::ObBitVector *skip = nullptr;
+        int64_t batch_count = 0;
+        int tmp_ret = dim_iter->get_next_id_batch(id_datums, skip, batch_count);
         if (OB_SUCCESS == tmp_ret) {
-          if (OB_FAIL(dim_iter->get_curr_id(id_datum))) {
-          } else if (OB_ISNULL(id_datum)) {
+          // The dimension handed over its buffered batch, whose datums stay
+          // valid until its next refill: walk them directly.  This is the same
+          // row set the row interface would produce, minus the per-posting
+          // virtual calls and the datum copy into the dimension buffer.
+          for (int64_t k = 0; OB_SUCC(ret) && k < batch_count; ++k) {
+            if (OB_LIKELY(nullptr == skip || !skip->at(k))) {
+              if (OB_FAIL(add_doc_id(id_datums[k]))) {
+              }
+            }
+          }
+        } else if (OB_NOT_IMPLEMENT == tmp_ret) {
+          // Dimension without a buffered batch interface: keep the row path.
+          if (OB_FAIL(dim_iter->get_next_row())) {
+            if (OB_UNLIKELY(OB_ITER_END != ret)) {
+            } else {
+              ret = OB_SUCCESS;
+              break;
+            }
+          } else if (OB_FAIL(dim_iter->get_curr_id(id_datums))) {
+          } else if (OB_ISNULL(id_datums)) {
             ret = OB_ERR_UNEXPECTED;
-          } else if (OB_FAIL(add_doc_id(*id_datum))) {
+          } else if (OB_FAIL(add_doc_id(*id_datums))) {
           }
         } else if (OB_ITER_END == tmp_ret) {
           break;

@@ -129,6 +129,9 @@ public:
   void reset();
   virtual int get_next_row() override;
   virtual int get_next_batch(const int64_t capacity, int64_t &count) override;
+  virtual int get_next_id_batch(const common::ObDatum *&ids,
+                                const sql::ObBitVector *&skip,
+                                int64_t &count) override;
   virtual int advance_to(const ObDatum &id_datum) override;
   virtual int get_curr_score(double &score) const override;
   virtual int get_curr_id(const ObDatum *&id_datum) const override;

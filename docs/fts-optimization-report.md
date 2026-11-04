@@ -383,6 +383,57 @@ hits:     8001 / 11000 / 7332 / 20（全部一致）
 剩余可用手段（见 `docs/fts-additional-optimizations.md`）：⑥ 映射表合并 +5（build）、
 ③ 深挖 tokenize 未归属成本 +11、⑧ 语句层 +4、以及 build 的 DDL 固定开销（4 个子任务编排）。
 
+### 5.12 实现汇总与当前性能（2026-11-04 11:33，最新快照）
+
+#### 已实现清单（累计）
+
+| # | 优化 | 落地内容 | 主要文件 |
+|---|---|---|---|
+| C1 | 构建并行度自动推导 | 无显式 PARALLEL 时按 `max_cpu/2`（上限 8）推导，`_parallel_ddl_control` 可关 | `ob_fts_index_builder_util.cpp` |
+| D1 | 合并 DDL 两段等待 | `rowkey_doc` 与其余 3 张 aux 表并行构建（省 270~286 ms/次） | `ob_fts_index_build_task.cpp` |
+| A2 | IK 逐字热路径 | 范围字典字节比较、单次解码、中文数字二分 | `ob_ft_range_dict.cpp`、`ob_ik_char_util.h` 等 |
+| B1 | 分数仅作谓词时跳过 BM25 | 无分数 gate（含 `ORDER BY/DISTINCT/GROUP BY/window/LIMIT` 排除） | `ob_log_plan.cpp` 等 6 文件 |
+| Token | 分词器重写 | `parse_param` 缓存（−88%）、分类查表、停用词 fast path、`hits_` 定长数组、JSON 二进制直写 | `ob_expr_tokenize.cpp`、`ob_ik_hit_array.h`、`ob_json_bin.cpp` |
+| Bitmap | 文档 ID 位图去重 | 无分数多 token 查询走位图（按 tablet 分块、零拷贝、8MB/16MB 硬上限），替代 k 路归并 | `ob_text_daat_iter.cpp/.h` |
+| Count-only | `COUNT(*)` 不物化 id | 位图 emit 段不再写 datum，新增用例 `count_only_fast_path` | `ob_text_daat_iter.cpp`、`ob_table_scan_op.cpp` |
+| ① | LIMIT 下推进 FTS 扫描 | `EST.ROWS` 14000 → 20 | `ob_table_scan_op.*`、`ob_das_ir_define.h` |
+| ② | `COUNT(*)` 套 `LIMIT` 代数改写 | 计划变 `SCALAR GROUP BY → TEXT RETRIEVAL SCAN`（`calc_relevance=false`） | `ob_transform_pre_process.cpp` |
+| DDL | 固定延迟删除 | 删掉 checksum 上报后的无条件 `usleep(100ms)`；`wait_ddl_finish` 前 5s 改 10ms 轮询 | `ob_ddl_executor_util.cpp` |
+| 排查 | 双 writer 删除 | 4 对交替实测 on 慢 7.1%（牺牲并行度）→ 删除 822 行 + 2 个参数 | `ob_das_domain_utils.cpp` |
+| 排查 | ⑥ 映射表合并：否决 | 前提不成立（源表扫描只走主键不读 LOB；第 2/3 次 ALTER 复用映射表 ⇒ 收益结构上为 0） | — |
+| 排查 | ③ 分词相位：无未归属成本 | 四段之和 = `tokenize_fulltext`（helper 0.2 + map 0.1 + segment 16.5 + json 0.7 = 17.5 µs） | — |
+
+#### 当前性能（build/query 取 3 次中位；tokenize 取 8 次中位）
+
+| 指标 | 基线 | 当前 | 提升 |
+|---|---|---|---|
+| `build_ik_all_sec` | 3.7540 | **2.7500** | **+26.7%** |
+| `build_ik_content_sec` | 2.9540 | **2.2930** | **+22.4%** |
+| `build_beng_en_sec` | 1.6400 | **1.2290** | **+25.1%** |
+| `tokenize_ik_avg_ms` | 0.0720 | **0.0597** | **+17.0%** |
+| `tokenize_beng_avg_ms` | 0.0423 | 0.0439 | **−3.8%**（与基线持平，样本 0.0307~0.0542） |
+| `query_cn_avg_ms` | 1.3914 | **0.5344** | **+61.6%** |
+| `query_beng_avg_ms` | 1.9911 | **0.7237** | **+63.7%** |
+| `query_mixed_avg_ms` | 1.5970 | **0.6333** | **+60.3%** |
+| `query_limit_avg_ms` | 1.7526 | **0.2671** | **+84.8%** |
+
+| 口径 | build | tokenize | query | 三类之和 | 综合 | 得分 |
+|---|---|---|---|---|---|---|
+| 本地基线 | **+24.7%** | +6.6% | **+67.6%** | **98.9%** | +32.98% | **66.0** |
+| 平台口径（build 1.8x 标定） | **+41.4%** | +6.6% | **+67.6%** | **115.6%** | +38.52% | **77.0** |
+
+官方评分脚本输出：`score 100.00 / 100`、`mean_improvement 93.58%`（其 json 基线来自更慢的机器）。
+
+#### 结论与短板
+
+- **构建与查询已达很高水平**：build 三项 +22~27%（平台口径 +38~44%）、query 三项 +60~64%、`query_limit` +85%；
+- **分词是唯一短板**：`tokenize_ik` +17%，`tokenize_beng` **持平**。分词类均值只有 +6.6%，
+  而它占综合 1/3 —— 这是距离满分最大的缺口；
+- 距满分（三类之和 150%）还差 **34.4 个百分点**（平台口径），
+  按当前各项的剩余空间，只有"分词类再提升 20~30 个点"才能显著推进，
+  而 ③ 的相位数据已证明 `tokenize_fulltext` 内部没有未归属成本，
+  要动必须重写 `segment`（IK 逐字 16.5 µs）或改变分词器整体结构。
+
 ## 6. 正确性验证
 
 1. **等价性 dump**（`.tmpdev/correctness_dump.sh`，36 个形态 / 244 行输出）：TOKENIZE（ik/beng/ngram/space/数字/中文数字/长文本/空文本）、MATCH 命中数、命中文档集合（COUNT/SUM/MIN/MAX）、40 行 BM25 精确分数、`MATCH > threshold`、分数进 SELECT、布尔 AND/OR/NOT、两个 MATCH 组合、LIMIT/OFFSET、按分数排序。与改动前逐字节一致，唯一差异是 `ORDER BY MATCH(...) DESC, id ASC LIMIT n` 的并列组选取（topk 比较器不含 rowkey 次序键，属既有行为；同分文档物理顺序在并行构建下不可复现，索引内容本身一致）。

@@ -18,6 +18,7 @@
 #define OB_I_SPARSE_RETRIEVAL_MERGE_ITER_H_
 
 #include "share/ob_define.h"
+#include "share/vector/ob_bit_vector.h"
 #include "query/das/ob_das_id_protocol.h"
 
 namespace oceanbase
@@ -71,6 +72,21 @@ public:
   //  and buffer batched row in inner implementation.
   virtual int get_next_batch(const int64_t capacity, int64_t &count) override
   {
+    return OB_NOT_IMPLEMENT;
+  }
+  // Consume the currently buffered batch of document ids as a whole.  `ids`
+  // points to `count` consecutive datums that stay valid until the next call on
+  // this iterator, and `skip` is the matching per-row skip vector (or NULL).
+  // A dimension that buffers rows internally can expose them here so that a
+  // consumer which never revisits a row (the document id bitmap merge) does not
+  // pay a row-interface call per posting.
+  virtual int get_next_id_batch(const common::ObDatum *&ids,
+                                const sql::ObBitVector *&skip,
+                                int64_t &count)
+  {
+    UNUSED(ids);
+    UNUSED(skip);
+    UNUSED(count);
     return OB_NOT_IMPLEMENT;
   }
   // interface for daat processing
