@@ -72,6 +72,13 @@ The per-row append was 250,000 calls before the batching change; after it the
 append phase itself is 0.34 s and the remaining DDL cost is the table scan and
 the index commit.
 
+NN-descent itself measures as ~7.5 s of fixed cost (buffer setup, random graph
+initialisation and sampling) plus ~0.29 s per iteration at intermediate degree
+384 on a 128-core host. At the recall-safe 50 iterations that is ~22 s of GPU
+work. The Hidden250K Recall@100 baseline-delta gate fails at 45 iterations, so
+the graph build cannot be made cheaper on this path without losing the gate:
+that is the hard ceiling of this submission (1.731x).
+
 ## Negative results (measured, kept here so they are not retried)
 
 | attempt | outcome |
@@ -83,3 +90,5 @@ the index commit.
 | cuVS `ITERATIVE_CAGRA_SEARCH` build | 49 s build (2x slower), Recall slightly lower |
 | cuVS `IVF_PQ` build, defaults and explicit n_lists/n_probes/refinement | Recall 0.016 / 0.29, unusable |
 | vendored GNND vs library NN-descent | identical build time |
+| narrow NN-descent lists (int 128) with 60/80/100 iterations | cost is dominated by a ~7 s fixed part plus ~0.3 s per iteration, so a narrower list does not pay off |
+| IVF-PQ candidate graph (`cuvsIvfPqBuild` + `cuvsIvfPqSearch` with a tuned `n_lists`/`n_probes`, then exact-distance sort + CAGRA optimize) | library requires int64 neighbours; with n=250K queries and k=degree the search sorts the candidate list per query and runs for minutes at 100% GPU, so it cannot beat 50 NN-descent iterations |
