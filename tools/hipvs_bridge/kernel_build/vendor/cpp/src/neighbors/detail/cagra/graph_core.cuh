@@ -351,27 +351,6 @@ __global__ void kern_make_rev_graph(const IdxT* const dest_nodes,     // [graph_
   }
 }
 
-// Single pass over every edge of a row-major graph: appends the source node to
-// the reverse list of its destination.  Replaces the per-column host round trip
-// (one 1 MB copy plus one stream sync per column) with one graph upload.
-template <class IdxT>
-__global__ void kern_make_rev_graph_all(const IdxT* const graph,        // [size, degree]
-                                        IdxT* const rev_graph,         // [size, degree]
-                                        uint32_t* const rev_graph_count,  // [graph_size]
-                                        const uint32_t graph_size,
-                                        const uint32_t degree)
-{
-  const uint64_t total  = (uint64_t)graph_size * degree;
-  const uint64_t stride = (uint64_t)blockDim.x * gridDim.x;
-  for (uint64_t e = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; e < total; e += stride) {
-    const uint32_t src_id  = static_cast<uint32_t>(e / degree);
-    const IdxT dest_id     = graph[e];
-    if (dest_id >= graph_size) continue;
-    const uint32_t pos = atomicAdd(rev_graph_count + dest_id, 1);
-    if (pos < degree) { rev_graph[pos + ((uint64_t)degree * dest_id)] = src_id; }
-  }
-}
-
 template <class IdxT, class LabelT>
 __device__ __host__ LabelT get_root_label(IdxT i, const LabelT* label)
 {
@@ -1637,22 +1616,33 @@ void optimize(
                                   graph_size * sizeof(uint32_t),
                                   raft::resource::get_cuda_stream(res)));
 
-    auto d_graph = raft::make_device_matrix<IdxT, int64_t>(res, graph_size, output_graph_degree);
-    raft::copy(d_graph.data_handle(),
-               output_graph_ptr,
-               graph_size * output_graph_degree,
-               raft::resource::get_cuda_stream(res));
-    dim3 threads(256, 1, 1);
-    dim3 blocks(1024, 1, 1);
-    kern_make_rev_graph_all<<<blocks, threads, 0, raft::resource::get_cuda_stream(res)>>>(
-      d_graph.data_handle(),
-      d_rev_graph.data_handle(),
-      d_rev_graph_count.data_handle(),
-      graph_size,
-      output_graph_degree);
-    RAFT_LOG_DEBUG("# Making reverse graph on GPUs: one pass over %lu x %u edges",
-                   graph_size,
-                   output_graph_degree);
+    auto dest_nodes = raft::make_host_vector<IdxT, int64_t>(graph_size);
+    auto d_dest_nodes =
+      raft::make_device_mdarray<IdxT>(res, large_tmp_mr, raft::make_extents<int64_t>(graph_size));
+
+    for (uint64_t k = 0; k < output_graph_degree; k++) {
+#pragma omp parallel for
+      for (uint64_t i = 0; i < graph_size; i++) {
+        // dest_nodes.data_handle()[i] = output_graph_ptr[k + (output_graph_degree * i)];
+        dest_nodes(i) = output_graph_ptr[k + (output_graph_degree * i)];
+      }
+      raft::resource::sync_stream(res);
+
+      raft::copy(d_dest_nodes.data_handle(),
+                 dest_nodes.data_handle(),
+                 graph_size,
+                 raft::resource::get_cuda_stream(res));
+
+      dim3 threads(256, 1, 1);
+      dim3 blocks(1024, 1, 1);
+      kern_make_rev_graph<<<blocks, threads, 0, raft::resource::get_cuda_stream(res)>>>(
+        d_dest_nodes.data_handle(),
+        d_rev_graph.data_handle(),
+        d_rev_graph_count.data_handle(),
+        graph_size,
+        output_graph_degree);
+      RAFT_LOG_DEBUG("# Making reverse graph on GPUs: %lu / %u    \r", k, output_graph_degree);
+    }
 
     raft::resource::sync_stream(res);
     RAFT_LOG_DEBUG("\n");
