@@ -58,7 +58,14 @@ int ObDDLExecutorUtil::wait_ddl_finish(const int64_t task_id,
     const bool is_support_cancel)
 {
   int ret = OB_SUCCESS;
-  const int64_t retry_interval = 100 * 1000;
+  // Poll fast at the beginning: short DDLs (e.g. FTS aux-table builds) finish in
+  // a few seconds and a 100ms poll would add up to 100ms of pure latency to the
+  // statement.  Long-running DDLs fall back to the old 100ms cadence to keep
+  // the inner-SQL load unchanged.
+  const int64_t fast_retry_interval = 10 * 1000;
+  const int64_t slow_retry_interval = 100 * 1000;
+  const int64_t fast_poll_window = 5 * 1000 * 1000;
+  const int64_t wait_start_time = ObTimeUtility::current_time();
   ObAddr unused_addr;
   bool is_table_exist = false;
   int64_t unused_user_msg_len = 0;
@@ -116,7 +123,8 @@ int ObDDLExecutorUtil::wait_ddl_finish(const int64_t task_id,
           ret = OB_TIMEOUT;
           FORWARD_USER_ERROR(ret, "DDL execution status is undecided, please check later if it finishes successfully or not.");
         } else {
-          ob_usleep(retry_interval);
+          const int64_t waited_us = ObTimeUtility::current_time() - wait_start_time;
+          ob_usleep(waited_us < fast_poll_window ? fast_retry_interval : slow_retry_interval);
         }
       }
     }

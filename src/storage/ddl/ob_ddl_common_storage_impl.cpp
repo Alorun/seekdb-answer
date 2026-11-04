@@ -227,7 +227,11 @@ int oceanbase::storage::ObDDLStorageUtil::report_ddl_sstable_checksum(
         break;
       }
     }
-    ob_usleep(100L * 1000L);
+    // The checksum report above is a synchronous, committed inner-SQL write, and
+    // the caller verifies the report with a retrying check (OB_EAGAIN is handled
+    // by the DDL task retry path), so no unconditional visibility sleep is
+    // needed here.  The previous fixed 100ms sleep was pure latency on every
+    // tablet of every direct-load index build.
   }
   return ret;
 }

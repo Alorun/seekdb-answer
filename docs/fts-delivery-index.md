@@ -52,6 +52,10 @@
 | **交给 agent：⑤ count-only 快路径（query +9）** | `docs/prompt-5-count-only-fast-path.md` |
 | **看 ⑤ count-only 快路径做了什么、实测多少**（判定条件、三形态探针、4 组 8 轮配对、正确性证据） | `docs/fts-count-only-fast-path-report.md` |
 | **交给 agent：③深挖 → ⑥映射表合并 → ⑧语句层 → ④排查** | `docs/prompt-6-to-9-followup-four.md` |
+| **交给 agent A：构建侧两项（⑥ 映射表合并 + DDL 固定开销）** | `docs/prompt-A-build-side-two-items.md` |
+| **交给 agent B：分词侧两项（③ 深挖内部 + ⑧ 语句层）** | `docs/prompt-B-tokenize-side-two-items.md` |
+| **看本轮构建侧两项做了什么**（⑥ 墙钟上限 0、前提证伪未实施；DDL 固定开销：删 100ms sleep + 10ms 轮询，clean A/B +4.11%/+3.85%/+11.84%） | `docs/fts-build-side-round2-report.md` |
+| **看本轮分词侧两项做了什么**（③ 四段计时再次证伪未归属 9µs；官方口径 0.0537/0.0385 未达标；0 行代码改动） | `docs/fts-tokenize-side-round2-report.md` |
 | **看 ③⑥⑧④ 做了什么、实测多少**（A1 四段计时证伪「未归属 9µs」、⑧ JSON 直写 tokenize −9.6%、⑥ 实测墙钟上限 0、④ 删除共享路径） | `docs/prompt-6-to-9-followup-four-report.md` |
 | **看提示词①（LIMIT 早停）做了什么、实测多少**（探针结论、改动清单、8+4 轮配对 A/B、正确性证据） | `docs/fts-limit-early-stop-report.md` |
 | **四项各自的执行提示词（交给他人的对话）** | `docs/prompt-1-fts-limit-early-stop.md`、`prompt-2-count-limit-rewrite.md`、`prompt-3-tokenize-server-side.md`、`prompt-4-dual-writer-merge.md` |
