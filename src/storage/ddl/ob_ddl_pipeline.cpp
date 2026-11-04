@@ -26,6 +26,7 @@
 #include "storage/tx_storage/ob_ls_service.h"
 #include "query/engine/expr/ob_expr_lob_utils.h"
 #include <cstdlib>
+#include <chrono>
 #include "query/engine/expr/ob_array_expr_utils.h"
 
 using namespace oceanbase::storage;
@@ -864,6 +865,25 @@ int ObVectorIndexBaseOperator::get_ddl_tablet_context(ObDDLTabletContext *&table
   return ret;
 }
 
+// Dev-only DDL phase tracer: appends "<monotonic seconds> <tag>" to
+// $SK_CUVS_TIMING_FILE so the DDL phases (scan / append / build / write) can be
+// placed on one timeline.  No-op unless the variable is set.
+static void ddl_phase(const char *tag)
+{
+  const char *path = ::getenv("SK_CUVS_TIMING_FILE");
+  if (path == nullptr || path[0] == '\0') {
+    return;
+  }
+  FILE *file = ::fopen(path, "a");
+  if (file == nullptr) {
+    return;
+  }
+  const double seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  ::fprintf(file, "SEEKDB_DDL_PHASE %.6f %s\n", seconds, tag);
+  ::fclose(file);
+}
+
 int ObHNSWIndexAppendBufferOperator::init(
     const ObTabletID &tablet_id)
 {
@@ -883,6 +903,7 @@ int ObHNSWIndexAppendBufferOperator::init(
     LOG_WARN("error unexpected, vector index ctx is null", K(ret));
   } else {
     is_inited_ = true;
+    ddl_phase("APPEND_PIPELINE_INIT");
     vec_idx_param_ = vector_index_ctx->vec_idx_param_;
     vec_dim_ = vector_index_ctx->vec_dim_;
     vector_vid_col_idx_ = vector_index_ctx->vector_vid_col_idx_;
@@ -971,6 +992,7 @@ int ObHNSWIndexAppendBufferOperator::append_row_file(ObDDLRowFile *row_file, ObD
   // SK_CUVS_BULK_APPEND=0 restores the old behaviour for A/B testing.
   const char *bulk_env = ::getenv("SK_CUVS_BULK_APPEND");
   const bool bulk_append = (bulk_env == nullptr || bulk_env[0] != '0');
+  ddl_phase("APPEND_BEGIN");
   if (OB_ISNULL(row_file) || OB_ISNULL(tablet_context)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguments", K(ret), KP(row_file), KP(tablet_context));
@@ -1068,6 +1090,7 @@ int ObHNSWIndexAppendBufferOperator::append_row_file(ObDDLRowFile *row_file, ObD
       }
     }
   }
+  ddl_phase("APPEND_END");
   return ret;
 }
 
@@ -1131,6 +1154,7 @@ int ObHNSWIndexBuildOperator::serialize_vector_index(
     ObVectorIndexTabletContext &ctx)
 {
   int ret = OB_SUCCESS;
+  ddl_phase("SERIALIZE_BEGIN");
   // first we do vsag serialize
   ObIVectorIndexRuntime *vec_index_service = ::oceanbase::share::server_service<::oceanbase::storage::ObIVectorIndexRuntime>();
   ObPluginVectorIndexAdapterGuard adaptor_guard;
@@ -1187,6 +1211,7 @@ int ObHNSWIndexBuildOperator::serialize_vector_index(
     }
   }
   row_allocator_.reuse();
+  ddl_phase("SERIALIZE_END");
   return ret;
 }
 
@@ -1305,8 +1330,10 @@ int ObHNSWIndexWriteMacroOperator::execute(
   int ret = OB_SUCCESS;
   output_chunk.reset();
   result_state = ObPipelineOperator::NEED_MORE_INPUT;
+  ddl_phase("WRITE_BEGIN");
   if (OB_FAIL(write(input_chunk, iter_))) {
   }
+  ddl_phase("WRITE_END");
   return ret;
 }
 
