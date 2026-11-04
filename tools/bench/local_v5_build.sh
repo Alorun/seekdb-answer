@@ -9,7 +9,7 @@
 # Logs:  /workspace/run/{dep,bridge,cmake,build,bench}.log
 set -u
 SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-RUN=${RUN_DIR:-/workspace/run}
+RUN=${RUN_DIR:-/run-bench}
 BUILD=${BUILD_DIR:-/build_release}
 BR=$RUN/bridge/libseekdb_cuvs_bridge.so
 OBS=$BUILD/src/observer/seekdb
@@ -63,7 +63,7 @@ run() {
   "$SRC/tools/bench/cagra_build_bench.sh" \
     --observer "$OBS" --bridge "$BR" \
     --data-dir "$dir" --base-dir "$RUN/store-$tag" --evidence "$RUN/ev-$tag" \
-    --port "$port" --memory 32G --skip-gen --configs "$cfg" \
+    --port "$port" --memory 32G --datafile-size 6G --skip-gen --configs "$cfg" \
     --extra-env "$extra" >"$RUN/bench-$tag.log" 2>&1
   grep -h "\[bench\].*build_ms=" "$RUN/bench-$tag.log" | tail -2
 }
