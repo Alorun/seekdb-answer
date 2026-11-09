@@ -323,6 +323,7 @@ class Parser {
     return false;
   }
   void expectKeyword(const char* kw) {
+    if (peek().kind == Token::Kind::End) throw NeedMore{};
     if (!acceptKeyword(kw)) {
       fail(Err::kSyntax, std::string("expected ") + kw);
     }
