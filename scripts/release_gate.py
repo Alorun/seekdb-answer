@@ -192,9 +192,18 @@ def check_conversation(path, required):
 def run_container_smoke(image):
     tmp = tempfile.mkdtemp(prefix="mvdb-gate-")
     try:
-        smoke = os.path.join(ROOT, "tests", "smoke.sql")
-        with open(smoke, encoding="utf-8") as f:
-            sql = f.read()
+        # Official public cases use one complete SQL per line (no semicolons)
+        # and assert affected_rows/columns/rows, so the default protocol is
+        # line framing plus an explicit DML status.
+        sql = (
+            "CREATE TABLE docs (id BIGINT PRIMARY KEY, category VARCHAR(32), "
+            "content VARCHAR(1024), embedding VECTOR(4))\n"
+            "INSERT INTO docs VALUES (1,'database','事务与恢复','[1,0,0,0]'),"
+            "(2,'database','向量索引','[0,1,0,0]'),(3,'travel','旅行攻略','[0,0,1,0]')\n"
+            "SELECT id, content, L2_DISTANCE(embedding,'[0.9,0.1,0,0]') AS distance "
+            "FROM docs WHERE category = 'database' ORDER BY distance LIMIT 2\n"
+            "SELECT id, content FROM docs ORDER BY id\n"
+        )
         p = run(
             ["docker", "run", "--rm", "-i", "--network", "none",
              "-v", f"{tmp}:/data", image],
@@ -209,7 +218,7 @@ def run_container_smoke(image):
         p2 = run(
             ["docker", "run", "--rm", "-i", "--network", "none",
              "-v", f"{tmp}:/data", image],
-            input_text="SELECT id FROM docs ORDER BY id;\n",
+            input_text="SELECT id FROM docs ORDER BY id\n",
             timeout=60,
         )
         for needle in ["1", "2", "3"]:

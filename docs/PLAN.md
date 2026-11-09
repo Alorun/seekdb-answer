@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档版本 | v3.0 / 2026-11-09（v1.0–v2.9 同日） |
+| 文档版本 | v3.1 / 2026-11-09（v1.0–v3.0 同日） |
 | 对应赛题 | `db.md`：实现支持 SQL、持久化存储与事务的轻量向量数据库（总分 80） |
 | 目标仓库 | 官方 `oceanbase/seekdb` 的 `2026-competition-round2` 分支（tip `c842a368c`）；提交仓库**建议使用真正的官方 Fork**（当前 `Alorun/seekdb-answer` 是非 fork 克隆，见 §12.5） |
 | 语言决定 | **C++20**（已确认，不再变更） |
@@ -33,6 +33,7 @@
 17. **v2.8**：v0.3 把普通 ORDER BY + LIMIT 改为有界堆、无 ORDER BY + LIMIT 提前停止、距离 TopK 只为入选行复制行数据；1000 次精确 TopK 降到约 0.40 s。
 18. **v2.9**：真实证据材料 `agent/conversation.json`（8.7 KiB，同内容根副本）已生成；发布门禁（含 Docker 内存/磁盘冒烟与匿名可拉取）PASS。
 19. **v3.0**：v0.4 修复 SIGTERM 执行 pending 输入、解析错误丢弃后续语句、跨 chunk 的 token 截断、int64 ORDER BY 精度、索引名跨表冲突；补 `IF [NOT] EXISTS`、`DROP TABLE`、`TRUNCATE`、`SET`/`USE` 兼容；SQL 边界 158 项 × 2 模式、随机崩溃 800 次迭代均通过；ANN 原型评估后决定不启用（uniform 10k 收益不足）。
+20. **v3.1（提测失败后修复）**：从官方 `2026-competition-round2` 新提交 `a3dba559c` 找到公开用例 `mysqltest/`：每个非空行是一条完整 SQL（无分号），结果断言包含 `affected_rows`/`columns`/`rows`。提交版默认 semicolon + 无 DML 输出，导致驱动无法执行/无法断言，全部用例失败。现已把默认改为 **line framing + `OK <affected>`**；本地用公开用例逐条校验通过（`SELECT category` 为 unordered）。
 
 > 本文档是实施计划，不包含实现代码。所有带 ⚠️ 的条目表示依赖题包/平台确认，不能靠猜测硬编码。
 

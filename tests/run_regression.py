@@ -19,7 +19,8 @@ def run(sql, data_dir, extra=None, env=None, timeout=30):
     e = dict(os.environ)
     e.update(env or {})
     p = subprocess.Popen(
-        [BIN, "--data-dir", data_dir] + (extra or []),
+        [BIN, "--data-dir", data_dir, "--dml-ack=none",
+         "--statement-mode", "semicolon"] + (extra or []),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -256,7 +257,8 @@ def test_crash():
         e = dict(os.environ)
         e.update(env or {})
         p = subprocess.Popen(
-            [BIN, "--data-dir", d] + (extra or []),
+            [BIN, "--data-dir", d, "--dml-ack=none",
+             "--statement-mode", "semicolon"] + (extra or []),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

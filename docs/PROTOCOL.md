@@ -20,10 +20,12 @@ The same knobs can be set with `MVDB_READY_MARKER`, `MVDB_STATEMENT_MODE`,
 - Statements are normally terminated by `;` (outside strings/comments).
 - A statement that is complete at end-of-line but has no `;` is held until the
   next chunk arrives; this keeps multi-line statements working.
-- `--statement-mode=line` executes a complete statement at end-of-line (for a
-  driver that does not send terminators). `semicolon` is the default. Line
-  mode is one-line-only: continuation clauses on later lines are not supported;
-  use semicolon mode for formatted multi-line SQL.
+- `line` mode executes a complete statement at end-of-line; it is the default
+  because the official public cases use one complete SQL per line (no
+  semicolons). Incomplete lines are accumulated, so a multi-line statement
+  works as long as its first line is not already complete. Continuation
+  clauses on later lines after a complete first line need `semicolon` mode.
+- `--statement-mode=semicolon` keeps the classic multi-line script behavior.
 - At EOF, a final statement without `;` is executed.
 - `--` (followed by whitespace), `#`, and `/* ... */` comments are skipped.
 - Strings use single quotes; `''`, `\'`, `\\`, `\n`, `\t` are supported.
@@ -44,9 +46,10 @@ id	content	distance
 
 - A zero-row result prints only the header.
 - Distances use `%.9g`.
-- DML/DDL produce no stdout by default. `--dml-ack` prints `OK <affected>`;
-  this is the main protocol variable to switch if the driver waits for a DML
-  acknowledgement.
+- DML/DDL print `OK <affected>` by default; the official public cases assert
+  `affected_rows`, so the driver needs this status. Use `--dml-ack=none` for a
+  quiet mysqltest-style output. SELECT prints a header plus rows and no
+  terminator; the driver knows the expected row count.
 - This is the mysqltest-like assumption; `--protocol` is accepted but only the
   `mysqltest` profile is implemented so far.
 

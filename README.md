@@ -41,10 +41,13 @@ SELECT id, content FROM docs ORDER BY id;
 - `BEGIN` / `COMMIT` / `ROLLBACK`; autocommit when no transaction is active.
 - `CREATE VECTOR INDEX` (catalog acceptance; exact execution fallback).
 
-Input is read in raw chunks, so a semicolon-terminated statement does not need a
-trailing newline. `--statement-mode line` is available for a driver that sends
-one statement per line; line mode is one-line-only (formatted multi-line SQL
-should use the default semicolon mode).
+The competition's public cases send one complete SQL per line and assert
+`affected_rows`, `columns` and `rows`. The default protocol is therefore
+**line framing + an explicit `OK <affected>` status for DML/DDL** (and
+`ERROR <code>: <message>` for failures). For local multi-line scripts use
+`--statement-mode semicolon`; for quiet mysqltest-style output use
+`--dml-ack=none`. Input is read in raw chunks, so a semicolon-terminated
+statement does not need a trailing newline.
 
 ## Persistence
 

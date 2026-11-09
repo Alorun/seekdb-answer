@@ -89,7 +89,8 @@ class Runner:
             remove_data_dir(d)
 
     def session(self, data_dir):
-        s = Session(self.bin, data_dir, args=self.mode_args)
+        s = Session(self.bin, data_dir,
+                    args=list(self.mode_args) + ["--dml-ack=none"])
         self._sessions.append(s)
         if not s.wait_lines(1, 2.0):
             self._record("startup", "<start>", "ready marker", s.out_text())

@@ -20,10 +20,13 @@ struct Options {
   std::string ready_marker = "ready";
   std::string query_mode = "exact";
   std::string protocol = "mysqltest";
-  bool dml_ack = false;
+  // The official public cases send one complete SQL per line and assert
+  // affected_rows, columns and rows; line framing + an explicit DML status is
+  // therefore the default. Local multi-line scripts opt into semicolon mode.
+  bool dml_ack = true;
+  bool line_mode = true;
   size_t memory_rows = 50000;
   uint64_t checkpoint_bytes = 64ull * 1024ull * 1024ull;
-  bool line_mode = false;
 };
 
 void printHelp() {

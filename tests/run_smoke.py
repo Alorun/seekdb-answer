@@ -17,6 +17,7 @@ def run(binary, data_dir, sql, dml_ack=True, timeout=15, extra=None):
     args = [binary, "--data-dir", data_dir]
     if dml_ack:
         args.append("--dml-ack")
+    args += ["--statement-mode", "semicolon"]
     if extra:
         args.extend(extra)
     p = subprocess.Popen(
@@ -82,7 +83,8 @@ def main():
         crash_dir = tempfile.mkdtemp(prefix="mvdb-crash-")
         try:
             p = subprocess.Popen(
-                [binary, "--data-dir", crash_dir, "--dml-ack"],
+                [binary, "--data-dir", crash_dir, "--dml-ack",
+                 "--statement-mode", "semicolon"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
