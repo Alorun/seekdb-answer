@@ -248,7 +248,10 @@ def run_container_smoke(image):
 
 
 def check_docker(image):
-    p = run(["docker", "build", "--no-cache", "-t", image, "."], timeout=900)
+    # Reuse Docker's layer cache: COPY src invalidates the build when the
+    # database source changes, while the apt/toolchain layers need not be
+    # downloaded again. This keeps the gate usable on slow CI networks.
+    p = run(["docker", "build", "-t", image, "."], timeout=600)
     if p.returncode != 0:
         return fail("docker build failed: " + p.stderr[-1000:])
     print("docker build: ok")
