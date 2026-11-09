@@ -67,13 +67,21 @@ id	content	distance
 
 ## Errors
 
+Default (semantic names, matching the public pack's `error` assertions):
+
 ```text
-ERROR <mysql-like-code>: <message>
+ERROR duplicate_key: duplicate primary key: 1
+ERROR unsupported_sql: unsupported or unknown statement
+ERROR dimension_mismatch: vector dimension mismatch for column e: expected 2, got 1
 ```
 
-Examples: 1064 syntax, 1050 table exists, 1146 table not found, 1054 column not
-found, 1062 duplicate primary key, 1136 column count, 1406 data too long,
-1366 invalid value, 1235 unsupported.
+Other names: `syntax_error`, `duplicate_table`, `table_not_found`,
+`column_not_found`, `column_count_mismatch`, `value_too_long`,
+`value_out_of_range`, `type_mismatch`, `invalid_vector`, `invalid_value`,
+`transaction_state`, `duplicate_index`, `index_not_found`, `io_error`.
+`--numeric-errors` (or `MVDB_NUMERIC_ERRORS=1`) switches to the MySQL-style
+`ERROR <code>: <message>` form used by the local numeric test suites; the
+public/formal driver profile is semantic.
 
 ## Query mode
 
@@ -86,10 +94,11 @@ found, 1062 duplicate primary key, 1136 column count, 1406 data too long,
 
 `SET NAMES ...`, `SET autocommit=...`, `SET @@session...`, `USE db` and similar
 session setup statements are accepted as no-ops (the task semantics remain:
-autocommit plus explicit `BEGIN`). `CREATE TABLE IF NOT EXISTS`,
-`DROP TABLE [IF EXISTS]` and `TRUNCATE [TABLE]` are supported. The test-only
-`SET __mvdb_sync__='1'` prints `__mvdb_sync__` and is used by the local fuzz
-harness; it is not part of the competition SQL contract.
+autocommit plus explicit `BEGIN`). `DROP TABLE [IF EXISTS]` is supported.
+`CREATE TABLE IF NOT EXISTS` and `TRUNCATE [TABLE]` are outside the task SQL
+subset and return `unsupported_sql`. The test-only `SET __mvdb_sync__='1'`
+prints `__mvdb_sync__` and is used by the local fuzz harness; it is not part of
+the competition SQL contract.
 
 ## Exit
 

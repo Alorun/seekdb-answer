@@ -422,7 +422,7 @@ class Session:
                  crash_point: Optional[str] = None,
                  checkpoint_bytes: Optional[int] = None,
                  start_timeout: float = 10.0):
-        args = [binary, "--data-dir", data_dir, "--dml-ack"]
+        args = [binary, "--data-dir", data_dir, "--dml-ack", "--numeric-errors"]
         if mode == "disk":
             args += ["--memory-rows", "0"]
         if checkpoint_bytes is not None:
@@ -585,7 +585,7 @@ class Session:
 
 
 ERROR_RE = re.compile(r"^ERROR (\d+):")
-OK_RE = re.compile(r"^OK (\d+)$")
+OK_RE = re.compile(r"^OK(?: (\d+))?$")
 
 
 def classify_actual(lines: List[str], saw_sentinel: bool) -> Actual:
@@ -595,7 +595,8 @@ def classify_actual(lines: List[str], saw_sentinel: bool) -> Actual:
             return Actual(True, "error", lines, code=int(m.group(1)))
         m = OK_RE.match(lines[0])
         if m:
-            return Actual(True, "ok", lines, affected=int(m.group(1)))
+            return Actual(True, "ok", lines,
+                          affected=int(m.group(1)) if m.group(1) is not None else 0)
         # SELECT: first line is the header.
         cols = lines[0].split("\t") if lines[0] != "" else []
         rows = [ln.split("\t") for ln in lines[1:] if ln != ""]
@@ -1347,7 +1348,7 @@ def run_recovery_point(binary: str, data_dir: str, it: Iteration,
     env = dict(os.environ)
     env.pop("MVDB_CRASH_POINT", None)
     env["MVDB_CRASH_POINT"] = point
-    args = [binary, "--data-dir", data_dir, "--dml-ack"]
+    args = [binary, "--data-dir", data_dir, "--dml-ack", "--numeric-errors"]
     if it.mode == "disk":
         args += ["--memory-rows", "0"]
     try:

@@ -3,6 +3,8 @@ ROOT=os.path.dirname(os.path.dirname(os.path.abspath(__file__))); BIN=os.environ
 class P:
     def __init__(self,d,args):
         self.p=subprocess.Popen([BIN,'--data-dir',d,'--ready-marker=__MVD_READY__']+args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
+        # Delay deliberately: a startup marker must not shift the first reply.
+        time.sleep(0.12)
         self.buf=b''
     def read_until_marker(self,timeout=5):
         lines=[]; end=time.monotonic()+timeout
@@ -58,7 +60,8 @@ def run(name):
             except Exception as ex:
                 fails.append((raw,type(ex).__name__,str(ex))); break
             if 'error' in e:
-                if not got or not got[0].startswith('ERROR '): fails.append((raw,'err',got[:2]))
+                want='ERROR '+str(e['error'])+':'
+                if not got or not got[0].startswith(want): fails.append((raw,'err',want,got[:2]))
                 continue
             if 'columns' in e:
                 if not got: fails.append((raw,'no header')); continue

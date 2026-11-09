@@ -194,6 +194,12 @@ bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
     }
     if (pos >= body.size()) break;
     const char* start = body.c_str() + pos;
+    // strtod also accepts C99 hex floats (0x10); the task's vector grammar is
+    // decimal only, so reject them rather than silently parsing 16.
+    if (start[0] == '0' && (start[1] == 'x' || start[1] == 'X')) {
+      err = "invalid number in vector literal";
+      return false;
+    }
     char* end = nullptr;
     errno = 0;
     double d = std::strtod(start, &end);

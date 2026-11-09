@@ -25,7 +25,7 @@ It is not a substitute for the JSON itself; the platform only reads the JSON.
   statement type/length/hash.
 - If a block produced no new understanding or result, write "no new evidence"
   instead of padding.
-- `conversation.json` must be <= 128 KiB, valid UTF-8 JSON, object at the top
+- `conversation.json` must be <= 64 KiB, valid UTF-8 JSON, object at the top
   level, no duplicate keys and no NaN/Infinity.
 
 ## Files

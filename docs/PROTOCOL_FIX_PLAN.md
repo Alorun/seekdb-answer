@@ -17,7 +17,8 @@
 | H2（确定） | 驱动需要 `affected_rows` 才能断言 DML | 公开 `.result` 多处 `affected_rows`；失败提交默认无 DML 输出 | 即使 H1 修好，DML 断言仍无法通过 |
 | H3（中） | 驱动对 ready 的处理与批量/交互模式不同 | 平台不返回日志；公开 README 不描述 ready | 用 Docker 环境变量做自适应：已写入 SQL 时不输出 ready，等待时输出 |
 | H4（中） | 驱动对 SELECT 的结束判定依赖预期行数 | `.result` 给出精确 `rows` | 输出 header + 精确行；不加额外终止行，避免污染下一条响应 |
-| H6（高） | 驱动用 `--ready-marker` 做**逐响应分帧** | 公开解决方案/驱动约定；失败提交只把标记当启动行 | 传入 marker 时每个响应后输出标记；首条 SQL 已写入时不额外输出启动标记 |
+| H6（高） | 驱动用 `--ready-marker` 做**逐响应分帧** | 公开驱动约定；失败提交只把标记当启动行 | 传入 marker 时每个响应后输出标记；首条 SQL 已写入时不额外输出启动标记 |
+| H7（高） | 错误断言使用**语义名**而不是数字码 | 公开 `.result` 使用 `duplicate_key`/`unsupported_sql`/`dimension_mismatch` | 默认输出语义名；`--numeric-errors` 保留数字码本地套件 |
 | H5（低） | 驱动要求 JSON 响应 | 题面明确说不再采用 JSON 请求/响应；公开 README 说 `.result` 不是运行协议 | 保持文本 `OK <n>` + TAB 结果 |
 
 ## 3. 修改项
@@ -41,6 +42,7 @@
 | --- | --- | --- |
 | 官方公开用例（v4，无标记） | `python3 tests/run_public_cases.py --bin ./build/minivectordb` | 20/20 PASS |
 | 官方公开用例（v4，marker 分帧） | `python3 tests/run_marker_cases.py` | 20/20 PASS |
+| 严格错误语义 | 公开 runner 的 `error` 分支要求 `ERROR <name>:` | 20/20 PASS |
 | SQL 边界 | `python3 tests/run_sql_edges.py --bin ./build/minivectordb` | 158 项 × 2 模式，0 失败 |
 | smoke/regression | `python3 tests/run_smoke.py ...` / `run_regression.py ...` | 通过 |
 | 崩溃 fuzz | `python3 tests/run_crash_fuzz.py ... --iterations 100` | 200 次，0 失败 |

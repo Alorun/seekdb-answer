@@ -13,6 +13,7 @@
 namespace {
 
 volatile std::sig_atomic_t g_stop = 0;
+bool g_numeric_errors = false;
 
 void handleSignal(int) { g_stop = 1; }
 
@@ -71,7 +72,8 @@ bool parseArgs(int argc, char** argv, Options& opt) {
         return false;
       }
       opt.marker_frame = true;
-    } else if (key == "--query-mode" || key == "--mode") {
+    } else if (key == "--query-mode" || key == "--mode" ||
+               key == "--vector-mode") {
       if (!take(opt.query_mode)) {
         std::cerr << "missing value for --query-mode\n";
         return false;
@@ -131,6 +133,28 @@ bool parseArgs(int argc, char** argv, Options& opt) {
       } else {
         opt.dml_ack = true;
       }
+    } else if (key == "--numeric-errors") {
+      g_numeric_errors = true;
+    } else if (key == "--header") {
+      // Always emitted by this implementation.
+    } else if (key == "--no-status") {
+      opt.dml_ack = false;
+    } else if (key == "--result-format" || key == "--row-separator" ||
+               key == "--error-prefix" || key == "--ok-prefix" ||
+               key == "--pool-pages" || key == "--page-size" ||
+               key == "--direct-io" || key == "--ivf-nlist" ||
+               key == "--ivf-nprobe") {
+      std::string ignored;
+      if (!take(ignored)) return false;
+    } else if (key == "--checkpoint-mb") {
+      std::string v;
+      if (!take(v)) return false;
+      try {
+        opt.checkpoint_bytes = std::stoull(v) * 1024ull * 1024ull;
+      } catch (...) {
+        std::cerr << "bad --checkpoint-mb value\n";
+        return false;
+      }
     } else if (key == "--help" || key == "-h") {
       printHelp();
       return false;
@@ -149,8 +173,47 @@ void writeOut(const std::string& s) {
   std::cout.flush();
 }
 
+std::string semanticError(const mvdb::Status& st) {
+  switch (st.code) {
+    case mvdb::Err::kSyntax: return "syntax_error";
+    case mvdb::Err::kTableExists: return "duplicate_table";
+    case mvdb::Err::kTableNotFound: return "table_not_found";
+    case mvdb::Err::kColumnNotFound: return "column_not_found";
+    case mvdb::Err::kDuplicateKey: return "duplicate_key";
+    case mvdb::Err::kColumnCount: return "column_count_mismatch";
+    case mvdb::Err::kDataTooLong: return "value_too_long";
+    case mvdb::Err::kInvalidValue:
+      if (st.message.find("dimension mismatch") != std::string::npos) {
+        return "dimension_mismatch";
+      }
+      if (st.message.find("vector") != std::string::npos) {
+        return "invalid_vector";
+      }
+      if (st.message.find("out of range") != std::string::npos ||
+          st.message.find("out-of-range") != std::string::npos) {
+        return "value_out_of_range";
+      }
+      if (st.message.find("type") != std::string::npos ||
+          st.message.find("expected") != std::string::npos) {
+        return "type_mismatch";
+      }
+      return "invalid_value";
+    case mvdb::Err::kUnsupported:
+      return "unsupported_sql";
+    case mvdb::Err::kTxnState: return "transaction_state";
+    case mvdb::Err::kIo: return "io_error";
+    case mvdb::Err::kIndexExists: return "duplicate_index";
+    case mvdb::Err::kIndexNotFound: return "index_not_found";
+    default: return "sql_error";
+  }
+}
+
 void writeError(const mvdb::Status& st) {
-  writeOut("ERROR " + std::to_string(st.code) + ": " + st.message + "\n");
+  if (g_numeric_errors) {
+    writeOut("ERROR " + std::to_string(st.code) + ": " + st.message + "\n");
+  } else {
+    writeOut("ERROR " + semanticError(st) + ": " + st.message + "\n");
+  }
 }
 
 void writeResult(const mvdb::ExecResult& result) {
@@ -316,7 +379,16 @@ bool drainBuffer(std::string& buffer, mvdb::Executor& exec, const Options& opt,
     } else if (result.has_result) {
       writeResult(result);
     } else if (opt.dml_ack) {
-      writeOut("OK " + std::to_string(result.affected) + "\n");
+      bool has_count = pr.stmt.kind == mvdb::Statement::Kind::Insert ||
+                       pr.stmt.kind == mvdb::Statement::Kind::Update ||
+                       pr.stmt.kind == mvdb::Statement::Kind::Delete;
+      if (has_count) {
+        writeOut("OK " + std::to_string(result.affected) + "\n");
+      } else {
+        // DDL / transaction-control / SET responses carry no affected count;
+        // the reference profile prints bare OK for these.
+        writeOut("OK\n");
+      }
     }
     writeResponseMarker(opt);
     if (pr.consumed == 0 || pr.consumed > buffer.size()) {
@@ -382,6 +454,10 @@ int main(int argc, char** argv) {
     opt.ready_marker = v;
     opt.marker_frame = true;
   }
+  if (const char* v = std::getenv("MVDB_NUMERIC_ERRORS")) {
+    std::string m = v;
+    g_numeric_errors = (m == "1" || m == "true" || m == "ok");
+  }
   if (!parseArgs(argc, argv, opt)) return 0;
 
   mvdb::Database db(opt.data_dir, opt.memory_rows);
@@ -396,14 +472,12 @@ int main(int argc, char** argv) {
             << " protocol=" << opt.protocol << " query_mode=" << opt.query_mode
             << " dml_ack=" << (opt.dml_ack ? "ok" : "none")
             << " statement_mode=" << (opt.line_mode ? "line" : "semicolon") << "\n";
-  if (!opt.ready_marker.empty()) {
-    bool adaptive = opt.marker_frame ||
-                    std::getenv("MVDB_ADAPTIVE_READY") != nullptr;
+  if (!opt.ready_marker.empty() && !opt.marker_frame) {
+    bool adaptive = std::getenv("MVDB_ADAPTIVE_READY") != nullptr;
     bool defer = false;
     if (adaptive) {
-      // A batch driver may already have written SQL before reading anything;
-      // in that case an extra ready line would corrupt its first response.
-      // A request/response driver waits, so the poll times out and we print.
+      // Batch driver already wrote SQL: do not put a startup line in its
+      // first response. A request/response driver waits, so print ready.
       struct pollfd pfd {};
       pfd.fd = STDIN_FILENO;
       pfd.events = POLLIN;
@@ -411,6 +485,8 @@ int main(int argc, char** argv) {
     }
     if (!defer) writeOut(opt.ready_marker + "\n");
   }
+  // In explicit --ready-marker mode the marker is a per-response terminator;
+  // printing a startup marker would shift the first response by one line.
 
   std::string buffer;
   bool stop = false;
@@ -434,9 +510,15 @@ int main(int argc, char** argv) {
       // then wait for the response. If no more bytes arrive shortly, execute
       // the complete statement instead of blocking for a newline.
       if (!stop && !buffer.empty() && buffer.find('\n') == std::string::npos) {
-        mvdb::ParseResult pending = mvdb::parseStatement(buffer);
-        if (pending.kind == mvdb::ParseResult::Kind::Ok && !stdinHasData(10)) {
-          stop = !drainBuffer(buffer, exec, opt, true);
+        // Check for more input before reparsing the growing buffer. A large
+        // multi-row INSERT arrives in several reads; reparsing its prefix on
+        // every read is quadratic.
+        if (!stdinHasData(10)) {
+          mvdb::ParseResult pending = mvdb::parseStatement(buffer);
+          if (pending.kind == mvdb::ParseResult::Kind::Ok &&
+              pending.consumed > 0 && buffer[pending.consumed - 1] == ';') {
+            stop = !drainBuffer(buffer, exec, opt, true);
+          }
         }
       }
     } else {

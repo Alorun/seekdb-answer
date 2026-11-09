@@ -25,6 +25,9 @@ struct SelectItem {
 struct OrderItem {
   std::string column;
   bool desc = false;
+  bool is_distance = false;
+  std::string vector_text;
+  int ordinal = 0;  // 1-based projection ordinal; 0 = not an ordinal
 };
 
 struct SelectStmt {

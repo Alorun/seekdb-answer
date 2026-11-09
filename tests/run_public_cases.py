@@ -99,8 +99,9 @@ def run_case(binary, case_dir, name):
                     s.take_out()
                     continue
                 line = s.take_out().splitlines()[0] if s.out_text().splitlines() else ""
-                if not line.startswith("ERROR "):
-                    failures.append((raw, "expected error", exp["error"], line))
+                want = "ERROR " + str(exp["error"]) + ":"
+                if not line.startswith(want):
+                    failures.append((raw, "expected error", want, line))
                 continue
             if "columns" in exp:
                 need = 1 + len(exp["rows"])

@@ -87,6 +87,8 @@ int findColumn(const Schema& schema, const std::string& name);
 bool rowMatches(const Table& table, const Row& row,
                 const std::vector<Condition>& where, std::string& err);
 Status convertValue(const Column& col, const Value& input, Value& out);
+double l2DistanceSq(const float* a, const float* b, size_t n);
+double l2DistanceSq(const std::vector<float>& a, const std::vector<float>& b);
 double l2Distance(const std::vector<float>& a, const std::vector<float>& b);
 
 }  // namespace mvdb

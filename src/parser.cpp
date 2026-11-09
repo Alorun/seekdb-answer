@@ -489,9 +489,8 @@ class Parser {
   CreateTableStmt parseCreateTable() {
     CreateTableStmt stmt;
     if (acceptKeyword("IF")) {
-      expectKeyword("NOT");
-      expectKeyword("EXISTS");
-      stmt.if_not_exists = true;
+      fail(Err::kUnsupported,
+           "CREATE TABLE IF NOT EXISTS is not supported by this SQL subset");
     }
     stmt.table = expectIdent();
     expectPunct('(');
@@ -520,15 +519,25 @@ class Parser {
       } else if (acceptKeyword("VARCHAR")) {
         col.type = ColumnType::Varchar;
         expectPunct('(');
-        col.length = static_cast<uint32_t>(expectUInt());
+        {
+          uint64_t raw = expectUInt();
+          if (raw == 0 || raw > 1'000'000ull) {
+            fail(Err::kInvalidValue, "VARCHAR length out of range");
+          }
+          col.length = static_cast<uint32_t>(raw);
+        }
         expectPunct(')');
-        if (col.length == 0) fail(Err::kInvalidValue, "VARCHAR length must be positive");
       } else if (acceptKeyword("VECTOR")) {
         col.type = ColumnType::Vector;
         expectPunct('(');
-        col.length = static_cast<uint32_t>(expectUInt());
+        {
+          uint64_t raw = expectUInt();
+          if (raw == 0 || raw > 1'000'000ull) {
+            fail(Err::kInvalidValue, "VECTOR dimension out of range");
+          }
+          col.length = static_cast<uint32_t>(raw);
+        }
         expectPunct(')');
-        if (col.length == 0) fail(Err::kInvalidValue, "VECTOR dimension must be positive");
       } else {
         fail(Err::kUnsupported, "unsupported column type for " + col.name);
       }
@@ -542,6 +551,9 @@ class Parser {
         if (saw_primary_key) fail(Err::kSyntax, "multiple primary keys");
         stmt.pk_index = static_cast<int>(stmt.columns.size());
         saw_primary_key = true;
+      }
+      if (stmt.columns.size() >= 1024) {
+        fail(Err::kInvalidValue, "too many columns (max 1024)");
       }
       stmt.columns.push_back(std::move(col));
       if (acceptPunct(',')) continue;
@@ -674,7 +686,28 @@ class Parser {
       expectKeyword("BY");
       while (true) {
         OrderItem item;
-        item.column = expectIdent();
+        if (peek().kind == Token::Kind::Number) {
+          uint64_t n = expectUInt();
+          if (n == 0 || n > 1000000) {
+            fail(Err::kSyntax, "ORDER BY ordinal out of range");
+          }
+          item.ordinal = static_cast<int>(n);
+        } else if (peek().kind == Token::Kind::Ident &&
+                   iequals(peek().text, "L2_DISTANCE")) {
+          next();
+          expectPunct('(');
+          item.is_distance = true;
+          item.column = expectIdent();
+          expectPunct(',');
+          requireToken();
+          if (peek().kind != Token::Kind::String) {
+            fail(Err::kSyntax, "L2_DISTANCE requires a vector literal string");
+          }
+          item.vector_text = next().text;
+          expectPunct(')');
+        } else {
+          item.column = expectIdent();
+        }
         if (acceptKeyword("ASC")) {
           item.desc = false;
         } else if (acceptKeyword("DESC")) {

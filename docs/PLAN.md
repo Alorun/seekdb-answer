@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档版本 | v3.5 / 2026-11-09（v1.0–v3.4 同日） |
+| 文档版本 | v3.7 / 2026-11-09（v1.0–v3.6 同日） |
 | 对应赛题 | `db.md`：实现支持 SQL、持久化存储与事务的轻量向量数据库（总分 80） |
 | 目标仓库 | 官方 `oceanbase/seekdb` 的 `2026-competition-round2` 分支（tip `c842a368c`）；提交仓库**建议使用真正的官方 Fork**（当前 `Alorun/seekdb-answer` 是非 fork 克隆，见 §12.5） |
 | 语言决定 | **C++20**（已确认，不再变更） |
@@ -38,6 +38,8 @@
 22. **v3.3**：把 `agent/conversation.json` 重构为按当前进度生成的任务/实验/单元摘要，不再逐句复述用户消息；新增 `docs/PROTOCOL_FIX_PLAN.md` 记录 H1–H5、修改项和验证矩阵。
 23. **v3.4**：官方公开包更新到 `9f6df2ba5`（20 用例/95 SQL），新增主键冲突、Unicode、BIGINT、ALTER 错误、重启、事务提交/回滚/失败插入/关停回滚、多表、索引维护、float32 和距离并列过滤；本地 20/20 通过。另把 `ORDER BY ... LIMIT` 的投影延后到真正入堆，减少非选中行的格式化开销。
 24. **v3.5（关键协议修复）**：补上驱动常见的 **ready-marker 响应分帧**：驱动传入 `--ready-marker` 后，程序在每个语句响应（含错误）后输出该标记；若首条 SQL 已写入 stdin，则不再额外输出启动标记，等待型驱动仍会在 50 ms 后得到启动标记。此前只把标记当启动行，驱动若按标记读响应会超时，这是两次正式提测均失败的更可能原因。新增 `tests/run_marker_cases.py`，用带标记的驱动模拟跑 20 个公开用例，20/20 通过。
+25. **v3.6（错误语义修复）**：默认错误行改为公开包使用的语义名（`duplicate_key`、`unsupported_sql`、`dimension_mismatch` 等），并保留 `--numeric-errors` 供本地数字码套件；公开 20 个用例在无标记与 marker 分帧下都用严格错误名前缀校验通过。另补 `--vector-mode` 别名，避免官方驱动以该名称切换模式时产生未知参数噪声。
+26. **v3.7（语法边界收紧）**：按公开题包/公开实现的语法子集，`TRUNCATE` 与 `CREATE TABLE IF NOT EXISTS` 改为 `unsupported_sql`（`DROP TABLE [IF EXISTS]` 保留）；这避免正式隐藏用例把不在子集内的语句当成功而失败。
 
 > 本文档是实施计划，不包含实现代码。所有带 ⚠️ 的条目表示依赖题包/平台确认，不能靠猜测硬编码。
 
@@ -51,7 +53,7 @@
 4. **崩溃恢复是第二大风险**：强杀模型下用"WAL 提交标记 + fdatasync + 原子 manifest 切换 + 恢复只读重放"把不确定窗口压到一个点；用 14 个注入点反复验证。
 5. **协议是最大未知**：题包不公开，必须把 I/O 层做成可切换 profile，并把"平台预检"当作免费探针；早期两次提交允许用于协议校准，但每次仍是完整合规包。
 6. **每天 2 次提交是一台发布列车**：上午/晚上各一班；每班有明确目标、发布门禁、台账和回退版本。**一旦拿到第一个"已知全部通过"的版本，就必须每天结束时保有它**；在那之前，把拿到准入作为最高优先级。
-7. **Agent prompt 40 分**：从第一天维护实验台账，每天为当次提交生成一份同 commit 的 `conversation.json` 快照；不编造、不超 128 KiB。
+7. **Agent prompt 20 分**：从第一天维护实验台账，每天为当次提交生成一份同 commit 的 `conversation.json` 快照；不编造、不超 64 KiB。
 
 ---
 
@@ -62,8 +64,8 @@
 ```
 实现 ──► MySQL case 全量通过？──否──► 总分 0（性能、prompt 均不排名）
                 │是
-                ├──► 性能 benchmark（3 轮，中位数 E）──► 排名 r_perf ──► S_perf = max(40-0.5(r-1), 0)
-                └──► Agent prompt（3 轮评审，中位数）──► 排名 r_prompt ─► S_prompt = max(40-0.5(r-1), 0)
+                ├──► 性能 benchmark（3 轮，中位数 E）──► 排名 r_perf ──► S_perf = max(30-0.5(r-1), 0)
+                └──► Agent prompt（3 轮评审，中位数）──► 排名 r_prompt ─► S_prompt = max(20-0.5(r-1), 0)
                                         S_total = S_perf + S_prompt
 ```
 
@@ -290,7 +292,7 @@ seekdb-answer/
 │   ├── TESTING.md                 # 测试矩阵与崩溃注入说明
 │   └── RUNBOOK.md                 # 本地/容器操作手册
 ├── agent/
-│   ├── conversation.json          # 最终学习材料（≤128 KiB）
+│   ├── conversation.json          # 最终学习材料（≤64 KiB）
 │   └── evidence/                  # 原始实验台账（不进最终 JSON，但用于组装）
 ├── src/
 │   ├── main.cpp                   # 参数、启动、信号、session 循环
@@ -987,16 +989,16 @@ build (Release) → unit → sql suite → differential(100 seeds) → crash(抽
 - 事务提交时序、崩溃不变量。
 - 已实现功能清单 + 已知限制 + 本地测试记录。
 
-### 12.4 `conversation.json` 证据工程（40 分，独立排名）
+### 12.4 `conversation.json` 证据工程（20 分，独立排名）
 
-**关键事实**：评审只读这一个 JSON（≤128 KiB、UTF-8、顶层对象、无重复键/NaN）；只认学生自身有证据的理解与验证；Agent 的优秀输出不自动算学生理解；不能编造。
+**关键事实**：评审只读这一个 JSON（≤64 KiB、UTF-8、顶层对象、无重复键/NaN）；只认学生自身有证据的理解与验证；Agent 的优秀输出不自动算学生理解；不能编造。
 
 **先区分两类保存对象（容易混淆）**：
 
 | 对象 | 内容 | 用途 | 存放 |
 | --- | --- | --- | --- |
 | 平台反馈 | 预检/正式提交返回的失败类别、日志原文、提交时间、SHA、镜像 digest | 校准协议、定位隐藏失败 | `docs/SUBMISSIONS.md` + `agent/evidence/platform/` |
-| 学习材料 | 学生真实 prompt、Agent 对话、学生自己的解释、实验命令与输出、修正复测、反思 | `conversation.json` 评分（40 分） | `agent/evidence/` + `agent/conversation.json` |
+| 学习材料 | 学生真实 prompt、Agent 对话、学生自己的解释、实验命令与输出、修正复测、反思 | `conversation.json` 评分（20 分） | `agent/evidence/` + `agent/conversation.json` |
 
 **只保存提示词是不够的**：评分要 `student_evidence`（学生自己的话）和 `result_evidence`（实际结果）分开引用，且要覆盖"理解、验证、修正、迁移、取舍"五类证据；单纯堆提示词/对话数量、篇幅、调用次数都不加分。提示词要保存，但更重要的是保存**你基于结果做出的判断、修正和复测**。
 
@@ -1033,7 +1035,7 @@ build (Release) → unit → sql suite → differential(100 seeds) → crash(抽
 
 1. 每个实验在 `agent/evidence/` 留原始记录：问题、假设、命令、原始输出（截取关键行）、学生回答、确认稿、下一步。
 2. **每次提交前**把截至当前的有效单元整理成候选：对应五维度之一，写清 `student_evidence` 与 `result_evidence`（不同片段）。
-3. 提交前用 `tools/build_conversation.py` 组装、校验 JSON pointer 可解析、原文可在 JSON 中定位、总大小 <128 KiB。
+3. 提交前用 `tools/build_conversation.py` 组装、校验 JSON pointer 可解析、原文可在 JSON 中定位、总大小 <64 KiB。
 4. 去重：同一条修正链只取最高档；不把"计划"写成"已验证"；**不编造学生没说过的事实或结论**，整理稿必须经学生确认。
 5. **材料随提交锁定**：每次正式提交的 `conversation.json` 不能事后修改。因此：
    - 早期版本也要保持材料真实、完整（不必等"完美"）；
@@ -1194,7 +1196,7 @@ build (Release) → unit → sql suite → differential(100 seeds) → crash(抽
 | G4 功能回归 | 已实现范围的本地用例通过、无已知 Blocker、语句原子性通过；未实现功能在台账中显式标注 | 修复或降级功能；不提交"已实现范围内带 Blocker"的版本 |
 | G5 持久化/恢复 | 重启一致；kill -9 基础矩阵；若本版改过存储/恢复，跑全崩点 | 修复；恢复类问题优先级最高 |
 | G6 资源 | 2C/2GiB 容器全流程；只写 `/data`；S6 起加 256 MiB 快速用例 | 修流式/内存；不提交超限版本 |
-| G7 材料 | `Dockerfile`、`README.md`、`docs/DESIGN.md`（可为当日版本）、`agent/conversation.json`（合法 JSON、≤128 KiB、指针可解析、同 commit、无密钥）；根目录副本一致 | 重新生成/裁剪；材料不合规不提交 |
+| G7 材料 | `Dockerfile`、`README.md`、`docs/DESIGN.md`（可为当日版本）、`agent/conversation.json`（合法 JSON、≤64 KiB、student_evidence 与 pointer 精确一致、同 commit、无密钥）；根目录副本一致 | 重新生成/裁剪；材料不合规不提交 |
 | G8 平台预检 | 仓库/commit 可获取、镜像构建、启动、协议、公开样例（若有）通过；输出存档 | 按预检反馈修；预检不过不正式提交 |
 | G9 台账 | 记录 SHA、镜像 digest、JSON sha256/大小、门禁结果、预检输出、提交时间、预期风险 | 缺记录视为未完成 |
 
@@ -1314,7 +1316,7 @@ admission_pass, local_E_write, local_E_query, recall, notes
 | Q4 | 平台是否接受"代码不变、只更新 `conversation.json`/文档"的新 commit 再提交？ | 若接受，用作备用班与最终组合候选；若不接受，备用班改为"经验证的小修复" | 每日两班策略、最终版本组合 |
 | Q5 | exact/ann 的"提交配置"以什么形式指定？ | 未知；先默认 exact + 多路支持；若平台有表单/文件，请告知 | 性能项能否用 ann |
 | Q6 | 正式提交由谁操作、仓库是否已公开可拉取？ | 需要平台可获取的 HTTPS URL、分支 `2026-competition-round2`、40 位 SHA；仓库已 public，分支已匿名 clone 验证（11/09），继续确认平台是否接受该 URL、是否要求 fork 关系 | 每班交付、平台拉取、最终准入 |
-| Q7 | `conversation.json` 是否从本会话/现有记录开始积累？ | 建议从今天起维护真实台账，每次提交生成快照 | prompt 40 分 |
+| Q7 | `conversation.json` 是否从本会话/现有记录开始积累？ | 建议从今天起维护真实台账，每次提交生成快照 | prompt 20 分 |
 | Q8 | 是否允许参考 `dist/` 下旧的 seekdb 向量索引实验？ | **不建议**：规则要求存储/索引/事务核心自研；只借鉴思路，不复制代码 | 合规 |
 
 > 如果 Q2 完全无法获得，协议风险只能按 §2.4 的 profile + 反馈闭环处理；请务必保留每一次预检/提交返回的原始文本（即使只有一行），这是唯一的外部真值。
@@ -1375,7 +1377,7 @@ admission_pass, local_E_write, local_E_query, recall, notes
 - [ ] Docker 离线构建、启动、重启、强杀
 - [ ] README 覆盖题面 4.2 全部要求
 - [ ] 设计文档覆盖 4.3
-- [ ] `agent/conversation.json` ≤128 KiB、合法 JSON、指针可解析
+- [ ] `agent/conversation.json` ≤64 KiB、合法 JSON、指针可解析
 - [ ] 源码/Dockerfile/JSON 同一 commit；分支 `2026-competition-round2`
 
 ---
@@ -1451,7 +1453,7 @@ admission_pass, local_E_write, local_E_query, recall, notes
 - 精确 TopK：过滤后取 K、距离并列按主键升序、不足 K 返回全部；AVX2/FMA 运行时派发，标量回退。
 - 有界 TopK：普通 `ORDER BY ... LIMIT` 用 K 大小堆；无 `ORDER BY` 的 `LIMIT` 命中 K 条即停；距离 TopK 只为入选行复制行数据。
 - 协议开关：`--ready-marker`、`--statement-mode=semicolon|line`、`--dml-ack`、`--query-mode=exact|ann`；环境变量 `MVDB_*` 可覆盖；未知参数忽略。
-- 兼容：`CREATE TABLE IF NOT EXISTS`、`DROP TABLE [IF EXISTS]`、`TRUNCATE [TABLE]`、`USE`、常见 `SET` 会话语句（no-op）。
+- 兼容：`DROP TABLE [IF EXISTS]`、`USE`、常见 `SET` 会话语句（no-op）；`TRUNCATE` 与 `CREATE TABLE IF NOT EXISTS` 属于题包子集外，返回 `unsupported_sql`。
 - 崩溃注入：`MVDB_CRASH_POINT` 覆盖写 WAL、commit fsync、checkpoint rename、恢复 pass1/truncate。
 - 测试：`tests/run_smoke.py`（内存/磁盘、重启、kill -9）与 `tests/run_regression.py`（暴力真值、事务、错误、崩溃、索引、checkpoint）。
 

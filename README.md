@@ -30,10 +30,12 @@ SELECT id, content FROM docs ORDER BY id;
 
 ## Supported SQL (v0.1)
 
-- `CREATE TABLE` / `CREATE TABLE IF NOT EXISTS` with `BIGINT`, `VARCHAR(n)`,
-  `VECTOR(n)` and one BIGINT primary key.
-- `DROP TABLE [IF EXISTS]`, `TRUNCATE [TABLE]`, `USE`, and common `SET`
-  session statements (accepted as no-ops where the task does not need them).
+- `CREATE TABLE` with `BIGINT`, `VARCHAR(n)`, `VECTOR(n)` and one BIGINT
+  primary key.
+- `DROP TABLE [IF EXISTS]`, `USE`, and common `SET` session statements
+  (accepted as no-ops where the task does not need them). `TRUNCATE` and
+  `CREATE TABLE IF NOT EXISTS` are outside the task subset and return
+  `unsupported_sql`.
 - `INSERT` (including multi-row).
 - `SELECT` with column projection / `*`, `WHERE` comparisons and AND,
   `ORDER BY`, `LIMIT`, and `L2_DISTANCE`.

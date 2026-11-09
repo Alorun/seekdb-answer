@@ -201,7 +201,7 @@ Wal::ReadResult Wal::readRecord(uint64_t offset, WalRecord& out,
 
 Status Wal::forEachRecord(
     const std::function<bool(const WalRecordView&)>& fn,
-    bool* complete) const {
+    bool* complete, bool verify_crc) const {
   if (complete) *complete = true;
   if (size_ == 0) return Status::Ok();
   void* base = ::mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd_, 0);
@@ -226,7 +226,7 @@ Status Wal::forEachRecord(
       break;
     }
     const char* payload = reinterpret_cast<const char*>(data + pos + kHeaderSize);
-    if (crc32c(payload, len) != crc) {
+    if (verify_crc && crc32c(payload, len) != crc) {
       if (complete) *complete = false;
       break;
     }
@@ -605,6 +605,12 @@ Status Database::checkpoint() {
     ::fsync(dfd);
     ::close(dfd);
   }
+  // Re-point the active WAL at the renamed file. Without this the old fd
+  // still refers to the unlinked inode and a later commit would be lost.
+  auto fresh = std::make_unique<Wal>();
+  Status reopen = fresh->open(wal_path);
+  if (!reopen.ok()) return reopen;
+  wal_ = std::move(fresh);
   maybeCrash("checkpoint_after_rename");
   return Status::Ok();
 }
@@ -614,7 +620,9 @@ Status Database::loadSmallTables() {
   for (auto& up : tables_) {
     Table& table = *up;
     table.rows.clear();
-    if (table.locations.size() > memory_rows_) {
+    if (table.locations.size() > memory_rows_ ||
+        table.locations.size() * estimatedRowBytes(table.schema) >
+            kCacheBudgetBytes) {
       table.disk_mode = true;
       continue;
     }
@@ -644,6 +652,7 @@ Status Database::loadSmallTables() {
     return true;
   });
   if (!scan.ok()) return scan;
+  for (auto& up : tables_) ++up->row_version;
   return row_status;
 }
 

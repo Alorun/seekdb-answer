@@ -20,7 +20,7 @@ def run(sql, data_dir, extra=None, env=None, timeout=30):
     e.update(env or {})
     p = subprocess.Popen(
         [BIN, "--data-dir", data_dir, "--dml-ack=none",
-         "--statement-mode", "semicolon"] + (extra or []),
+         "--statement-mode", "semicolon", "--numeric-errors"] + (extra or []),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -188,9 +188,8 @@ def test_compat():
 SET NAMES utf8mb4;
 USE test;
 SET autocommit=0;
-CREATE TABLE IF NOT EXISTS t (id BIGINT PRIMARY KEY, s VARCHAR(8));
+CREATE TABLE t (id BIGINT PRIMARY KEY, s VARCHAR(8));
 INSERT INTO t VALUES (1,'a'),(2,'b');
-TRUNCATE TABLE t;
 SELECT id FROM t;
 DROP TABLE IF EXISTS t;
 DROP TABLE IF EXISTS missing;
@@ -200,7 +199,7 @@ SELECT id FROM t;
 """
             rc, out, err = run(sql, d, extra)
             check(f"compat-{tag}-rc", rc == 0, err)
-            check(f"compat-{tag}-truncate", "id\n3\n" in out, out)
+            check(f"compat-{tag}-rows", "id\n1\n2\n" in out, out)
             check(f"compat-{tag}-drop-missing", "ERROR 1146" not in out, out)
             rc, out, err = run("SELECT id FROM t;\n", d, extra)
             check(f"compat-{tag}-restart", "3" in out, out)
@@ -258,7 +257,7 @@ def test_crash():
         e.update(env or {})
         p = subprocess.Popen(
             [BIN, "--data-dir", d, "--dml-ack=none",
-             "--statement-mode", "semicolon"] + (extra or []),
+             "--statement-mode", "semicolon", "--numeric-errors"] + (extra or []),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

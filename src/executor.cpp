@@ -148,51 +148,108 @@ int findColumn(const Schema& schema, const std::string& name) {
 
 namespace {
 
-double l2Scalar(const float* a, const float* b, size_t n) {
+double l2ScalarSq(const float* a, const float* b, size_t n) {
   double sum = 0;
   for (size_t i = 0; i < n; ++i) {
     double d = static_cast<double>(a[i]) - static_cast<double>(b[i]);
     sum += d * d;
   }
-  return std::sqrt(sum);
+  return sum;
 }
 
-__attribute__((target("avx2,fma"))) double l2Avx2(const float* a, const float* b,
+__attribute__((target("avx2,fma"))) double l2Avx2Sq(const float* a, const float* b,
                                                   size_t n) {
-  __m256 acc = _mm256_setzero_ps();
+  // Accumulate in double: the inputs are float32 but a finite component can be
+  // as large as FLT_MAX; float accumulation would overflow the squared distance
+  // and can also lose precision for large-but-finite vectors.
+  __m256d acc0 = _mm256_setzero_pd();
+  __m256d acc1 = _mm256_setzero_pd();
   size_t i = 0;
   for (; i + 8 <= n; i += 8) {
     __m256 va = _mm256_loadu_ps(a + i);
     __m256 vb = _mm256_loadu_ps(b + i);
-    __m256 d = _mm256_sub_ps(va, vb);
-    acc = _mm256_fmadd_ps(d, d, acc);
+    // Widen before subtracting: the difference of two finite float32 values
+    // can exceed FLT_MAX and would become inf in a float vsubps.
+    __m256d a0 = _mm256_cvtps_pd(_mm256_castps256_ps128(va));
+    __m256d a1 = _mm256_cvtps_pd(_mm256_extractf128_ps(va, 1));
+    __m256d b0 = _mm256_cvtps_pd(_mm256_castps256_ps128(vb));
+    __m256d b1 = _mm256_cvtps_pd(_mm256_extractf128_ps(vb, 1));
+    __m256d d0 = _mm256_sub_pd(a0, b0);
+    __m256d d1 = _mm256_sub_pd(a1, b1);
+    acc0 = _mm256_fmadd_pd(d0, d0, acc0);
+    acc1 = _mm256_fmadd_pd(d1, d1, acc1);
   }
-  alignas(32) float tmp[8];
-  _mm256_store_ps(tmp, acc);
-  float sum = tmp[0] + tmp[1] + tmp[2] + tmp[3] + tmp[4] + tmp[5] + tmp[6] +
-              tmp[7];
+  alignas(32) double tmp0[4];
+  alignas(32) double tmp1[4];
+  _mm256_store_pd(tmp0, acc0);
+  _mm256_store_pd(tmp1, acc1);
+  double sum = tmp0[0] + tmp0[1] + tmp0[2] + tmp0[3] +
+               tmp1[0] + tmp1[1] + tmp1[2] + tmp1[3];
   for (; i < n; ++i) {
-    float d = a[i] - b[i];
+    double d = static_cast<double>(a[i]) - static_cast<double>(b[i]);
     sum += d * d;
   }
-  return std::sqrt(static_cast<double>(sum));
+  return sum;
 }
 
-using L2Fn = double (*)(const float*, const float*, size_t);
-L2Fn pickL2() {
+using L2SqFn = double (*)(const float*, const float*, size_t);
+L2SqFn pickL2Sq() {
   if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma")) {
-    return l2Avx2;
+    return l2Avx2Sq;
   }
-  return l2Scalar;
+  return l2ScalarSq;
 }
 
 }  // namespace
 
-double l2Distance(const std::vector<float>& a, const std::vector<float>& b) {
-  static const L2Fn fn = pickL2();
-  const size_t n = std::min(a.size(), b.size());
-  return fn(a.data(), b.data(), n);
+double l2DistanceSq(const float* a, const float* b, size_t n) {
+  static const L2SqFn fn = pickL2Sq();
+  return fn(a, b, n);
 }
+
+double l2DistanceSq(const std::vector<float>& a, const std::vector<float>& b) {
+  return l2DistanceSq(a.data(), b.data(), std::min(a.size(), b.size()));
+}
+
+double l2Distance(const std::vector<float>& a, const std::vector<float>& b) {
+  return std::sqrt(l2DistanceSq(a, b));
+}
+
+namespace {
+
+void rebuildVectorCache(Table& table, int vec_col) {
+  VectorCache& c = table.vector_cache;
+  c.valid = false;
+  c.pks.clear();
+  c.rows.clear();
+  c.vec.clear();
+  c.vec_col = vec_col;
+  c.dim = table.schema.columns[vec_col].length;
+  const size_t n = table.rows.size();
+  c.pks.reserve(n);
+  c.rows.reserve(n);
+  c.vec.reserve(n * c.dim);
+  for (const auto& [pk, row] : table.rows) {
+    const std::vector<float>& v = row.values[vec_col].v;
+    if (v.size() != c.dim) return;
+    c.pks.push_back(pk);
+    c.rows.push_back(&row);
+    c.vec.insert(c.vec.end(), v.begin(), v.end());
+  }
+  c.version = table.row_version;
+  c.valid = true;
+}
+
+void ensureVectorCache(Table& table, int vec_col) {
+  VectorCache& c = table.vector_cache;
+  if (c.valid && c.version == table.row_version && c.vec_col == vec_col &&
+      c.pks.size() == table.rows.size()) {
+    return;
+  }
+  rebuildVectorCache(table, vec_col);
+}
+
+}  // namespace
 
 Status convertValue(const Column& col, const Value& input, Value& out) {
   switch (col.type) {
@@ -284,6 +341,7 @@ Status Executor::restoreTo(size_t undo_size, uint64_t wal_offset) {
     } else {
       table->locations.erase(u.pk);
     }
+    ++table->row_version;
   }
   return db_.wal().truncate(wal_offset);
 }
@@ -406,6 +464,7 @@ Status Executor::applyInsert(Table& table, int64_t pk, Row row) {
     table.rows[pk] = row;
   }
   spillIfNeeded(table);
+  ++table.row_version;
   Undo u;
   u.table_id = table.schema.table_id;
   u.pk = pk;
@@ -435,6 +494,7 @@ Status Executor::applyUpdate(Table& table, int64_t pk, Row row) {
     table.rows[pk] = row;
   }
   spillIfNeeded(table);
+  ++table.row_version;
   Undo u;
   u.table_id = table.schema.table_id;
   u.pk = pk;
@@ -463,6 +523,7 @@ Status Executor::applyDelete(Table& table, int64_t pk) {
   if (!st.ok()) return st;
   table.locations.erase(pk);
   if (!table.disk_mode) table.rows.erase(pk);
+  ++table.row_version;
   Undo u;
   u.table_id = table.schema.table_id;
   u.pk = pk;
@@ -511,7 +572,7 @@ Status Executor::collectMatchingPks(Table& table,
       return false;
     }
     return true;
-  });
+  }, nullptr, false);
   if (!scan.ok()) return scan;
   return row_status;
 }
@@ -676,6 +737,7 @@ Status Executor::executeCreateTable(const CreateTableStmt& stmt) {
   rec.payload = encodeSchema(schema);
   st = db_.wal().append(rec);
   if (st.ok()) {
+    maybeCrash("after_wal_write");
     first_lsn_ = rec.lsn;
     last_lsn_ = rec.lsn;
     op_count_ = 1;
@@ -712,6 +774,7 @@ Status Executor::executeDropTable(const DropTableStmt& stmt) {
   rec.table = table_id;
   st = db_.wal().append(rec);
   if (st.ok()) {
+    maybeCrash("after_wal_write");
     first_lsn_ = rec.lsn;
     last_lsn_ = rec.lsn;
     op_count_ = 1;
@@ -725,36 +788,9 @@ Status Executor::executeDropTable(const DropTableStmt& stmt) {
   return db_.dropTable(table_id);
 }
 
-Status Executor::executeTruncateTable(const std::string& name) {
-  if (active_) {
-    return Status::Error(Err::kUnsupported, "DDL inside a transaction is not supported");
-  }
-  Table* table = db_.findTable(name);
-  if (!table) return Status::Error(Err::kTableNotFound, "table not found: " + name);
-  const uint64_t table_id = table->schema.table_id;
-  Status st = beginTxn();
-  if (!st.ok()) return st;
-  uint64_t stmt_wal = txn_start_;
-  WalRecord rec;
-  rec.type = static_cast<uint8_t>(WalType::TruncateTable);
-  rec.lsn = db_.newLsn();
-  rec.txn = txn_id_;
-  rec.table = table_id;
-  st = db_.wal().append(rec);
-  if (st.ok()) {
-    first_lsn_ = rec.lsn;
-    last_lsn_ = rec.lsn;
-    op_count_ = 1;
-    st = commitTxn();
-  } else {
-    Status rb = restoreTo(0, stmt_wal);
-    active_ = false;
-    if (!rb.ok()) return rb;
-  }
-  if (!st.ok()) return st;
-  table->locations.clear();
-  table->rows.clear();
-  return Status::Ok();
+Status Executor::executeTruncateTable(const std::string&) {
+  return Status::Error(Err::kUnsupported,
+                       "TRUNCATE is not supported by this task's SQL subset");
 }
 
 Status Executor::executeCreateIndex(const CreateIndexStmt& stmt) {
@@ -786,6 +822,7 @@ Status Executor::executeCreateIndex(const CreateIndexStmt& stmt) {
   rec.payload = encodeIndex(stmt.name, static_cast<uint32_t>(idx));
   st = db_.wal().append(rec);
   if (st.ok()) {
+    maybeCrash("after_wal_write");
     first_lsn_ = rec.lsn;
     last_lsn_ = rec.lsn;
     op_count_ = 1;
@@ -864,6 +901,47 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   for (const auto& o : stmt.order) {
     OrderSpec spec;
     spec.desc = o.desc;
+    if (o.ordinal > 0) {
+      if (static_cast<size_t>(o.ordinal) > cols.size()) {
+        return Status::Error(Err::kColumnNotFound,
+                             "ORDER BY ordinal out of range");
+      }
+      const OutCol& oc = cols[static_cast<size_t>(o.ordinal - 1)];
+      spec.is_distance = (oc.kind == OutCol::Kind::Distance);
+      spec.col = oc.col;
+      spec.query = oc.query;
+      if (!spec.is_distance && schema.columns[spec.col].type == ColumnType::Vector) {
+        return Status::Error(Err::kUnsupported,
+                             "ORDER BY on VECTOR column is not supported");
+      }
+      orders.push_back(std::move(spec));
+      continue;
+    }
+    if (o.is_distance) {
+      int idx = findColumn(schema, o.column);
+      if (idx < 0) {
+        return Status::Error(Err::kColumnNotFound,
+                             "unknown column in ORDER BY: " + o.column);
+      }
+      if (schema.columns[idx].type != ColumnType::Vector) {
+        return Status::Error(Err::kInvalidValue,
+                             "L2_DISTANCE requires a VECTOR column: " + o.column);
+      }
+      std::vector<float> query;
+      std::string err;
+      if (!parseVectorLiteral(o.vector_text, query, err)) {
+        return Status::Error(Err::kInvalidValue, err);
+      }
+      if (query.size() != schema.columns[idx].length) {
+        return Status::Error(Err::kInvalidValue,
+                             "vector dimension mismatch in ORDER BY");
+      }
+      spec.is_distance = true;
+      spec.col = idx;
+      spec.query = std::move(query);
+      orders.push_back(std::move(spec));
+      continue;
+    }
     bool resolved = false;
     for (const auto& item : stmt.items) {
       if (item.alias.empty() || !iequals(item.alias, o.column)) continue;
@@ -906,6 +984,39 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   }
 
   const bool limit_zero = stmt.has_limit && stmt.limit == 0;
+  const bool pk_order_topk = !limit_zero && stmt.has_limit &&
+                             !table->disk_mode && orders.size() == 1 &&
+                             !orders[0].is_distance &&
+                             orders[0].col == schema.pk_index;
+  if (pk_order_topk) {
+    // The in-memory row map is already ordered by primary key. This avoids
+    // building and sorting a Candidate (and its projection) for every row.
+    out.has_result = true;
+    out.columns.clear();
+    out.columns.reserve(cols.size());
+    for (const auto& col : cols) out.columns.push_back(col.header);
+    out.rows.reserve(static_cast<size_t>(stmt.limit));
+    auto take_row = [&](const Row& row) -> Status {
+      Status m;
+      if (!matchConditions(row, conds, m)) return m;
+      out.rows.push_back(formatProjection(row, cols));
+      return Status::Ok();
+    };
+    if (!orders[0].desc) {
+      for (auto it = table->rows.begin(); it != table->rows.end(); ++it) {
+        Status st2 = take_row(it->second);
+        if (!st2.ok()) return st2;
+        if (out.rows.size() >= stmt.limit) break;
+      }
+    } else {
+      for (auto it = table->rows.rbegin(); it != table->rows.rend(); ++it) {
+        Status st2 = take_row(it->second);
+        if (!st2.ok()) return st2;
+        if (out.rows.size() >= stmt.limit) break;
+      }
+    }
+    return Status::Ok();
+  }
   const bool distance_topk = !limit_zero && stmt.has_limit && orders.size() == 1 &&
                              orders[0].is_distance && !orders[0].desc;
   const bool order_topk = !limit_zero && stmt.has_limit && !orders.empty() &&
@@ -954,6 +1065,28 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   std::vector<Candidate> candidates;
   bool stop_scan = false;
 
+  auto consider_hit = [&](int64_t pk, const Row& row, double d) {
+    if (heap.size() < k) {
+      Hit h;
+      h.d = d;
+      h.pk = pk;
+      h.row = row;
+      heap.push(std::move(h));
+    } else {
+      Hit probe;
+      probe.d = d;
+      probe.pk = pk;
+      if (worse(probe, heap.top())) {
+        Hit h;
+        h.d = d;
+        h.pk = pk;
+        h.row = row;
+        heap.pop();
+        heap.push(std::move(h));
+      }
+    }
+  };
+
   auto process = [&](int64_t pk, const Row& row) -> Status {
     Status m;
     if (!matchConditions(row, conds, m)) {
@@ -961,26 +1094,8 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
       return Status::Ok();
     }
     if (distance_topk) {
-      const double d = l2Distance(row.values[orders[0].col].v, orders[0].query);
-      if (heap.size() < k) {
-        Hit h;
-        h.d = d;
-        h.pk = pk;
-        h.row = row;
-        heap.push(std::move(h));
-      } else {
-        Hit probe;
-        probe.d = d;
-        probe.pk = pk;
-        if (worse(probe, heap.top())) {
-          Hit h;
-          h.d = d;
-          h.pk = pk;
-          h.row = row;
-          heap.pop();
-          heap.push(std::move(h));
-        }
-      }
+      const double d = l2DistanceSq(row.values[orders[0].col].v, orders[0].query);
+      consider_hit(pk, row, d);
       return Status::Ok();
     }
     Candidate c;
@@ -989,7 +1104,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
       KeyValue kv;
       if (o.is_distance) {
         kv.kind = KeyValue::Kind::Double;
-        kv.d = l2Distance(row.values[o.col].v, o.query);
+        kv.d = l2DistanceSq(row.values[o.col].v, o.query);
       } else {
         const Value& v = row.values[o.col];
         if (v.type == Value::Type::Int) {
@@ -1023,7 +1138,29 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   };
 
   if (!limit_zero) {
-    if (table->disk_mode) {
+    bool cache_scanned = false;
+    if (distance_topk && !table->disk_mode) {
+      ensureVectorCache(*table, orders[0].col);
+      const VectorCache& cache = table->vector_cache;
+      if (cache.valid && cache.dim == orders[0].query.size()) {
+        const float* q = orders[0].query.data();
+        Status m;
+        for (size_t i = 0; i < cache.pks.size(); ++i) {
+          const Row& row = *cache.rows[i];
+          if (!conds.empty() && !matchConditions(row, conds, m)) {
+            if (!m.ok()) return m;
+            continue;
+          }
+          const double d = l2DistanceSq(cache.vec.data() + i * cache.dim, q,
+                                        cache.dim);
+          consider_hit(cache.pks[i], row, d);
+        }
+        cache_scanned = true;
+      }
+    }
+    if (cache_scanned) {
+      // already scanned through the contiguous cache
+    } else if (table->disk_mode) {
       Status row_status = Status::Ok();
       Status scan = db_.wal().forEachRecord([&](const WalRecordView& v) {
         if (v.type != static_cast<uint8_t>(WalType::Insert) &&
@@ -1045,7 +1182,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
           return false;
         }
         return !stop_scan;
-      });
+      }, nullptr, false);
       if (!scan.ok()) return scan;
       if (!row_status.ok()) return row_status;
     } else {

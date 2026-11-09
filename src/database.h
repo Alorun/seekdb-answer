@@ -65,8 +65,10 @@ class Wal {
 
   // Sequential scan over the current file contents. The callback returns false
   // to stop early. `complete` is set to false if the file has an invalid tail.
+  // `verify_crc=false` is for repeat scans after recovery has validated the
+  // file; recovery/load always keep it true.
   Status forEachRecord(const std::function<bool(const WalRecordView&)>& fn,
-                       bool* complete = nullptr) const;
+                       bool* complete = nullptr, bool verify_crc = true) const;
 
  private:
   Status writeAll(const char* data, size_t n);
@@ -76,6 +78,36 @@ class Wal {
   std::string path_;
 };
 
+// Read-only scan accelerator derived from Table::rows. Rebuilt lazily when
+// row_version changes; it never owns logical state.
+// Keep the in-memory row cache bounded by bytes as well as row count: a table
+// with fewer than --memory-rows rows can still be too wide for the cgroup.
+inline size_t estimatedRowBytes(const Schema& s) {
+  size_t n = 32;
+  for (const auto& c : s.columns) {
+    if (c.type == ColumnType::BigInt) {
+      n += 8;
+    } else if (c.type == ColumnType::Varchar) {
+      n += static_cast<size_t>(c.length) + 8;
+    } else {
+      n += static_cast<size_t>(c.length) * 4 + 8;
+    }
+  }
+  return n;
+}
+
+constexpr size_t kCacheBudgetBytes = 64ull * 1024ull * 1024ull;
+
+struct VectorCache {
+  uint64_t version = 0;
+  int vec_col = -1;
+  size_t dim = 0;
+  std::vector<int64_t> pks;
+  std::vector<const Row*> rows;
+  std::vector<float> vec;
+  bool valid = false;
+};
+
 struct Table {
   Schema schema;
   // Small tables keep rows in memory for fast scans. Large tables set
@@ -83,6 +115,8 @@ struct Table {
   std::map<int64_t, Row> rows;
   std::unordered_map<int64_t, uint64_t> locations;
   bool disk_mode = false;
+  uint64_t row_version = 0;
+  VectorCache vector_cache;
 };
 
 class Database {

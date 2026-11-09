@@ -134,8 +134,8 @@ def check_conversation(path, required):
         print(f"warning: {path} missing (not required for this run)")
         return True
     size = os.path.getsize(path)
-    if size > 128 * 1024:
-        return fail(f"conversation.json is {size} bytes (>128 KiB)")
+    if size > 64 * 1024:
+        return fail(f"conversation.json is {size} bytes (>64 KiB)")
     try:
         text = open(path, "r", encoding="utf-8").read()
         data = json.loads(
@@ -169,6 +169,25 @@ def check_conversation(path, required):
                 return False
         return True
 
+    def resolve_value(ptr):
+        if not isinstance(ptr, str) or not ptr.startswith("/"):
+            return None
+        cur = data
+        for part in ptr[1:].split("/"):
+            part = part.replace("~1", "/").replace("~0", "~")
+            if isinstance(cur, list):
+                try:
+                    cur = cur[int(part)]
+                except (ValueError, IndexError):
+                    return None
+            elif isinstance(cur, dict):
+                if part not in cur:
+                    return None
+                cur = cur[part]
+            else:
+                return None
+        return cur
+
     def walk(node):
         if isinstance(node, dict):
             for k, v in node.items():
@@ -184,6 +203,40 @@ def check_conversation(path, required):
         walk(data)
     except Exception as e:
         return fail(f"conversation.json pointer check failed: {e}")
+    if data.get("synthetic") is not False:
+        return fail("conversation.json synthetic must be false")
+    units = data.get("units")
+    if not isinstance(units, list) or len(units) < 5:
+        return fail("conversation.json needs at least 5 units (five dimensions)")
+    seen_ids = set()
+    seen_ptrs = set()
+    for u in units:
+        if not isinstance(u, dict):
+            return fail("unit is not an object")
+        uid = u.get("id")
+        if not uid or uid in seen_ids:
+            return fail(f"duplicate/missing unit id {uid!r}")
+        seen_ids.add(uid)
+        ev = u.get("student_evidence")
+        ptr = u.get("student_pointer")
+        if not isinstance(ev, str) or not ev or len(ev) > 240:
+            return fail(f"unit {uid}: student_evidence must be 1..240 chars")
+        if ptr in seen_ptrs:
+            return fail(f"unit {uid}: duplicate student_pointer")
+        seen_ptrs.add(ptr)
+        if resolve_value(ptr) != ev:
+            return fail(f"unit {uid}: student_evidence is not exact text at {ptr}")
+        if isinstance(u.get("score"), (int, float)) and u["score"] > 0.5:
+            rp = u.get("result_pointer")
+            re_ = u.get("result_evidence")
+            if not rp or not isinstance(re_, str) or not re_:
+                return fail(f"unit {uid}: scored unit needs result evidence")
+            if resolve_value(rp) != re_:
+                return fail(f"unit {uid}: result_evidence is not exact text at {rp}")
+    root_path = os.path.join(ROOT, "conversation.json")
+    if os.path.exists(root_path):
+        if open(root_path, "rb").read() != open(path, "rb").read():
+            return fail("root conversation.json differs from agent/conversation.json")
     digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
     print(f"conversation: {size} bytes sha256={digest}")
     return True
