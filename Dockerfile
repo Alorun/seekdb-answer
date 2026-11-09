@@ -16,6 +16,7 @@ FROM ubuntu:24.04
 
 WORKDIR /app
 COPY --from=build /src/build/minivectordb /app/minivectordb
+ENV MVDB_ADAPTIVE_READY=1
 RUN mkdir -p /data
 VOLUME ["/data"]
 

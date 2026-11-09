@@ -11,7 +11,10 @@ build assumes, so each submission can switch one variable at a time.
 
 Configurable with `--ready-marker`. An empty marker disables the line.
 The same knobs can be set with `MVDB_READY_MARKER`, `MVDB_STATEMENT_MODE`,
-`MVDB_DML_ACK`, and `MVDB_QUERY_MODE`; CLI arguments override them.
+`MVDB_DML_ACK`, and `MVDB_QUERY_MODE`; CLI arguments override them. The Docker
+image sets `MVDB_ADAPTIVE_READY=1`: if SQL is already pending when the process
+starts (a batch driver), the ready line is suppressed so it cannot corrupt the
+first response; a request/response driver gets the marker after a 50 ms poll.
 
 ## Statement framing
 
@@ -20,6 +23,9 @@ The same knobs can be set with `MVDB_READY_MARKER`, `MVDB_STATEMENT_MODE`,
 - Statements are normally terminated by `;` (outside strings/comments).
 - A statement that is complete at end-of-line but has no `;` is held until the
   next chunk arrives; this keeps multi-line statements working.
+- If a complete line arrives without a trailing newline and no more bytes
+  follow for 10 ms, it is executed; this covers drivers that write one SQL and
+  wait without a newline.
 - `line` mode executes a complete statement at end-of-line; it is the default
   because the official public cases use one complete SQL per line (no
   semicolons). Incomplete lines are accumulated, so a multi-line statement

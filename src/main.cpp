@@ -2,6 +2,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
+#include <poll.h>
 #include <string>
 #include <unistd.h>
 
@@ -313,6 +314,13 @@ bool drainBuffer(std::string& buffer, mvdb::Executor& exec, const Options& opt,
   return true;
 }
 
+bool stdinHasData(int timeout_ms) {
+  struct pollfd pfd {};
+  pfd.fd = STDIN_FILENO;
+  pfd.events = POLLIN;
+  return ::poll(&pfd, 1, timeout_ms) > 0;
+}
+
 bool drainLineBuffer(std::string& buffer, mvdb::Executor& exec,
                      const Options& opt, bool at_eof) {
   std::string pending;
@@ -373,7 +381,18 @@ int main(int argc, char** argv) {
             << " dml_ack=" << (opt.dml_ack ? "ok" : "none")
             << " statement_mode=" << (opt.line_mode ? "line" : "semicolon") << "\n";
   if (!opt.ready_marker.empty()) {
-    writeOut(opt.ready_marker + "\n");
+    bool adaptive = std::getenv("MVDB_ADAPTIVE_READY") != nullptr;
+    bool defer = false;
+    if (adaptive) {
+      // A batch driver may already have written SQL before reading anything;
+      // in that case an extra ready line would corrupt its first response.
+      // A request/response driver waits, so the poll times out and we print.
+      struct pollfd pfd {};
+      pfd.fd = STDIN_FILENO;
+      pfd.events = POLLIN;
+      defer = (::poll(&pfd, 1, 50) > 0);
+    }
+    if (!defer) writeOut(opt.ready_marker + "\n");
   }
 
   std::string buffer;
@@ -394,6 +413,15 @@ int main(int argc, char** argv) {
 
     if (opt.line_mode) {
       stop = !drainLineBuffer(buffer, exec, opt, false);
+      // Some drivers write one complete SQL without a trailing newline and
+      // then wait for the response. If no more bytes arrive shortly, execute
+      // the complete statement instead of blocking for a newline.
+      if (!stop && !buffer.empty() && buffer.find('\n') == std::string::npos) {
+        mvdb::ParseResult pending = mvdb::parseStatement(buffer);
+        if (pending.kind == mvdb::ParseResult::Kind::Ok && !stdinHasData(10)) {
+          stop = !drainBuffer(buffer, exec, opt, true);
+        }
+      }
     } else {
       stop = !drainBuffer(buffer, exec, opt, false);
     }
