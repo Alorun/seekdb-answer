@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档版本 | v3.2 / 2026-11-09（v1.0–v3.1 同日） |
+| 文档版本 | v3.3 / 2026-11-09（v1.0–v3.2 同日） |
 | 对应赛题 | `db.md`：实现支持 SQL、持久化存储与事务的轻量向量数据库（总分 80） |
 | 目标仓库 | 官方 `oceanbase/seekdb` 的 `2026-competition-round2` 分支（tip `c842a368c`）；提交仓库**建议使用真正的官方 Fork**（当前 `Alorun/seekdb-answer` 是非 fork 克隆，见 §12.5） |
 | 语言决定 | **C++20**（已确认，不再变更） |
@@ -35,6 +35,7 @@
 19. **v3.0**：v0.4 修复 SIGTERM 执行 pending 输入、解析错误丢弃后续语句、跨 chunk 的 token 截断、int64 ORDER BY 精度、索引名跨表冲突；补 `IF [NOT] EXISTS`、`DROP TABLE`、`TRUNCATE`、`SET`/`USE` 兼容；SQL 边界 158 项 × 2 模式、随机崩溃 800 次迭代均通过；ANN 原型评估后决定不启用（uniform 10k 收益不足）。
 20. **v3.1（提测失败后修复）**：从官方 `2026-competition-round2` 新提交 `a3dba559c` 找到公开用例 `mysqltest/`：每个非空行是一条完整 SQL（无分号），结果断言包含 `affected_rows`/`columns`/`rows`。提交版默认 semicolon + 无 DML 输出，导致驱动无法执行/无法断言，全部用例失败。现已把默认改为 **line framing + `OK <affected>`**；本地用公开用例逐条校验通过（`SELECT category` 为 unordered）。
 21. **v3.2**：补无换行语句的 10 ms idle 执行；Docker 镜像设置 `MVDB_ADAPTIVE_READY=1`，批量驱动已写入 SQL 时抑制 ready 行，交互驱动仍得到 ready；公开用例 5/5、SQL 边界 158、smoke/regression、崩溃 fuzz 均通过。
+22. **v3.3**：把 `agent/conversation.json` 重构为按当前进度生成的任务/实验/单元摘要，不再逐句复述用户消息；新增 `docs/PROTOCOL_FIX_PLAN.md` 记录 H1–H5、修改项和验证矩阵。
 
 > 本文档是实施计划，不包含实现代码。所有带 ⚠️ 的条目表示依赖题包/平台确认，不能靠猜测硬编码。
 
