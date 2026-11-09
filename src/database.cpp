@@ -1,6 +1,7 @@
 #include "database.h"
 
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -66,7 +67,7 @@ Status Wal::writeAll(const char* data, size_t n) {
   return Status::Ok();
 }
 
-Status Wal::append(const WalRecord& rec) {
+Status Wal::append(const WalRecord& rec, uint64_t* out_offset) {
   if (rec.payload.size() > kMaxPayload) {
     return Status::Error(Err::kIo, "record too large");
   }
@@ -98,6 +99,7 @@ Status Wal::append(const WalRecord& rec) {
     return st;
   }
   size_ = start + kHeaderSize + rec.payload.size();
+  if (out_offset) *out_offset = start;
   return Status::Ok();
 }
 
@@ -192,8 +194,56 @@ Wal::ReadResult Wal::readRecord(uint64_t offset, WalRecord& out,
   out.table = table;
   out.pk = pk;
   out.payload = std::move(payload);
+  out.offset = offset;
   next_offset = offset + kHeaderSize + len;
   return ReadResult::Ok;
+}
+
+Status Wal::forEachRecord(
+    const std::function<bool(const WalRecordView&)>& fn,
+    bool* complete) const {
+  if (complete) *complete = true;
+  if (size_ == 0) return Status::Ok();
+  void* base = ::mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd_, 0);
+  if (base == MAP_FAILED) {
+    return Status::Error(Err::kIo,
+                         "cannot map WAL: " + std::string(std::strerror(errno)));
+  }
+  const auto* data = static_cast<const unsigned char*>(base);
+  uint64_t pos = 0;
+  Status status = Status::Ok();
+  while (pos < size_) {
+    if (size_ - pos < kHeaderSize) {
+      if (complete) *complete = false;
+      break;
+    }
+    const unsigned char* h = data + pos;
+    uint32_t len = getU32(h);
+    uint32_t crc = getU32(h + 4);
+    uint64_t end = pos + kHeaderSize + len;
+    if (len > kMaxPayload || end > size_) {
+      if (complete) *complete = false;
+      break;
+    }
+    const char* payload = reinterpret_cast<const char*>(data + pos + kHeaderSize);
+    if (crc32c(payload, len) != crc) {
+      if (complete) *complete = false;
+      break;
+    }
+    WalRecordView view;
+    view.type = h[8];
+    view.lsn = getU64(h + 12);
+    view.txn = getU64(h + 20);
+    view.table = getU64(h + 28);
+    view.pk = getU64(h + 36);
+    view.offset = pos;
+    view.payload = payload;
+    view.payload_size = len;
+    if (!fn(view)) break;
+    pos = end;
+  }
+  ::munmap(base, size_);
+  return status;
 }
 
 Status Database::ensureDirectory() {
@@ -298,12 +348,7 @@ Status Database::applyRecord(const WalRecord& rec) {
       if (!table) {
         return Status::Error(Err::kIo, "recovery: missing table id " + std::to_string(rec.table));
       }
-      Row row;
-      std::string err;
-      if (!decodeRow(table->schema, rec.payload, row, err)) {
-        return Status::Error(Err::kIo, "recovery: " + err);
-      }
-      table->rows[static_cast<int64_t>(rec.pk)] = std::move(row);
+      table->locations[static_cast<int64_t>(rec.pk)] = rec.offset;
       return Status::Ok();
     }
     case WalType::Delete: {
@@ -311,7 +356,7 @@ Status Database::applyRecord(const WalRecord& rec) {
       if (!table) {
         return Status::Error(Err::kIo, "recovery: missing table id " + std::to_string(rec.table));
       }
-      table->rows.erase(static_cast<int64_t>(rec.pk));
+      table->locations.erase(static_cast<int64_t>(rec.pk));
       return Status::Ok();
     }
     case WalType::CreateIndex: {
@@ -344,63 +389,226 @@ Status Database::applyRecord(const WalRecord& rec) {
 }
 
 Status Database::recover() {
-  std::unordered_map<uint64_t, std::vector<WalRecord>> pending;
-  std::vector<uint64_t> commit_order;
-  std::set<uint64_t> seen_commit;
-  uint64_t offset = 0;
+  std::set<uint64_t> committed;
   uint64_t last_commit_end = 0;
   uint64_t max_lsn = 0;
   uint64_t max_txn = 0;
   uint64_t max_table = 0;
+  bool complete = true;
 
-  while (true) {
+  // Pass 1: identify committed transactions and the durable prefix.
+  Status st = wal_->forEachRecord(
+      [&](const WalRecordView& v) {
+        max_lsn = std::max(max_lsn, v.lsn);
+        max_txn = std::max(max_txn, v.txn);
+        max_table = std::max(max_table, v.table);
+        if (static_cast<WalType>(v.type) == WalType::Commit) {
+          committed.insert(v.txn);
+          last_commit_end = v.offset + kHeaderSize + v.payload_size;
+        }
+        return true;
+      },
+      &complete);
+  if (!st.ok()) return st;
+  maybeCrash("recovery_after_pass1");
+
+  // Pass 2: apply records belonging to committed transactions in file order.
+  Status apply_status = Status::Ok();
+  st = wal_->forEachRecord([&](const WalRecordView& v) {
+    if (static_cast<WalType>(v.type) == WalType::Commit) return true;
+    if (!committed.count(v.txn)) return true;
     WalRecord rec;
-    uint64_t next = 0;
-    std::string err;
-    auto r = wal_->readRecord(offset, rec, next, err);
-    if (r == Wal::ReadResult::Eof) break;
-    if (r == Wal::ReadResult::IoError) {
-      return Status::Error(Err::kIo, "recovery: " + err);
+    rec.type = v.type;
+    rec.lsn = v.lsn;
+    rec.txn = v.txn;
+    rec.table = v.table;
+    rec.pk = v.pk;
+    rec.offset = v.offset;
+    if (static_cast<WalType>(v.type) == WalType::CreateTable ||
+        static_cast<WalType>(v.type) == WalType::CreateIndex) {
+      rec.payload.assign(v.payload, v.payload_size);
     }
-    if (r == Wal::ReadResult::Invalid) {
-      // Crash-truncated tail: keep everything up to the last commit.
-      break;
+    Status a = applyRecord(rec);
+    if (!a.ok()) {
+      apply_status = a;
+      return false;
     }
-    max_lsn = std::max(max_lsn, rec.lsn);
-    max_txn = std::max(max_txn, rec.txn);
-    max_table = std::max(max_table, rec.table);
-    if (static_cast<WalType>(rec.type) == WalType::Commit) {
-      if (seen_commit.insert(rec.txn).second) {
-        commit_order.push_back(rec.txn);
-      }
-      last_commit_end = next;
-    } else {
-      pending[rec.txn].push_back(std::move(rec));
-    }
-    offset = next;
-  }
-
-  for (uint64_t txn : commit_order) {
-    auto it = pending.find(txn);
-    if (it == pending.end()) continue;
-    for (const auto& rec : it->second) {
-      Status st = applyRecord(rec);
-      if (!st.ok()) return st;
-    }
-  }
+    return true;
+  });
+  if (!st.ok()) return st;
+  if (!apply_status.ok()) return apply_status;
 
   if (last_commit_end < wal_->size()) {
-    Status st = wal_->truncate(last_commit_end);
+    st = wal_->truncate(last_commit_end);
     if (!st.ok()) return st;
   }
-
+  maybeCrash("recovery_after_truncate");
   next_lsn_ = max_lsn + 1;
   next_txn_id_ = max_txn + 1;
   next_table_id_ = max_table + 1;
   if (next_lsn_ == 0) next_lsn_ = 1;
   if (next_txn_id_ == 0) next_txn_id_ = 1;
   if (next_table_id_ == 0) next_table_id_ = 1;
+  return loadSmallTables();
+}
+
+Status Database::checkpointIfNeeded(uint64_t threshold_bytes) {
+  if (wal_->size() <= threshold_bytes) return Status::Ok();
+  return checkpoint();
+}
+
+Status Database::checkpoint() {
+  const std::string tmp_path = data_dir_ + "/wal.log.tmp";
+  ::unlink(tmp_path.c_str());
+
+  Wal tmp;
+  Status st = tmp.open(tmp_path);
+  if (!st.ok()) return st;
+  st = tmp.truncate(0);
+  if (!st.ok()) {
+    ::unlink(tmp_path.c_str());
+    return st;
+  }
+
+  const uint64_t txn = 1;
+  uint64_t lsn = 1;
+  uint64_t first_lsn = 0;
+  uint64_t last_lsn = 0;
+  uint32_t count = 0;
+
+  auto append = [&](WalType type, uint64_t table, int64_t pk,
+                    std::string payload) -> Status {
+    WalRecord rec;
+    rec.type = static_cast<uint8_t>(type);
+    rec.lsn = lsn++;
+    rec.txn = txn;
+    rec.table = table;
+    rec.pk = static_cast<uint64_t>(pk);
+    rec.payload = std::move(payload);
+    Status a = tmp.append(rec);
+    if (!a.ok()) return a;
+    if (first_lsn == 0) first_lsn = rec.lsn;
+    last_lsn = rec.lsn;
+    ++count;
+    return Status::Ok();
+  };
+
+  for (const auto& up : tables_) {
+    Status a = append(WalType::CreateTable, up->schema.table_id, 0,
+                      encodeSchema(up->schema));
+    if (!a.ok()) {
+      ::unlink(tmp_path.c_str());
+      return a;
+    }
+  }
+  for (const auto& [name, info] : indexes_) {
+    Status a = append(WalType::CreateIndex, info.table_id, 0,
+                      encodeIndex(name, info.column));
+    if (!a.ok()) {
+      ::unlink(tmp_path.c_str());
+      return a;
+    }
+  }
+
+  struct Ref {
+    uint64_t offset = 0;
+    uint64_t table = 0;
+    int64_t pk = 0;
+  };
+  std::vector<Ref> refs;
+  for (const auto& up : tables_) {
+    for (const auto& [pk, off] : up->locations) {
+      refs.push_back(Ref{off, up->schema.table_id, pk});
+    }
+  }
+  std::sort(refs.begin(), refs.end(),
+            [](const Ref& a, const Ref& b) { return a.offset < b.offset; });
+  for (const Ref& ref : refs) {
+    WalRecord old;
+    uint64_t next = 0;
+    std::string err;
+    auto r = wal_->readRecord(ref.offset, old, next, err);
+    if (r != Wal::ReadResult::Ok) {
+      ::unlink(tmp_path.c_str());
+      return Status::Error(Err::kIo, "checkpoint read failed: " + err);
+    }
+    if (old.type != static_cast<uint8_t>(WalType::Insert) &&
+        old.type != static_cast<uint8_t>(WalType::Update)) {
+      ::unlink(tmp_path.c_str());
+      return Status::Error(Err::kIo, "checkpoint location is not a row");
+    }
+    Status a = append(WalType::Insert, ref.table, ref.pk, std::move(old.payload));
+    if (!a.ok()) {
+      ::unlink(tmp_path.c_str());
+      return a;
+    }
+  }
+
+  if (count > 0) {
+    st = tmp.appendCommit(txn, count, first_lsn, last_lsn, lsn++);
+    if (!st.ok()) {
+      ::unlink(tmp_path.c_str());
+      return st;
+    }
+  }
+  st = tmp.sync();
+  if (!st.ok()) {
+    ::unlink(tmp_path.c_str());
+    return st;
+  }
+  maybeCrash("checkpoint_before_rename");
+
+  const std::string wal_path = data_dir_ + "/wal.log";
+  if (::rename(tmp_path.c_str(), wal_path.c_str()) != 0) {
+    ::unlink(tmp_path.c_str());
+    return Status::Error(Err::kIo,
+                         "checkpoint rename failed: " + std::string(std::strerror(errno)));
+  }
+  int dfd = ::open(data_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (dfd >= 0) {
+    ::fsync(dfd);
+    ::close(dfd);
+  }
+  maybeCrash("checkpoint_after_rename");
   return Status::Ok();
+}
+
+Status Database::loadSmallTables() {
+  std::unordered_map<uint64_t, Table*> small;
+  for (auto& up : tables_) {
+    Table& table = *up;
+    table.rows.clear();
+    if (table.locations.size() > memory_rows_) {
+      table.disk_mode = true;
+      continue;
+    }
+    table.disk_mode = false;
+    if (!table.locations.empty()) small[table.schema.table_id] = &table;
+  }
+  if (small.empty()) return Status::Ok();
+
+  Status row_status = Status::Ok();
+  Status scan = wal_->forEachRecord([&](const WalRecordView& v) {
+    if (v.type != static_cast<uint8_t>(WalType::Insert) &&
+        v.type != static_cast<uint8_t>(WalType::Update)) {
+      return true;
+    }
+    auto it = small.find(v.table);
+    if (it == small.end()) return true;
+    Table* table = it->second;
+    auto loc = table->locations.find(static_cast<int64_t>(v.pk));
+    if (loc == table->locations.end() || loc->second != v.offset) return true;
+    Row row;
+    std::string err;
+    if (!decodeRow(table->schema, v.payload, v.payload_size, row, err)) {
+      row_status = Status::Error(Err::kIo, "load table failed: " + err);
+      return false;
+    }
+    table->rows[static_cast<int64_t>(v.pk)] = std::move(row);
+    return true;
+  });
+  if (!scan.ok()) return scan;
+  return row_status;
 }
 
 }  // namespace mvdb

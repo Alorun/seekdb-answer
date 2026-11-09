@@ -19,6 +19,9 @@ struct Options {
   std::string query_mode = "exact";
   std::string protocol = "mysqltest";
   bool dml_ack = false;
+  size_t memory_rows = 50000;
+  uint64_t checkpoint_bytes = 64ull * 1024ull * 1024ull;
+  bool line_mode = false;
 };
 
 void printHelp() {
@@ -71,6 +74,46 @@ bool parseArgs(int argc, char** argv, Options& opt) {
         std::cerr << "missing value for --protocol\n";
         return false;
       }
+    } else if (key == "--memory-rows") {
+      std::string v;
+      if (!take(v)) {
+        std::cerr << "missing value for --memory-rows\n";
+        return false;
+      }
+      int64_t n = 0;
+      std::string err;
+      if (!mvdb::parseBigInt(v, n, err) || n < 0) {
+        std::cerr << "invalid --memory-rows: " << v << "\n";
+        return false;
+      }
+      opt.memory_rows = static_cast<size_t>(n);
+    } else if (key == "--statement-mode") {
+      std::string v;
+      if (!take(v)) {
+        std::cerr << "missing value for --statement-mode\n";
+        return false;
+      }
+      if (v == "line") {
+        opt.line_mode = true;
+      } else if (v == "semicolon" || v == "auto") {
+        opt.line_mode = false;
+      } else {
+        std::cerr << "unknown statement mode: " << v << "\n";
+        return false;
+      }
+    } else if (key == "--checkpoint-bytes") {
+      std::string v;
+      if (!take(v)) {
+        std::cerr << "missing value for --checkpoint-bytes\n";
+        return false;
+      }
+      int64_t n = 0;
+      std::string err;
+      if (!mvdb::parseBigInt(v, n, err) || n < 0) {
+        std::cerr << "invalid --checkpoint-bytes: " << v << "\n";
+        return false;
+      }
+      opt.checkpoint_bytes = static_cast<uint64_t>(n);
     } else if (key == "--dml-ack") {
       if (has_value) {
         opt.dml_ack = (value == "ok" || value == "true" || value == "1");
@@ -148,7 +191,8 @@ bool drainBuffer(std::string& buffer, mvdb::Executor& exec, const Options& opt,
     // A complete parse at end-of-line is not enough: the next line may be a
     // continuation (WHERE / ORDER BY / LIMIT). Require an explicit semicolon
     // unless the input is already at EOF.
-    if (!at_eof && (pr.consumed == 0 || buffer[pr.consumed - 1] != ';')) {
+    if (!at_eof && !opt.line_mode &&
+        (pr.consumed == 0 || buffer[pr.consumed - 1] != ';')) {
       return true;
     }
     if (pr.stmt.kind == mvdb::Statement::Kind::Exit) {
@@ -188,7 +232,7 @@ int main(int argc, char** argv) {
   Options opt;
   if (!parseArgs(argc, argv, opt)) return 0;
 
-  mvdb::Database db(opt.data_dir);
+  mvdb::Database db(opt.data_dir, opt.memory_rows);
   mvdb::Status st = db.open();
   if (!st.ok()) {
     std::cerr << "startup failed: " << st.message << "\n";
@@ -198,7 +242,8 @@ int main(int argc, char** argv) {
 
   std::cerr << "minivectordb: data_dir=" << opt.data_dir
             << " protocol=" << opt.protocol << " query_mode=" << opt.query_mode
-            << " dml_ack=" << (opt.dml_ack ? "ok" : "none") << "\n";
+            << " dml_ack=" << (opt.dml_ack ? "ok" : "none")
+            << " statement_mode=" << (opt.line_mode ? "line" : "semicolon") << "\n";
   if (!opt.ready_marker.empty()) {
     writeOut(opt.ready_marker + "\n");
   }
@@ -215,5 +260,10 @@ int main(int argc, char** argv) {
     stop = !drainBuffer(buffer, exec, opt, true);
   }
   exec.shutdown();
+  // Compact long WALs on a clean shutdown. Crash recovery remains WAL-based.
+  mvdb::Status cp = db.checkpointIfNeeded(opt.checkpoint_bytes);
+  if (!cp.ok()) {
+    std::cerr << "warning: checkpoint failed: " << cp.message << "\n";
+  }
   return 0;
 }

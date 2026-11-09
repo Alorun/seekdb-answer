@@ -9,6 +9,12 @@
 
 namespace mvdb {
 
+struct ResolvedCond {
+  int col = -1;
+  std::string op;
+  Value literal;
+};
+
 struct ExecResult {
   bool has_result = false;
   std::vector<std::string> columns;
@@ -27,8 +33,10 @@ class Executor {
   struct Undo {
     uint64_t table_id = 0;
     int64_t pk = 0;
-    bool had_old = false;
+    bool had_row = false;
     Row old_row;
+    bool had_location = false;
+    uint64_t old_location = 0;
   };
 
   Status beginTxn();
@@ -48,7 +56,14 @@ class Executor {
   Status applyDelete(Table& table, int64_t pk);
 
   Status writeRowRecord(WalType type, const Table& table, int64_t pk,
-                        const Row& row);
+                        const Row& row, uint64_t* out_offset = nullptr);
+  Status readRowAt(const Table& table, uint64_t offset, Row& row,
+                   std::string& err) const;
+  Status findRow(Table& table, int64_t pk, Row& row, bool& found);
+  void spillIfNeeded(Table& table);
+  Status collectMatchingPks(Table& table,
+                            const std::vector<ResolvedCond>& conds,
+                            std::vector<int64_t>& pks);
   Status writeCommit();
   Status handleStatementFailure(const Status& failure, bool implicit,
                                 size_t undo_size, uint64_t wal_offset);

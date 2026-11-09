@@ -46,10 +46,20 @@ checksummed records and a commit marker; a commit acknowledges only after
 `fdatasync`. On restart, only committed transactions are replayed and an
 uncommitted tail is discarded.
 
-## Known limitations (v0.1)
+Each table keeps a `primary key -> WAL offset` index. Small tables (default
+50,000 rows) keep a row cache in memory; larger tables switch to a disk mode
+and stream WAL records for scans (`--memory-rows N` to tune). On a clean
+shutdown, a WAL larger than 64 MiB is compacted into a new WAL containing only
+live rows, table definitions and index metadata (`--checkpoint-bytes N`).
 
-- In-memory tables for hot data; large-data streaming is a later milestone.
+## Known limitations (v0.2)
+
 - No NULL, JOIN, aggregates, subqueries, ALTER TABLE, foreign keys, nested
   transactions or primary-key updates.
+- DDL inside an explicit transaction is rejected.
 - Approximate index execution is not implemented yet; `ann` mode falls back to
-  exact scan.
+  exact scan and therefore has recall 1.0 but exact-scan latency.
+- Disk-mode queries scan the WAL; immutable segments and a real ANN index are
+  later milestones.
+- The stdin/stdout profile is still a platform-dependent assumption; see
+  `docs/PROTOCOL.md`.

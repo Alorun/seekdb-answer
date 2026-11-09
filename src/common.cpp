@@ -4,7 +4,16 @@
 #include <cmath>
 #include <cstdlib>
 
+#include <unistd.h>
+
 namespace mvdb {
+
+void maybeCrash(const char* point) {
+  const char* env = std::getenv("MVDB_CRASH_POINT");
+  if (env && std::strcmp(env, point) == 0) {
+    ::_exit(137);
+  }
+}
 
 uint32_t crc32c(const void* data, size_t n) {
   static uint32_t table[256];
@@ -93,7 +102,12 @@ std::string encodeRow(const Schema& schema, const Row& row) {
 
 bool decodeRow(const Schema& schema, const std::string& payload, Row& out,
                std::string& err) {
-  Reader r(payload.data(), payload.size());
+  return decodeRow(schema, payload.data(), payload.size(), out, err);
+}
+
+bool decodeRow(const Schema& schema, const char* data, size_t size, Row& out,
+               std::string& err) {
+  Reader r(data, size);
   out.values.resize(schema.columns.size());
   for (size_t i = 0; i < schema.columns.size(); ++i) {
     const Column& col = schema.columns[i];

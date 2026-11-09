@@ -151,6 +151,9 @@ inline std::string formatDouble(double v) {
 // ---------------------------------------------------------------------------
 uint32_t crc32c(const void* data, size_t n);
 
+// Test hook: if MVDB_CRASH_POINT equals `point`, terminate immediately.
+void maybeCrash(const char* point);
+
 // ---------------------------------------------------------------------------
 // Binary serialization
 // ---------------------------------------------------------------------------
@@ -258,6 +261,8 @@ bool decodeSchema(const std::string& payload, Schema& out, std::string& err);
 
 std::string encodeRow(const Schema& schema, const Row& row);
 bool decodeRow(const Schema& schema, const std::string& payload, Row& out,
+               std::string& err);
+bool decodeRow(const Schema& schema, const char* data, size_t size, Row& out,
                std::string& err);
 
 std::string encodeIndex(const std::string& name, uint32_t column_index);

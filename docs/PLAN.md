@@ -2,14 +2,14 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档版本 | v2.6 / 2026-11-09（v1.0–v2.5 同日） |
+| 文档版本 | v2.7 / 2026-11-09（v1.0–v2.6 同日） |
 | 对应赛题 | `db.md`：实现支持 SQL、持久化存储与事务的轻量向量数据库（总分 80） |
 | 目标仓库 | 官方 `oceanbase/seekdb` 的 `2026-competition-round2` 分支（tip `c842a368c`）；提交仓库**建议使用真正的官方 Fork**（当前 `Alorun/seekdb-answer` 是非 fork 克隆，见 §12.5） |
 | 语言决定 | **C++20**（已确认，不再变更） |
 | 截止时间 | **2026-11-18 比赛结束**（以平台实际截止时刻为准；最后提交至少留 4 小时缓冲） |
 | 提交节奏 | **每天计划 2 次正式提交（平台上限 2 次），具体时刻自定**（建议两班之间留出结果回流时间）；额度当日清零、不结转；提交前必须通过与规范相关的发布门禁 |
 | 题包状态 | **官方题包/测试驱动不公开展示**；只能靠赛题说明、平台预检、正式提交反馈和协议自适配来逼近 |
-| 当前状态 | 仓库已 public、分支已推送；**v0.1 已实现并本地冒烟通过**（WAL/CRUD/精确 TopK/事务/恢复/Docker），待补检查点、资源、ANN、材料 |
+| 当前状态 | 仓库已 public、分支已推送；**v0.2 已实现**：WAL+位置索引、内存/磁盘双模式、checkpoint 压缩、AVX2 距离、崩溃注入回归、Docker，待补真实 ANN、协议校准、材料 |
 | 一句话策略 | 用 9 天、最多约 20 次提交打一场"发布列车"：每次提交都是可构建、可运行、材料同 commit 的合规候选；先拿功能准入，再抢性能，最后用早期通过版本兜底。 |
 
 **变更记录**
@@ -29,6 +29,7 @@
 13. **v2.4**：澄清官方 `oceanbase/seekdb` 本来就有 `2026-competition-round2` 分支（tip `c842a368c`）；提交用的 fork 之前缺同名分支，现已在**同一 commit** 上补齐，两边 SHA 一致。
 14. **v2.5**：区分"基于官方 round2 开发"与"GitHub fork 关系"；当前仓库 `fork:false`，建议做真正的官方 Fork 并把同一分支推过去，或先向组委会确认非 fork 公开仓库是否可接受。
 15. **v2.6**：v0.1 代码落地（C++20）；本地 10k×128 写入约 0.49 s、1000 次精确 TopK 约 0.86 s、重启约 0.04 s；Docker 构建/运行/重启通过。
+16. **v2.7**：v0.2 加入 WAL 位置索引与磁盘模式（超过内存阈值不再全表驻留）、干净关闭时的 WAL checkpoint 压缩、AVX2/FMA 距离内核、行数据/事务/checkpoint/恢复崩溃注入与完整回归；本地 1000 次精确 TopK 约 0.67 s。
 
 > 本文档是实施计划，不包含实现代码。所有带 ⚠️ 的条目表示依赖题包/平台确认，不能靠猜测硬编码。
 
@@ -1428,32 +1429,37 @@ admission_pass, local_E_write, local_E_query, recall, notes
 
 > 计划冻结后，任何偏离都要在本文档更新"变更记录"并说明原因，避免范围悄悄膨胀。
 
-## 19. 实现进度（2026-11-09，v0.1）
+## 19. 实现进度（2026-11-09，v0.2）
 
 **已完成**
 
 - C++20 + CMake + 多阶段 Dockerfile；零第三方运行时依赖。
-- `/data/wal.log` 追加写：44 字节记录头 + CRC32C + 事务 id + COMMIT 标记；提交前 `fdatasync`。
-- 恢复：只重放已 COMMIT 的事务；截断未提交/不完整尾部；恢复后可继续追加。
+- `/data/wal.log` 追加写：记录头 + CRC32C + 事务 id + COMMIT 标记；提交前 `fdatasync`。
+- 行定位索引：`pk -> WAL offset`；小表（默认 ≤50k 行）保留内存行缓存，超阈值自动转磁盘模式，只保留定位索引；`--memory-rows` 可调。
+- 恢复：只重放已 COMMIT 的事务；截断未提交/不完整尾部；按 WAL 位置重建定位索引；小表按需载入内存。
+- 干净关闭时若 WAL 超过 `--checkpoint-bytes`（默认 64 MiB），把活行/表定义/索引压缩成新 WAL 并原子 rename；崩溃在 rename 前/后均保持一致。
 - SQL：`CREATE TABLE`、多行 `INSERT`、`SELECT`（投影/`*`/WHERE/AND/ORDER BY/LIMIT/`L2_DISTANCE`）、`UPDATE`、`DELETE`、`BEGIN/COMMIT/ROLLBACK`、`CREATE VECTOR INDEX`、`SET query_mode`。
-- 类型校验：BIGINT 溢出、VARCHAR 码点长度、VECTOR 维度/NaN/Inf/float32 溢出/主键唯一/每表一个向量列。
-- 精确 TopK：过滤后取 K、距离并列按主键升序、不足 K 返回全部。
-- CLI：`--data-dir`、`--ready-marker`、`--query-mode=exact|ann`、`--protocol`、`--dml-ack`；未知参数忽略。
-- 本地测试：`tests/smoke.sql` + `tests/run_smoke.py`（含重启与 kill -9）。
+- 类型校验：BIGINT 溢出、VARCHAR 码点长度、VECTOR 维度/NaN/Inf/float32 溢出、主键唯一、每表一个向量列。
+- 精确 TopK：过滤后取 K、距离并列按主键升序、不足 K 返回全部；AVX2/FMA 运行时派发，标量回退。
+- 协议开关：`--ready-marker`、`--statement-mode=semicolon|line`、`--dml-ack`、`--query-mode=exact|ann`；未知参数忽略。
+- 崩溃注入：`MVDB_CRASH_POINT` 覆盖写 WAL、commit fsync、checkpoint rename、恢复 pass1/truncate。
+- 测试：`tests/run_smoke.py`（内存/磁盘、重启、kill -9）与 `tests/run_regression.py`（暴力真值、事务、错误、崩溃、索引、checkpoint）。
 
 **本地测量（仅参考，非平台成绩）**
 
 | 项 | 结果 |
 | --- | --- |
 | 10k×128 批量写入（100 行/批，含 fsync） | 约 0.49 s |
-| 1000 次精确 TopK（K=10，一半带过滤） | 约 0.86 s |
-| 重启恢复（5.6 MB WAL） | 约 0.04 s |
-| 峰值 RSS（10k 数据） | 约 19 MB |
+| 1000 次精确 TopK（K=10，一半带过滤） | 约 0.67 s |
+| 重启恢复（5.6 MB WAL） | 约 0.05 s |
+| 峰值 RSS（10k 内存模式） | 约 18 MB |
+| 50k×128 磁盘模式（含装载+TopK） | 约 2.36 s，RSS 约 37 MB |
 
 **未完成 / 下一阶段**
 
-- checkpoint/不可变段、WAL 压缩；超内存数据流式扫描（当前全表在内存）。
-- SIMD 距离内核、过滤索引、ANN 真正执行（当前 `ann` 精确回退）。
-- 完整崩溃矩阵、恢复中再杀、checkpoint 原子性。
+- 真正的 ANN（HNSW/IVF）；当前 `ann` 仍精确回退（Recall=1.0）。
+- 不可变段文件/manifest；当前用 WAL checkpoint 压缩，磁盘模式查询需扫 WAL。
+- DDL 在显式事务内目前报错；需按题包决定隐式提交或可回滚。
+- 完整崩溃矩阵的随机化压测（已覆盖关键点，但未做数百次随机 kill）。
 - 平台协议校准（ready/DML 状态/错误格式目前是可切换假设）。
-- `agent/conversation.json`（真实证据）与发布门禁脚本。
+- `agent/conversation.json`（真实证据）与正式提交门禁/台账。

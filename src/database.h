@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -26,7 +27,19 @@ struct WalRecord {
   uint64_t txn = 0;
   uint64_t table = 0;
   uint64_t pk = 0;
+  uint64_t offset = 0;
   std::string payload;
+};
+
+struct WalRecordView {
+  uint8_t type = 0;
+  uint64_t lsn = 0;
+  uint64_t txn = 0;
+  uint64_t table = 0;
+  uint64_t pk = 0;
+  uint64_t offset = 0;
+  const char* payload = nullptr;
+  size_t payload_size = 0;
 };
 
 class Wal {
@@ -37,7 +50,7 @@ class Wal {
   Wal& operator=(const Wal&) = delete;
 
   Status open(const std::string& path);
-  Status append(const WalRecord& rec);
+  Status append(const WalRecord& rec, uint64_t* out_offset = nullptr);
   Status appendCommit(uint64_t txn, uint32_t op_count, uint64_t first_lsn,
                       uint64_t last_lsn, uint64_t lsn);
   Status sync();
@@ -47,6 +60,11 @@ class Wal {
   enum class ReadResult { Ok, Eof, Invalid, IoError };
   ReadResult readRecord(uint64_t offset, WalRecord& out, uint64_t& next_offset,
                         std::string& err) const;
+
+  // Sequential scan over the current file contents. The callback returns false
+  // to stop early. `complete` is set to false if the file has an invalid tail.
+  Status forEachRecord(const std::function<bool(const WalRecordView&)>& fn,
+                       bool* complete = nullptr) const;
 
  private:
   Status writeAll(const char* data, size_t n);
@@ -58,12 +76,17 @@ class Wal {
 
 struct Table {
   Schema schema;
+  // Small tables keep rows in memory for fast scans. Large tables set
+  // disk_mode and keep only the PK -> WAL offset index.
   std::map<int64_t, Row> rows;
+  std::unordered_map<int64_t, uint64_t> locations;
+  bool disk_mode = false;
 };
 
 class Database {
  public:
-  explicit Database(std::string data_dir) : data_dir_(std::move(data_dir)) {}
+  explicit Database(std::string data_dir, size_t memory_rows = 50000)
+      : data_dir_(std::move(data_dir)), memory_rows_(memory_rows) {}
 
   Status open();
   Table* findTable(const std::string& name);
@@ -78,6 +101,10 @@ class Database {
   uint64_t newTxnId() { return next_txn_id_++; }
   uint64_t newLsn() { return next_lsn_++; }
   const std::string& dataDir() const { return data_dir_; }
+  size_t memoryRows() const { return memory_rows_; }
+  Status loadSmallTables();
+  Status checkpointIfNeeded(uint64_t threshold_bytes);
+  Status checkpoint();
 
  private:
   Status recover();
@@ -97,6 +124,7 @@ class Database {
   uint64_t next_table_id_ = 1;
   uint64_t next_txn_id_ = 1;
   uint64_t next_lsn_ = 1;
+  size_t memory_rows_ = 50000;
 };
 
 }  // namespace mvdb

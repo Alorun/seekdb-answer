@@ -13,10 +13,12 @@ import tempfile
 import time
 
 
-def run(binary, data_dir, sql, dml_ack=True, timeout=15):
+def run(binary, data_dir, sql, dml_ack=True, timeout=15, extra=None):
     args = [binary, "--data-dir", data_dir]
     if dml_ack:
         args.append("--dml-ack")
+    if extra:
+        args.extend(extra)
     p = subprocess.Popen(
         args,
         stdin=subprocess.PIPE,
@@ -58,21 +60,23 @@ def main():
     root = tempfile.mkdtemp(prefix="mvdb-smoke-")
     try:
         sql = open(os.path.join(os.path.dirname(__file__), "smoke.sql"), encoding="utf-8").read()
-        out, err = run(binary, root, sql)
-        check(out.startswith("ready\n"), "missing ready marker", out)
-        check("id\tcontent\tdistance" in out, "missing distance header", out)
-        check_distance(out, "1\t事务与恢复", 0.141421356)
-        check_distance(out, "2\t向量索引", 1.27279221)
-        # After ROLLBACK both rows must still be visible.
-        tail = out.split("id\tcontent\n")[-1]
-        check("1\t事务与恢复" in tail, "row 1 missing after rollback", out)
-        check("2\t向量索引" in tail, "row 2 missing after rollback", out)
+        # Run the same suite in memory mode and forced disk mode.
+        for extra in ([], ["--memory-rows", "0"]):
+            out, err = run(binary, root, sql, extra=extra)
+            check(out.startswith("ready\n"), "missing ready marker", out)
+            check("id\tcontent\tdistance" in out, "missing distance header", out)
+            check_distance(out, "1\t事务与恢复", 0.141421356)
+            check_distance(out, "2\t向量索引", 1.27279221)
+            tail = out.split("id\tcontent\n")[-1]
+            check("1\t事务与恢复" in tail, "row 1 missing after rollback", out)
+            check("2\t向量索引" in tail, "row 2 missing after rollback", out)
 
-        # Restart: committed data must survive a clean shutdown.
-        out2, err2 = run(binary, root, "SELECT id, content FROM docs ORDER BY id;\n")
-        check(out2.startswith("ready\n"), "missing ready on restart", out2)
-        check("1\t事务与恢复" in out2, "row 1 lost after restart", out2)
-        check("3\t旅行攻略" in out2, "row 3 lost after restart", out2)
+            # Restart: committed data must survive a clean shutdown.
+            out2, err2 = run(binary, root, "SELECT id, content FROM docs ORDER BY id;\n",
+                             extra=extra)
+            check(out2.startswith("ready\n"), "missing ready on restart", out2)
+            check("1\t事务与恢复" in out2, "row 1 lost after restart", out2)
+            check("3\t旅行攻略" in out2, "row 3 lost after restart", out2)
 
         # Crash: kill -9 after the insert commit, then recover.
         crash_dir = tempfile.mkdtemp(prefix="mvdb-crash-")

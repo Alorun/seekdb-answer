@@ -4,6 +4,7 @@
 #include <cfloat>
 #include <cmath>
 #include <limits>
+#include <immintrin.h>
 #include <queue>
 #include <set>
 #include <sstream>
@@ -12,12 +13,6 @@
 namespace mvdb {
 
 namespace {
-
-struct ResolvedCond {
-  int col = -1;
-  std::string op;
-  Value literal;
-};
 
 struct OutCol {
   enum class Kind { Value, Distance } kind = Kind::Value;
@@ -150,14 +145,52 @@ int findColumn(const Schema& schema, const std::string& name) {
   return -1;
 }
 
-double l2Distance(const std::vector<float>& a, const std::vector<float>& b) {
+namespace {
+
+double l2Scalar(const float* a, const float* b, size_t n) {
   double sum = 0;
-  const size_t n = std::min(a.size(), b.size());
   for (size_t i = 0; i < n; ++i) {
     double d = static_cast<double>(a[i]) - static_cast<double>(b[i]);
     sum += d * d;
   }
   return std::sqrt(sum);
+}
+
+__attribute__((target("avx2,fma"))) double l2Avx2(const float* a, const float* b,
+                                                  size_t n) {
+  __m256 acc = _mm256_setzero_ps();
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    __m256 va = _mm256_loadu_ps(a + i);
+    __m256 vb = _mm256_loadu_ps(b + i);
+    __m256 d = _mm256_sub_ps(va, vb);
+    acc = _mm256_fmadd_ps(d, d, acc);
+  }
+  alignas(32) float tmp[8];
+  _mm256_store_ps(tmp, acc);
+  float sum = tmp[0] + tmp[1] + tmp[2] + tmp[3] + tmp[4] + tmp[5] + tmp[6] +
+              tmp[7];
+  for (; i < n; ++i) {
+    float d = a[i] - b[i];
+    sum += d * d;
+  }
+  return std::sqrt(static_cast<double>(sum));
+}
+
+using L2Fn = double (*)(const float*, const float*, size_t);
+L2Fn pickL2() {
+  if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma")) {
+    return l2Avx2;
+  }
+  return l2Scalar;
+}
+
+}  // namespace
+
+double l2Distance(const std::vector<float>& a, const std::vector<float>& b) {
+  static const L2Fn fn = pickL2();
+  const size_t n = std::min(a.size(), b.size());
+  return fn(a.data(), b.data(), n);
 }
 
 Status convertValue(const Column& col, const Value& input, Value& out) {
@@ -238,10 +271,17 @@ Status Executor::restoreTo(size_t undo_size, uint64_t wal_offset) {
     undo_.pop_back();
     Table* table = db_.tableById(u.table_id);
     if (!table) continue;
-    if (u.had_old) {
-      table->rows[u.pk] = std::move(u.old_row);
+    if (!table->disk_mode) {
+      if (u.had_row) {
+        table->rows[u.pk] = std::move(u.old_row);
+      } else {
+        table->rows.erase(u.pk);
+      }
+    }
+    if (u.had_location) {
+      table->locations[u.pk] = u.old_location;
     } else {
-      table->rows.erase(u.pk);
+      table->locations.erase(u.pk);
     }
   }
   return db_.wal().truncate(wal_offset);
@@ -268,7 +308,6 @@ Status Executor::commitTxn() {
   if (!active_) return Status::Ok();
   Status st = writeCommit();
   if (!st.ok()) {
-    // Not acknowledged: remove everything written by this transaction.
     Status rb = restoreTo(0, txn_start_);
     active_ = false;
     undo_.clear();
@@ -276,6 +315,7 @@ Status Executor::commitTxn() {
     if (!rb.ok()) return rb;
     return st;
   }
+  maybeCrash("after_commit_fsync");
   active_ = false;
   undo_.clear();
   op_count_ = 0;
@@ -288,7 +328,7 @@ Status Executor::shutdown() {
 }
 
 Status Executor::writeRowRecord(WalType type, const Table& table, int64_t pk,
-                                const Row& row) {
+                                const Row& row, uint64_t* out_offset) {
   WalRecord rec;
   rec.type = static_cast<uint8_t>(type);
   rec.lsn = db_.newLsn();
@@ -298,63 +338,181 @@ Status Executor::writeRowRecord(WalType type, const Table& table, int64_t pk,
   if (type != WalType::Delete) {
     rec.payload = encodeRow(table.schema, row);
   }
-  Status st = db_.wal().append(rec);
+  Status st = db_.wal().append(rec, out_offset);
   if (!st.ok()) return st;
+  maybeCrash("after_wal_write");
   if (first_lsn_ == 0) first_lsn_ = rec.lsn;
   last_lsn_ = rec.lsn;
   ++op_count_;
   return Status::Ok();
 }
 
+Status Executor::readRowAt(const Table& table, uint64_t offset, Row& row,
+                           std::string& err) const {
+  WalRecord rec;
+  uint64_t next = 0;
+  auto r = db_.wal().readRecord(offset, rec, next, err);
+  if (r != Wal::ReadResult::Ok) {
+    if (err.empty()) err = "record not found";
+    return Status::Error(Err::kIo, "read row failed: " + err);
+  }
+  if (rec.type != static_cast<uint8_t>(WalType::Insert) &&
+      rec.type != static_cast<uint8_t>(WalType::Update)) {
+    err = "location does not point to a row";
+    return Status::Error(Err::kIo, err);
+  }
+  if (!decodeRow(table.schema, rec.payload, row, err)) {
+    return Status::Error(Err::kIo, "decode row failed: " + err);
+  }
+  return Status::Ok();
+}
+
+Status Executor::findRow(Table& table, int64_t pk, Row& row, bool& found) {
+  found = false;
+  if (table.disk_mode) {
+    auto it = table.locations.find(pk);
+    if (it == table.locations.end()) return Status::Ok();
+    std::string err;
+    Status st = readRowAt(table, it->second, row, err);
+    if (!st.ok()) return st;
+    found = true;
+    return Status::Ok();
+  }
+  auto it = table.rows.find(pk);
+  if (it == table.rows.end()) return Status::Ok();
+  row = it->second;
+  found = true;
+  return Status::Ok();
+}
+
+void Executor::spillIfNeeded(Table& table) {
+  if (!table.disk_mode && table.rows.size() > db_.memoryRows()) {
+    table.rows.clear();
+    table.disk_mode = true;
+  }
+}
+
 Status Executor::applyInsert(Table& table, int64_t pk, Row row) {
-  if (table.rows.count(pk)) {
+  if (table.locations.count(pk)) {
     return Status::Error(Err::kDuplicateKey,
                          "duplicate primary key: " + std::to_string(pk));
   }
-  Status st = writeRowRecord(WalType::Insert, table, pk, row);
+  uint64_t offset = 0;
+  Status st = writeRowRecord(WalType::Insert, table, pk, row, &offset);
   if (!st.ok()) return st;
-  table.rows.emplace(pk, row);
+  table.locations[pk] = offset;
+  if (!table.disk_mode) {
+    table.rows[pk] = row;
+  }
+  spillIfNeeded(table);
   Undo u;
   u.table_id = table.schema.table_id;
   u.pk = pk;
-  u.had_old = false;
+  u.had_row = false;
+  u.had_location = false;
   undo_.push_back(std::move(u));
   return Status::Ok();
 }
 
 Status Executor::applyUpdate(Table& table, int64_t pk, Row row) {
-  auto it = table.rows.find(pk);
-  if (it == table.rows.end()) {
-    return Status::Error(Err::kDuplicateKey, "row not found: " + std::to_string(pk));
+  Row old;
+  bool found = false;
+  Status f = findRow(table, pk, old, found);
+  if (!f.ok()) return f;
+  if (!found) return Status::Error(Err::kDuplicateKey, "row not found: " + std::to_string(pk));
+  auto loc_it = table.locations.find(pk);
+  if (loc_it == table.locations.end()) {
+    return Status::Error(Err::kIo, "row has no location: " + std::to_string(pk));
   }
-  Status st = writeRowRecord(WalType::Update, table, pk, row);
+  const uint64_t old_location = loc_it->second;
+  const bool had_row = !table.disk_mode;
+  uint64_t offset = 0;
+  Status st = writeRowRecord(WalType::Update, table, pk, row, &offset);
   if (!st.ok()) return st;
+  table.locations[pk] = offset;
+  if (!table.disk_mode) {
+    table.rows[pk] = row;
+  }
+  spillIfNeeded(table);
   Undo u;
   u.table_id = table.schema.table_id;
   u.pk = pk;
-  u.had_old = true;
-  u.old_row = it->second;
-  table.rows[pk] = std::move(row);
+  u.had_row = had_row;
+  u.old_row = std::move(old);
+  u.had_location = true;
+  u.old_location = old_location;
   undo_.push_back(std::move(u));
   return Status::Ok();
 }
 
 Status Executor::applyDelete(Table& table, int64_t pk) {
-  auto it = table.rows.find(pk);
-  if (it == table.rows.end()) {
-    return Status::Error(Err::kDuplicateKey, "row not found: " + std::to_string(pk));
+  Row old;
+  bool found = false;
+  Status f = findRow(table, pk, old, found);
+  if (!f.ok()) return f;
+  if (!found) return Status::Error(Err::kDuplicateKey, "row not found: " + std::to_string(pk));
+  auto loc_it = table.locations.find(pk);
+  if (loc_it == table.locations.end()) {
+    return Status::Error(Err::kIo, "row has no location: " + std::to_string(pk));
   }
+  const uint64_t old_location = loc_it->second;
+  const bool had_row = !table.disk_mode;
   Row empty;
   Status st = writeRowRecord(WalType::Delete, table, pk, empty);
   if (!st.ok()) return st;
+  table.locations.erase(pk);
+  if (!table.disk_mode) table.rows.erase(pk);
   Undo u;
   u.table_id = table.schema.table_id;
   u.pk = pk;
-  u.had_old = true;
-  u.old_row = it->second;
-  table.rows.erase(it);
+  u.had_row = had_row;
+  u.old_row = std::move(old);
+  u.had_location = true;
+  u.old_location = old_location;
   undo_.push_back(std::move(u));
   return Status::Ok();
+}
+
+Status Executor::collectMatchingPks(Table& table,
+                                    const std::vector<ResolvedCond>& conds,
+                                    std::vector<int64_t>& pks) {
+  if (!table.disk_mode) {
+    for (const auto& [pk, row] : table.rows) {
+      Status m;
+      if (matchConditions(row, conds, m)) {
+        pks.push_back(pk);
+      } else if (!m.ok()) {
+        return m;
+      }
+    }
+    return Status::Ok();
+  }
+  Status row_status = Status::Ok();
+  Status scan = db_.wal().forEachRecord([&](const WalRecordView& v) {
+    if (v.type != static_cast<uint8_t>(WalType::Insert) &&
+        v.type != static_cast<uint8_t>(WalType::Update)) {
+      return true;
+    }
+    if (v.table != table.schema.table_id) return true;
+    auto it = table.locations.find(static_cast<int64_t>(v.pk));
+    if (it == table.locations.end() || it->second != v.offset) return true;
+    Row row;
+    std::string err;
+    if (!decodeRow(table.schema, v.payload, v.payload_size, row, err)) {
+      row_status = Status::Error(Err::kIo, "corrupt row in WAL: " + err);
+      return false;
+    }
+    Status m;
+    if (matchConditions(row, conds, m)) {
+      pks.push_back(static_cast<int64_t>(v.pk));
+    } else if (!m.ok()) {
+      row_status = m;
+      return false;
+    }
+    return true;
+  });
+  if (!scan.ok()) return scan;
+  return row_status;
 }
 
 Status Executor::executeInsert(const InsertStmt& stmt) {
@@ -446,18 +604,15 @@ Status Executor::executeUpdate(const UpdateStmt& stmt, ExecResult& out) {
   if (!resolveConditions(*table, stmt.where, conds, st)) return st;
 
   std::vector<int64_t> pks;
-  for (const auto& [pk, row] : table->rows) {
-    Status m;
-    if (matchConditions(row, conds, m)) {
-      pks.push_back(pk);
-    } else if (!m.ok()) {
-      return m;
-    }
-  }
+  Status collect = collectMatchingPks(*table, conds, pks);
+  if (!collect.ok()) return collect;
   for (int64_t pk : pks) {
-    auto it = table->rows.find(pk);
-    if (it == table->rows.end()) continue;
-    Row new_row = it->second;
+    Row old;
+    bool found = false;
+    Status f = findRow(*table, pk, old, found);
+    if (!f.ok()) return f;
+    if (!found) continue;
+    Row new_row = std::move(old);
     for (const auto& a : assigns) new_row.values[a.col] = a.value;
     Status s = applyUpdate(*table, pk, std::move(new_row));
     if (!s.ok()) return s;
@@ -476,14 +631,8 @@ Status Executor::executeDelete(const DeleteStmt& stmt, ExecResult& out) {
   if (!resolveConditions(*table, stmt.where, conds, st)) return st;
 
   std::vector<int64_t> pks;
-  for (const auto& [pk, row] : table->rows) {
-    Status m;
-    if (matchConditions(row, conds, m)) {
-      pks.push_back(pk);
-    } else if (!m.ok()) {
-      return m;
-    }
-  }
+  Status collect = collectMatchingPks(*table, conds, pks);
+  if (!collect.ok()) return collect;
   for (int64_t pk : pks) {
     Status s = applyDelete(*table, pk);
     if (!s.ok()) return s;
@@ -613,7 +762,6 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
       cols.push_back(std::move(c));
       continue;
     }
-    // Distance
     int idx = findColumn(schema, item.column);
     if (idx < 0) {
       return Status::Error(Err::kColumnNotFound, "unknown column: " + item.column);
@@ -639,9 +787,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     c.query = std::move(query);
     cols.push_back(std::move(c));
   }
-  if (cols.empty()) {
-    return Status::Error(Err::kSyntax, "empty projection");
-  }
+  if (cols.empty()) return Status::Error(Err::kSyntax, "empty projection");
 
   std::vector<ResolvedCond> conds;
   Status st = Status::Ok();
@@ -652,9 +798,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     OrderSpec spec;
     spec.desc = o.desc;
     bool resolved = false;
-    // Alias first, then table column.
-    for (size_t i = 0; i < stmt.items.size(); ++i) {
-      const auto& item = stmt.items[i];
+    for (const auto& item : stmt.items) {
       if (item.alias.empty() || !iequals(item.alias, o.column)) continue;
       if (item.kind == SelectItem::Kind::Distance) {
         int idx = findColumn(schema, item.column);
@@ -663,6 +807,9 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
         std::string err;
         if (!parseVectorLiteral(item.vector_text, query, err)) {
           return Status::Error(Err::kInvalidValue, err);
+        }
+        if (query.size() != schema.columns[idx].length) {
+          return Status::Error(Err::kInvalidValue, "vector dimension mismatch in ORDER BY");
         }
         spec.is_distance = true;
         spec.col = idx;
@@ -691,57 +838,40 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     orders.push_back(std::move(spec));
   }
 
-  // Fast path for the benchmark shape: ORDER BY distance LIMIT K.
-  if (stmt.has_limit && stmt.limit > 0 && orders.size() == 1 &&
-      orders[0].is_distance && !orders[0].desc) {
-    struct Hit {
-      double d = 0;
-      int64_t pk = 0;
-      const Row* row = nullptr;
-    };
-    auto worse = [](const Hit& a, const Hit& b) {
-      if (a.d != b.d) return a.d < b.d;
-      return a.pk < b.pk;
-    };
-    std::priority_queue<Hit, std::vector<Hit>, decltype(worse)> heap(worse);
-    const size_t k = static_cast<size_t>(stmt.limit);
-    for (const auto& [pk, row] : table->rows) {
-      Status m;
-      if (!matchConditions(row, conds, m)) {
-        if (!m.ok()) return m;
-        continue;
-      }
-      Hit h;
-      h.d = l2Distance(row.values[orders[0].col].v, orders[0].query);
-      h.pk = pk;
-      h.row = &row;
-      if (heap.size() < k) {
-        heap.push(h);
-      } else if (worse(h, heap.top())) {
-        heap.pop();
-        heap.push(h);
-      }
-    }
-    std::vector<Hit> hits;
-    hits.reserve(heap.size());
-    while (!heap.empty()) {
-      hits.push_back(heap.top());
-      heap.pop();
-    }
-    std::sort(hits.begin(), hits.end(), worse);
-    out.has_result = true;
-    for (const auto& col : cols) out.columns.push_back(col.header);
-    out.rows.reserve(hits.size());
-    for (const auto& h : hits) out.rows.push_back(formatProjection(*h.row, cols));
-    return Status::Ok();
-  }
+  const bool topk = stmt.has_limit && stmt.limit > 0 && orders.size() == 1 &&
+                    orders[0].is_distance && !orders[0].desc;
 
+  struct Hit {
+    double d = 0;
+    int64_t pk = 0;
+    Row row;
+  };
+  auto worse = [](const Hit& a, const Hit& b) {
+    if (a.d != b.d) return a.d < b.d;
+    return a.pk < b.pk;
+  };
+  std::priority_queue<Hit, std::vector<Hit>, decltype(worse)> heap(worse);
+  const size_t k = topk ? static_cast<size_t>(stmt.limit) : 0;
   std::vector<Candidate> candidates;
-  for (const auto& [pk, row] : table->rows) {
+
+  auto process = [&](int64_t pk, const Row& row) -> Status {
     Status m;
     if (!matchConditions(row, conds, m)) {
       if (!m.ok()) return m;
-      continue;
+      return Status::Ok();
+    }
+    if (topk) {
+      Hit h;
+      h.d = l2Distance(row.values[orders[0].col].v, orders[0].query);
+      h.pk = pk;
+      h.row = row;
+      if (heap.size() < k) {
+        heap.push(std::move(h));
+      } else if (worse(h, heap.top())) {
+        heap.pop();
+        heap.push(std::move(h));
+      }
+      return Status::Ok();
     }
     Candidate c;
     c.pk = pk;
@@ -760,12 +890,62 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
           kv.is_num = false;
           kv.str = v.s;
         } else {
-          return Status::Error(Err::kUnsupported, "ORDER BY on VECTOR column is not supported");
+          return Status::Error(Err::kUnsupported,
+                               "ORDER BY on VECTOR column is not supported");
         }
       }
       c.keys.push_back(std::move(kv));
     }
     candidates.push_back(std::move(c));
+    return Status::Ok();
+  };
+
+  if (table->disk_mode) {
+    Status row_status = Status::Ok();
+    Status scan = db_.wal().forEachRecord([&](const WalRecordView& v) {
+      if (v.type != static_cast<uint8_t>(WalType::Insert) &&
+          v.type != static_cast<uint8_t>(WalType::Update)) {
+        return true;
+      }
+      if (v.table != table->schema.table_id) return true;
+      auto it = table->locations.find(static_cast<int64_t>(v.pk));
+      if (it == table->locations.end() || it->second != v.offset) return true;
+      Row row;
+      std::string err;
+      if (!decodeRow(schema, v.payload, v.payload_size, row, err)) {
+        row_status = Status::Error(Err::kIo, "corrupt row in WAL: " + err);
+        return false;
+      }
+      Status s = process(static_cast<int64_t>(v.pk), row);
+      if (!s.ok()) {
+        row_status = s;
+        return false;
+      }
+      return true;
+    });
+    if (!scan.ok()) return scan;
+    if (!row_status.ok()) return row_status;
+  } else {
+    for (const auto& [pk, row] : table->rows) {
+      Status s = process(pk, row);
+      if (!s.ok()) return s;
+    }
+  }
+
+  out.has_result = true;
+  for (const auto& col : cols) out.columns.push_back(col.header);
+
+  if (topk) {
+    std::vector<Hit> hits;
+    hits.reserve(heap.size());
+    while (!heap.empty()) {
+      hits.push_back(heap.top());
+      heap.pop();
+    }
+    std::sort(hits.begin(), hits.end(), worse);
+    out.rows.reserve(hits.size());
+    for (const auto& h : hits) out.rows.push_back(formatProjection(h.row, cols));
+    return Status::Ok();
   }
 
   if (!orders.empty()) {
@@ -779,8 +959,6 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
                            cmp = (x.num < y.num) ? -1 : (x.num > y.num ? 1 : 0);
                          } else if (!x.is_num && !y.is_num) {
                            cmp = x.str.compare(y.str);
-                         } else {
-                           cmp = 0;
                          }
                          if (cmp != 0) return orders[i].desc ? (cmp > 0) : (cmp < 0);
                        }
@@ -790,9 +968,6 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   if (stmt.has_limit && candidates.size() > stmt.limit) {
     candidates.resize(static_cast<size_t>(stmt.limit));
   }
-
-  out.has_result = true;
-  for (const auto& col : cols) out.columns.push_back(col.header);
   out.rows.reserve(candidates.size());
   for (auto& c : candidates) out.rows.push_back(std::move(c.out));
   return Status::Ok();
