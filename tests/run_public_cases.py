@@ -47,7 +47,7 @@ def same_value(expected, actual):
 
 
 def run_case(binary, case_dir, name):
-    sqls = [
+    lines = [
         line
         for line in open(os.path.join(case_dir, name + ".test"), encoding="utf-8").read().splitlines()
         if line.strip()
@@ -56,59 +56,97 @@ def run_case(binary, case_dir, name):
     data_dir = new_data_dir("mvdb-public-")
     s = None
     failures = []
-    try:
-        s = Session(binary, data_dir)
+    mode_args = []
+    exp_i = 0
+
+    def start(where):
+        nonlocal s
+        s = Session(binary, data_dir, args=mode_args)
         if not s.wait_lines(1, 3.0):
-            return ["missing ready marker"]
-        if s.take_out().strip() != "ready":
-            return ["unexpected startup output"]
-        for sql, exp in zip(sqls, expected):
-            s.send(sql + "\n")
-            need = 1 + len(exp["rows"]) if "columns" in exp else 1
-            if not s.wait_lines(need, 2.0):
-                failures.append((sql, "timeout waiting for output", s.out_text()))
-                s.take_out()
+            failures.append((where, "missing ready marker"))
+            return False
+        got = s.take_out().strip()
+        if got != "ready":
+            failures.append((where, "startup output", got))
+            return False
+        return True
+
+    try:
+        if not start("<start>"):
+            return failures
+        for raw in lines:
+            if raw == "--restart":
+                s.close()
+                s = None
+                if not start("--restart"):
+                    break
                 continue
-            lines = s.take_out().splitlines()
+            if raw.startswith("--mode"):
+                # The mode instruction is a driver directive, not SQL. Exact
+                # fallback produces the same rows for the public small data.
+                if raw.strip() == "--mode ann":
+                    mode_args = ["--query-mode", "ann"]
+                continue
+            if exp_i >= len(expected):
+                failures.append((raw, "extra SQL without assertion"))
+                continue
+            exp = expected[exp_i]
+            exp_i += 1
+            s.send(raw + "\n")
+            if "error" in exp:
+                if not s.wait_lines(1, 2.0):
+                    failures.append((raw, "timeout waiting for error", s.out_text()))
+                    s.take_out()
+                    continue
+                line = s.take_out().splitlines()[0] if s.out_text().splitlines() else ""
+                if not line.startswith("ERROR "):
+                    failures.append((raw, "expected error", exp["error"], line))
+                continue
             if "columns" in exp:
-                header = lines[0].split("\t") if lines else []
+                need = 1 + len(exp["rows"])
+                if not s.wait_lines(need, 2.0):
+                    failures.append((raw, "timeout waiting for rows", s.out_text()))
+                    s.take_out()
+                    continue
+                lines_out = s.take_out().splitlines()
+                header = lines_out[0].split("\t") if lines_out else []
                 if header != exp["columns"]:
-                    failures.append((sql, "columns", exp["columns"], header))
-                body = lines[1:]
+                    failures.append((raw, "columns", exp["columns"], header))
+                body = lines_out[1:]
                 if len(body) != len(exp["rows"]):
-                    failures.append((sql, "row count", len(exp["rows"]), len(body)))
+                    failures.append((raw, "row count", len(exp["rows"]), len(body)))
                     continue
                 typed = []
                 for expected_row, actual_row in zip(exp["rows"], body):
                     fields = actual_row.split("\t")
                     if len(fields) != len(expected_row):
-                        failures.append((sql, "field count", expected_row, fields))
+                        failures.append((raw, "field count", expected_row, fields))
                         typed = []
                         break
-                    typed.append(
-                        [parse_value(e, a) for e, a in zip(expected_row, fields)]
-                    )
+                    typed.append([parse_value(e, a) for e, a in zip(expected_row, fields)])
                 if not typed:
                     continue
                 if exp.get("unordered"):
                     want = collections.Counter(tuple(r) for r in exp["rows"])
                     got = collections.Counter(tuple(r) for r in typed)
                     if want != got:
-                        failures.append((sql, "unordered rows", exp["rows"], typed))
+                        failures.append((raw, "unordered rows", exp["rows"], typed))
                 else:
                     for expected_row, actual_row in zip(exp["rows"], typed):
-                        if not all(
-                            same_value(e, a) for e, a in zip(expected_row, actual_row)
-                        ):
-                            failures.append((sql, "rows", exp["rows"], typed))
+                        if not all(same_value(e, a) for e, a in zip(expected_row, actual_row)):
+                            failures.append((raw, "rows", exp["rows"], typed))
                             break
             else:
-                line = lines[0] if lines else ""
+                if not s.wait_lines(1, 2.0):
+                    failures.append((raw, "timeout waiting for status", s.out_text()))
+                    s.take_out()
+                    continue
+                line = s.take_out().splitlines()[0] if s.out_text().splitlines() else ""
                 if line.startswith("ERROR"):
-                    failures.append((sql, "unexpected error", line))
+                    failures.append((raw, "unexpected error", line))
                     continue
                 if not line.startswith("OK"):
-                    failures.append((sql, "status", line))
+                    failures.append((raw, "status", line))
                     continue
                 if "affected_rows" in exp:
                     try:
@@ -116,12 +154,13 @@ def run_case(binary, case_dir, name):
                     except (IndexError, ValueError):
                         got = None
                     if got != exp["affected_rows"]:
-                        failures.append((sql, "affected", exp["affected_rows"], line))
-
+                        failures.append((raw, "affected", exp["affected_rows"], line))
     finally:
         if s:
             s.close()
         remove_data_dir(data_dir)
+    if exp_i != len(expected):
+        failures.append(("<end>", "assertion count", len(expected), exp_i))
     return failures
 
 

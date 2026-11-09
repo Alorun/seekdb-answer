@@ -3,9 +3,9 @@
 ## 1. 已知事实
 
 - 2026-11-09 的正式提测反馈只有一句：**MySQL 正式用例未通过；该条件是准入条件，不计排名分**。平台没有返回失败类别、期望/实际输出或超时位置。
-- 官方 `oceanbase/seekdb` 的 `2026-competition-round2` 分支在 `a3dba559c` 新增了公开包 `mysqltest/`，其中：
+- 官方 `oceanbase/seekdb` 的 `2026-competition-round2` 分支随后更新到 `9f6df2ba5`，公开包 `mysqltest/` 共 **20 个用例、95 条 SQL**，其中：
   - `cases/*.test` **每个非空行是一条完整 SQL，行尾没有分号**；
-  - `cases/*.result` 是逐条对应的 JSON 断言，字段为 `{}`、`affected_rows`、`columns`、`rows` 或 `unordered`；
+  - `cases/*.result` 是逐条对应的 JSON 断言，字段为 `{}`、`error`、`affected_rows`、`columns`、`rows` 或 `unordered`；新增 `--restart`（同数据目录重启）和 `--mode ann` 驱动指令；
   - README 明确说明：每个用例从独立空数据库开始，逐行执行并比较断言。
 - 失败提交 `eade40b44` 的默认协议是：**semicolon 分帧 + DML 无输出**。
 
@@ -38,7 +38,7 @@
 
 | 项目 | 命令 | 期望 |
 | --- | --- | --- |
-| 官方公开用例 | `python3 tests/run_public_cases.py --bin ./build/minivectordb` | 5/5 PASS |
+| 官方公开用例（v4） | `python3 tests/run_public_cases.py --bin ./build/minivectordb` | 20/20 PASS |
 | SQL 边界 | `python3 tests/run_sql_edges.py --bin ./build/minivectordb` | 158 项 × 2 模式，0 失败 |
 | smoke/regression | `python3 tests/run_smoke.py ...` / `run_regression.py ...` | 通过 |
 | 崩溃 fuzz | `python3 tests/run_crash_fuzz.py ... --iterations 100` | 200 次，0 失败 |

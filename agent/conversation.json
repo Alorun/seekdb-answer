@@ -54,16 +54,16 @@
       "name": "官方分支与公开用例基线",
       "hypothesis": "官方 round2 分支会补充公开用例或协议线索。",
       "command": "git ls-remote https://github.com/oceanbase/seekdb.git refs/heads/2026-competition-round2; git show upstream/2026-competition-round2:mysqltest/README.md",
-      "output": "official=a3dba559c1e7ebdc48bc990ffb1a4c75d1c1075c base=c842a368c3394748d0499386c18f6b465242e141; public cases: one SQL per line, JSON assertions",
-      "analysis": "官方公开包确认了每个非空行是一条完整 SQL（无分号），断言字段包含 affected_rows/columns/rows；提交版的默认 semicolon + 无 DML 状态与它不一致。"
+      "output": "official=a3dba559c..9f6df2ba5; base=c842a368c; public pack v4: 20 cases / 95 SQL",
+      "analysis": "官方公开包更新到 20 个用例，新增主键冲突、Unicode、BIGINT、ALTER 错误、重启、事务提交/回滚、失败插入原子性、关停回滚、多表、索引维护、float32 和距离并列过滤；每行仍是一条完整 SQL，断言含 affected_rows/columns/rows/error。"
     },
     {
       "id": "E2",
       "name": "官方公开用例逐条执行",
       "hypothesis": "按 line 分帧 + OK affected_rows 后，公开用例应全部通过。",
       "command": "python3 tests/run_public_cases.py --bin ./build/minivectordb",
-      "output": "public cases: 5 cases, 0 failure(s)",
-      "analysis": "sql_crud、sql_comparisons、sql_ordering、sql_empty、vector_euclidean 全部通过；unordered 结果按多重集合比较。"
+      "output": "public cases: 20 cases, 0 failure(s)",
+      "analysis": "20 个公开用例全部通过，包含 --restart、--mode ann、error、事务和索引维护。"
     },
     {
       "id": "E3",
@@ -102,7 +102,7 @@
       "name": "计划与协议修正文档",
       "hypothesis": "失败原因、假设、修改项和验证矩阵应可复查。",
       "command": "wc -l docs/PLAN.md docs/PROTOCOL_FIX_PLAN.md",
-      "output": "1479 docs/PLAN.md; 62 docs/PROTOCOL_FIX_PLAN.md",
+      "output": "1480 docs/PLAN.md; 62 docs/PROTOCOL_FIX_PLAN.md",
       "analysis": "计划文档覆盖需求、存储/事务/恢复、性能、测试和提交门禁；修正文档记录公开用例证据、默认协议变更和剩余风险。"
     }
   ],
@@ -113,7 +113,7 @@
       "score": 1.0,
       "student_evidence": "先把语言、官方基线、题包不公开、提交次数和截止时间拆成计划，再按存储、事务、恢复、向量检索和提交门禁逐项推进。",
       "student_pointer": "/conversations/0/content",
-      "result_evidence": "1479 docs/PLAN.md; 62 docs/PROTOCOL_FIX_PLAN.md",
+      "result_evidence": "1480 docs/PLAN.md; 62 docs/PROTOCOL_FIX_PLAN.md",
       "result_pointer": "/experiments/6/output",
       "reason": "学生先固定约束和验收标准，再要求用计划文档驱动实现与提交，避免在题包不公开时凭感觉开发。"
     },
@@ -123,9 +123,9 @@
       "score": 1.5,
       "student_evidence": "正式提测未通过后，要求停止凭假设改协议，先找官方公开用例和真实断言格式，再对齐分帧、DML 状态和结果格式。",
       "student_pointer": "/conversations/2/content",
-      "result_evidence": "public cases: 5 cases, 0 failure(s)",
+      "result_evidence": "public cases: 20 cases, 0 failure(s)",
       "result_pointer": "/experiments/1/output",
-      "reason": "学生把失败当成需要验证的信号，要求用官方公开包而不是猜测；随后定位到无分号逐行输入和 affected_rows 断言，公开用例从失败变为 5/5。"
+      "reason": "学生把失败当成需要验证的信号，要求用官方公开包而不是猜测；随后定位到无分号逐行输入和 affected_rows 断言，并把最新 20 个公开用例（含重启、事务、错误和索引维护）跑到 0 失败。"
     },
     {
       "id": "U3",
@@ -174,7 +174,7 @@
       "evidence": "P3"
     }
   ],
-  "retrospective": "这次开发抓三件事：先把约束和验收标准写成计划；在 v0.1 不完善时坚持本地质量闭环；提测失败后不继续猜协议，而是从官方公开用例反推出 line 分帧、affected_rows 和结果形状。当前公开用例 5/5、SQL 边界 158 项、崩溃恢复 200 次和 Docker 门禁均通过；剩余风险是隐藏驱动对 ready 文本、错误行和 SELECT 终止方式的具体要求，平台未返回可区分的失败信息。",
+  "retrospective": "这次开发抓三件事：先把约束和验收标准写成计划；在 v0.1 不完善时坚持本地质量闭环；提测失败后不继续猜协议，而是从官方公开用例反推出 line 分帧、affected_rows 和结果形状。当前公开用例 20/20、SQL 边界 158 项、崩溃恢复 200 次和 Docker 门禁均通过；剩余风险是隐藏驱动对 ready 文本、错误行和 SELECT 终止方式的具体要求，平台未返回可区分的失败信息。",
   "limitations": [
     "平台只返回“MySQL 正式用例未通过”，没有失败类别、日志或期望/实际输出；隐藏驱动的 ready 文本、错误行格式和 SELECT 终止方式仍未验证。",
     "line 模式以一行一条 SQL 为主；一行已完整但后续行继续 WHERE/ORDER BY 的多行写法需要 semicolon 模式。",
