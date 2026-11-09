@@ -30,14 +30,21 @@ SELECT id, content FROM docs ORDER BY id;
 
 ## Supported SQL (v0.1)
 
-- `CREATE TABLE` with `BIGINT`, `VARCHAR(n)`, `VECTOR(n)` and one BIGINT
-  primary key.
+- `CREATE TABLE` / `CREATE TABLE IF NOT EXISTS` with `BIGINT`, `VARCHAR(n)`,
+  `VECTOR(n)` and one BIGINT primary key.
+- `DROP TABLE [IF EXISTS]`, `TRUNCATE [TABLE]`, `USE`, and common `SET`
+  session statements (accepted as no-ops where the task does not need them).
 - `INSERT` (including multi-row).
 - `SELECT` with column projection / `*`, `WHERE` comparisons and AND,
   `ORDER BY`, `LIMIT`, and `L2_DISTANCE`.
 - `UPDATE` and `DELETE` with optional `WHERE`.
 - `BEGIN` / `COMMIT` / `ROLLBACK`; autocommit when no transaction is active.
 - `CREATE VECTOR INDEX` (catalog acceptance; exact execution fallback).
+
+Input is read in raw chunks, so a semicolon-terminated statement does not need a
+trailing newline. `--statement-mode line` is available for a driver that sends
+one statement per line; line mode is one-line-only (formatted multi-line SQL
+should use the default semicolon mode).
 
 ## Persistence
 
@@ -59,7 +66,10 @@ live rows, table definitions and index metadata (`--checkpoint-bytes N`).
 - DDL inside an explicit transaction is rejected.
 - Approximate index execution is not implemented yet; `ann` mode falls back to
   exact scan and therefore has recall 1.0 but exact-scan latency.
-- Disk-mode queries scan the WAL; immutable segments and a real ANN index are
-  later milestones.
+- Disk-mode queries scan the WAL; immutable segments are a later milestone.
+- An HNSW prototype is in `src/ann/` and `experiments/ann/`, but it is not
+  linked into the server: at 10k×128 uniform data its recall-0.98 latency is
+  only 1.5–2× better than exact, so exact remains the default. See
+  `experiments/ann/NOTES.md`.
 - The stdin/stdout profile is still a platform-dependent assumption; see
   `docs/PROTOCOL.md`.
