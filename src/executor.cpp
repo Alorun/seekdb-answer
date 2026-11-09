@@ -985,7 +985,6 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     }
     Candidate c;
     c.pk = pk;
-    c.out = formatProjection(row, cols);
     for (const auto& o : orders) {
       KeyValue kv;
       if (o.is_distance) {
@@ -1008,12 +1007,15 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     }
     if (order_topk) {
       if (candidate_heap.size() < k) {
+        c.out = formatProjection(row, cols);
         candidate_heap.push(std::move(c));
       } else if (candidate_better(c, candidate_heap.top())) {
+        c.out = formatProjection(row, cols);
         candidate_heap.pop();
         candidate_heap.push(std::move(c));
       }
     } else {
+      c.out = formatProjection(row, cols);
       candidates.push_back(std::move(c));
       if (early_limit && candidates.size() >= k) stop_scan = true;
     }
