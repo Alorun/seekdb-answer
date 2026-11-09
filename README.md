@@ -41,6 +41,11 @@ SELECT id, content FROM docs ORDER BY id;
 - `BEGIN` / `COMMIT` / `ROLLBACK`; autocommit when no transaction is active.
 - `CREATE VECTOR INDEX` (catalog acceptance; exact execution fallback).
 
+If the driver supplies `--ready-marker TOKEN`, the token is emitted after every
+statement response (and not as a startup line when the first SQL is already
+pending), so the driver can frame each reply. Without it, a single `ready` line
+is printed at startup.
+
 The competition's public cases send one complete SQL per line and assert
 `affected_rows`, `columns` and `rows`. The default protocol is therefore
 **line framing + an explicit `OK <affected>` status for DML/DDL** (and

@@ -6,7 +6,12 @@ build assumes, so each submission can switch one variable at a time.
 ## Startup
 
 - Recover the WAL and rebuild catalog/index metadata before printing anything.
-- Print `ready\n` to stdout and flush.
+- Without an explicit marker, print `ready\n` once and flush.
+- With `--ready-marker` (or `MVDB_READY_MARKER`), the marker is a **response
+  terminator**: print it after every statement response, including errors.
+  The driver reads lines until the marker, so it never guesses where a reply
+  ends. The same marker is not printed at startup if the first SQL is already
+  pending; if the driver waits, it is printed after a 50 ms poll.
 - All diagnostics go to stderr.
 
 Configurable with `--ready-marker`. An empty marker disables the line.
@@ -15,6 +20,7 @@ The same knobs can be set with `MVDB_READY_MARKER`, `MVDB_STATEMENT_MODE`,
 image sets `MVDB_ADAPTIVE_READY=1`: if SQL is already pending when the process
 starts (a batch driver), the ready line is suppressed so it cannot corrupt the
 first response; a request/response driver gets the marker after a 50 ms poll.
+Explicit `--ready-marker` always enables per-response framing.
 
 ## Statement framing
 
@@ -27,10 +33,11 @@ first response; a request/response driver gets the marker after a 50 ms poll.
   follow for 10 ms, it is executed; this covers drivers that write one SQL and
   wait without a newline.
 - `line` mode executes a complete statement at end-of-line; it is the default
-  because the official public cases use one complete SQL per line (no
-  semicolons). Incomplete lines are accumulated, so a multi-line statement
-  works as long as its first line is not already complete. Continuation
-  clauses on later lines after a complete first line need `semicolon` mode.
+  because the official public cases use one complete SQL per line (newer
+  cases include the trailing `;`, older ones omit it). Incomplete lines are
+  accumulated, so a multi-line statement works as long as its first line is
+  not already complete. Continuation clauses on later lines after a complete
+  first line need `semicolon` mode.
 - `--statement-mode=semicolon` keeps the classic multi-line script behavior.
 - At EOF, a final statement without `;` is executed.
 - `--` (followed by whitespace), `#`, and `/* ... */` comments are skipped.
@@ -38,8 +45,7 @@ first response; a request/response driver gets the marker after a 50 ms poll.
 
 This means the driver can either send a whole script or one terminated
 statement at a time. A driver that sends one statement per line **without** a
-terminator and then waits would currently block; this is a known assumption to
-verify with the platform.
+terminator and then waits is handled by the 10 ms idle path.
 
 ## Results
 

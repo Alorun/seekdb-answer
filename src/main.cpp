@@ -26,6 +26,10 @@ struct Options {
   // therefore the default. Local multi-line scripts opt into semicolon mode.
   bool dml_ack = true;
   bool line_mode = true;
+  // When the driver supplies --ready-marker, it uses the marker to frame each
+  // response (the marker is emitted after every statement, and not as a
+  // startup line if the first SQL is already pending).
+  bool marker_frame = false;
   size_t memory_rows = 50000;
   uint64_t checkpoint_bytes = 64ull * 1024ull * 1024ull;
 };
@@ -66,6 +70,7 @@ bool parseArgs(int argc, char** argv, Options& opt) {
         std::cerr << "missing value for --ready-marker\n";
         return false;
       }
+      opt.marker_frame = true;
     } else if (key == "--query-mode" || key == "--mode") {
       if (!take(opt.query_mode)) {
         std::cerr << "missing value for --query-mode\n";
@@ -254,6 +259,12 @@ size_t findStatementBoundary(const std::string& s) {
   return std::string::npos;
 }
 
+void writeResponseMarker(const Options& opt) {
+  if (opt.marker_frame && !opt.ready_marker.empty()) {
+    writeOut(opt.ready_marker + "\n");
+  }
+}
+
 bool drainBuffer(std::string& buffer, mvdb::Executor& exec, const Options& opt,
                  bool at_eof) {
   while (!isBlank(buffer)) {
@@ -265,6 +276,7 @@ bool drainBuffer(std::string& buffer, mvdb::Executor& exec, const Options& opt,
     if (pr.kind == mvdb::ParseResult::Kind::NeedMore) {
       if (at_eof) {
         writeError(mvdb::Status::Error(mvdb::Err::kSyntax, "incomplete statement"));
+        writeResponseMarker(opt);
         buffer.clear();
       }
       return true;
@@ -274,6 +286,7 @@ bool drainBuffer(std::string& buffer, mvdb::Executor& exec, const Options& opt,
         return true;
       }
       writeError(pr.status);
+      writeResponseMarker(opt);
       size_t cut = findStatementBoundary(buffer);
       if (cut == std::string::npos) {
         buffer.clear();
@@ -290,6 +303,7 @@ bool drainBuffer(std::string& buffer, mvdb::Executor& exec, const Options& opt,
       return true;
     }
     if (pr.stmt.kind == mvdb::Statement::Kind::Exit) {
+      writeResponseMarker(opt);
       buffer.clear();
       return false;
     }
@@ -304,6 +318,7 @@ bool drainBuffer(std::string& buffer, mvdb::Executor& exec, const Options& opt,
     } else if (opt.dml_ack) {
       writeOut("OK " + std::to_string(result.affected) + "\n");
     }
+    writeResponseMarker(opt);
     if (pr.consumed == 0 || pr.consumed > buffer.size()) {
       buffer.clear();
       return true;
@@ -365,6 +380,7 @@ int main(int argc, char** argv) {
   }
   if (const char* v = std::getenv("MVDB_READY_MARKER")) {
     opt.ready_marker = v;
+    opt.marker_frame = true;
   }
   if (!parseArgs(argc, argv, opt)) return 0;
 
@@ -381,7 +397,8 @@ int main(int argc, char** argv) {
             << " dml_ack=" << (opt.dml_ack ? "ok" : "none")
             << " statement_mode=" << (opt.line_mode ? "line" : "semicolon") << "\n";
   if (!opt.ready_marker.empty()) {
-    bool adaptive = std::getenv("MVDB_ADAPTIVE_READY") != nullptr;
+    bool adaptive = opt.marker_frame ||
+                    std::getenv("MVDB_ADAPTIVE_READY") != nullptr;
     bool defer = false;
     if (adaptive) {
       // A batch driver may already have written SQL before reading anything;
