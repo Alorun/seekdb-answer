@@ -261,6 +261,8 @@ Status Database::ensureDirectory() {
 Status Database::open() {
   Status st = ensureDirectory();
   if (!st.ok()) return st;
+  // A previous checkpoint may have crashed before its atomic rename.
+  ::unlink((data_dir_ + "/wal.log.tmp").c_str());
   wal_ = std::make_unique<Wal>();
   st = wal_->open(data_dir_ + "/wal.log");
   if (!st.ok()) return st;
