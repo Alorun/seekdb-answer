@@ -1,0 +1,12 @@
+.git
+.gitignore
+dist
+docs
+tests
+build
+agent
+conversation.json
+.github
+.devcontainer
+.agents
+*.log
