@@ -13,9 +13,11 @@ Configurable with `--ready-marker`. An empty marker disables the line.
 
 ## Statement framing
 
+- Input is read in raw byte chunks, not by lines; a statement does not need a
+  trailing newline.
 - Statements are normally terminated by `;` (outside strings/comments).
 - A statement that is complete at end-of-line but has no `;` is held until the
-  next line arrives; this keeps multi-line statements working.
+  next chunk arrives; this keeps multi-line statements working.
 - `--statement-mode=line` executes a complete statement at end-of-line (for a
   driver that does not send terminators). `semicolon` is the default.
 - At EOF, a final statement without `;` is executed.

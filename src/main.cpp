@@ -1,7 +1,9 @@
+#include <cerrno>
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <unistd.h>
 
 #include "database.h"
 #include "executor.h"
@@ -218,6 +220,26 @@ bool drainBuffer(std::string& buffer, mvdb::Executor& exec, const Options& opt,
   return true;
 }
 
+bool drainLineBuffer(std::string& buffer, mvdb::Executor& exec,
+                     const Options& opt, bool at_eof) {
+  while (true) {
+    size_t pos = buffer.find('\n');
+    if (pos == std::string::npos) break;
+    std::string line = buffer.substr(0, pos + 1);
+    buffer.erase(0, pos + 1);
+    if (!drainBuffer(line, exec, opt, false)) return false;
+    if (!line.empty()) {
+      // Incomplete line: keep it and wait for more input.
+      buffer = line + buffer;
+      return true;
+    }
+  }
+  if (at_eof && !buffer.empty()) {
+    return drainBuffer(buffer, exec, opt, true);
+  }
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -249,15 +271,29 @@ int main(int argc, char** argv) {
   }
 
   std::string buffer;
-  std::string line;
   bool stop = false;
-  while (!stop && !g_stop && std::getline(std::cin, line)) {
-    buffer += line;
-    buffer.push_back('\n');
-    stop = !drainBuffer(buffer, exec, opt, false);
+  char chunk[8192];
+  while (!stop && !g_stop) {
+    ssize_t n = ::read(STDIN_FILENO, chunk, sizeof(chunk));
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    if (n == 0) break;
+    buffer.append(chunk, static_cast<size_t>(n));
+
+    if (opt.line_mode) {
+      stop = !drainLineBuffer(buffer, exec, opt, false);
+    } else {
+      stop = !drainBuffer(buffer, exec, opt, false);
+    }
   }
   if (!stop && !buffer.empty()) {
-    stop = !drainBuffer(buffer, exec, opt, true);
+    if (opt.line_mode) {
+      stop = !drainLineBuffer(buffer, exec, opt, true);
+    } else {
+      stop = !drainBuffer(buffer, exec, opt, true);
+    }
   }
   exec.shutdown();
   // Compact long WALs on a clean shutdown. Crash recovery remains WAL-based.
