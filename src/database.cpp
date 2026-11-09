@@ -299,8 +299,11 @@ Status Database::addTable(std::unique_ptr<Table> table) {
   return Status::Ok();
 }
 
-bool Database::indexExists(const std::string& name) const {
-  return indexes_.count(toLower(name)) != 0;
+bool Database::indexExists(const std::string& table,
+                           const std::string& name) const {
+  auto t = by_name_.find(toLower(table));
+  if (t == by_name_.end()) return false;
+  return indexes_.count({t->second->schema.table_id, toLower(name)}) != 0;
 }
 
 Status Database::dropTable(uint64_t id) {
@@ -310,7 +313,7 @@ Status Database::dropTable(uint64_t id) {
   by_id_.erase(it);
   by_name_.erase(toLower(table->schema.name));
   for (auto iit = indexes_.begin(); iit != indexes_.end();) {
-    if (iit->second.table_id == id) {
+    if (iit->first.first == id) {
       iit = indexes_.erase(iit);
     } else {
       ++iit;
@@ -326,12 +329,12 @@ Status Database::dropTable(uint64_t id) {
 
 Status Database::createIndex(const std::string& name, const std::string& table,
                              const std::string& column) {
-  std::string key = toLower(name);
+  Table* t = findTable(table);
+  if (!t) return Status::Error(Err::kTableNotFound, "table not found: " + table);
+  const auto key = std::make_pair(t->schema.table_id, toLower(name));
   if (indexes_.count(key)) {
     return Status::Error(Err::kIndexExists, "index already exists: " + name);
   }
-  Table* t = findTable(table);
-  if (!t) return Status::Error(Err::kTableNotFound, "table not found: " + table);
   int found = -1;
   for (size_t i = 0; i < t->schema.columns.size(); ++i) {
     if (iequals(t->schema.columns[i].name, column)) {
@@ -406,7 +409,7 @@ Status Database::applyRecord(const WalRecord& rec) {
       if (column >= table->schema.columns.size()) {
         return Status::Error(Err::kIo, "recovery: bad index column");
       }
-      std::string key = toLower(name);
+      const auto key = std::make_pair(rec.table, toLower(name));
       if (!indexes_.count(key)) {
         IndexInfo info;
         info.table_id = rec.table;
@@ -534,9 +537,9 @@ Status Database::checkpoint() {
       return a;
     }
   }
-  for (const auto& [name, info] : indexes_) {
+  for (const auto& [key, info] : indexes_) {
     Status a = append(WalType::CreateIndex, info.table_id, 0,
-                      encodeIndex(name, info.column));
+                      encodeIndex(key.second, info.column));
     if (!a.ok()) {
       ::unlink(tmp_path.c_str());
       return a;

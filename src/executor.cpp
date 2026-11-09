@@ -22,8 +22,9 @@ struct OutCol {
 };
 
 struct KeyValue {
-  bool is_num = true;
-  double num = 0;
+  enum class Kind { Int, Double, Str } kind = Kind::Int;
+  int64_t i = 0;
+  double d = 0;
   std::string str;
 };
 
@@ -760,12 +761,12 @@ Status Executor::executeCreateIndex(const CreateIndexStmt& stmt) {
   if (active_) {
     return Status::Error(Err::kUnsupported, "DDL inside a transaction is not supported");
   }
-  if (db_.indexExists(stmt.name)) {
-    return Status::Error(Err::kIndexExists, "index already exists: " + stmt.name);
-  }
   Table* table = db_.findTable(stmt.table);
   if (!table) {
     return Status::Error(Err::kTableNotFound, "table not found: " + stmt.table);
+  }
+  if (db_.indexExists(stmt.table, stmt.name)) {
+    return Status::Error(Err::kIndexExists, "index already exists: " + stmt.name);
   }
   int idx = findColumn(table->schema, stmt.column);
   if (idx < 0) {
@@ -930,10 +931,18 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
       const KeyValue& x = a.keys[i];
       const KeyValue& y = b.keys[i];
       int cmp = 0;
-      if (x.is_num && y.is_num) {
-        cmp = (x.num < y.num) ? -1 : (x.num > y.num ? 1 : 0);
-      } else if (!x.is_num && !y.is_num) {
+      if (x.kind == KeyValue::Kind::Int && y.kind == KeyValue::Kind::Int) {
+        cmp = (x.i < y.i) ? -1 : (x.i > y.i ? 1 : 0);
+      } else if (x.kind == KeyValue::Kind::Double &&
+                 y.kind == KeyValue::Kind::Double) {
+        cmp = (x.d < y.d) ? -1 : (x.d > y.d ? 1 : 0);
+      } else if (x.kind == KeyValue::Kind::Str &&
+                 y.kind == KeyValue::Kind::Str) {
         cmp = x.str.compare(y.str);
+      } else {
+        long double lx = x.kind == KeyValue::Kind::Int ? x.i : x.d;
+        long double ly = y.kind == KeyValue::Kind::Int ? y.i : y.d;
+        cmp = (lx < ly) ? -1 : (lx > ly ? 1 : 0);
       }
       if (cmp != 0) return orders[i].desc ? (cmp > 0) : (cmp < 0);
     }
@@ -980,15 +989,15 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     for (const auto& o : orders) {
       KeyValue kv;
       if (o.is_distance) {
-        kv.is_num = true;
-        kv.num = l2Distance(row.values[o.col].v, o.query);
+        kv.kind = KeyValue::Kind::Double;
+        kv.d = l2Distance(row.values[o.col].v, o.query);
       } else {
         const Value& v = row.values[o.col];
         if (v.type == Value::Type::Int) {
-          kv.is_num = true;
-          kv.num = static_cast<double>(v.i);
+          kv.kind = KeyValue::Kind::Int;
+          kv.i = v.i;
         } else if (v.type == Value::Type::Str) {
-          kv.is_num = false;
+          kv.kind = KeyValue::Kind::Str;
           kv.str = v.s;
         } else {
           return Status::Error(Err::kUnsupported,
@@ -1110,6 +1119,10 @@ Status Executor::execute(const Statement& stmt, ExecResult& out) {
       return executeCreateIndex(stmt.create_index);
     case Statement::Kind::Set: {
       std::string key = toLower(stmt.set.key);
+      if (key == "__mvdb_sync__") {
+        out.sync_marker = true;
+        return Status::Ok();
+      }
       const bool is_query_mode =
           key == "query_mode" || key == "mode" ||
           (key.size() > 11 && key.ends_with(".query_mode"));

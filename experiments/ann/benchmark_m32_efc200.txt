@@ -1,0 +1,34 @@
+HNSW ANN prototype benchmark
+vectors=10000 dim=128 queries=500 k=10 M=32 ef_construction=200
+metric=squared L2, distance=AVX2+FMA, build=deterministic SplitMix64 levels
+
+dataset     seed   build_ms   mem_MiB level |   ef  recall@10    p50_us    p99_us    mean_us
+---------------------------------------------------------------------------------------------
+uniform       42    11037.8      7.94     3 |   16     0.6138     37.89     63.22      39.05
+uniform       42    11037.8      7.94     3 |   32     0.7848     65.60    109.92      68.96
+uniform       42    11037.8      7.94     3 |   64     0.9248    129.60    389.73     144.72
+uniform       42    11037.8      7.94     3 |  128     0.9860    221.90    310.31     228.69
+uniform       42    11037.8      7.94     3 |  256     0.9990    381.06    683.70     402.33
+uniform       43    10769.2      7.94     2 |   16     0.6036     33.96     51.41      34.94
+uniform       43    10769.2      7.94     2 |   32     0.7810     59.43     83.35      60.43
+uniform       43    10769.2      7.94     2 |   64     0.9296    110.09    142.16     111.58
+uniform       43    10769.2      7.94     2 |  128     0.9902    200.43    282.54     203.44
+uniform       43    10769.2      7.94     2 |  256     0.9996    327.36    892.23     343.21
+uniform       44    10462.3      7.94     2 |   16     0.6262     36.14     65.19      37.48
+uniform       44    10462.3      7.94     2 |   32     0.7922     62.94     86.65      63.95
+uniform       44    10462.3      7.94     2 |   64     0.9306    117.46    149.68     118.92
+uniform       44    10462.3      7.94     2 |  128     0.9872    207.77    262.70     211.17
+uniform       44    10462.3      7.94     2 |  256     0.9986    326.22    411.16     332.08
+clustered     42     4368.3      7.94     3 |   16     0.9872     19.53     37.24      20.04
+clustered     42     4368.3      7.94     3 |   32     0.9992     27.75     47.04      28.72
+clustered     42     4368.3      7.94     3 |   64     1.0000     38.19     59.17      39.63
+clustered     42     4368.3      7.94     3 |  128     1.0000     54.61     86.17      57.06
+clustered     42     4368.3      7.94     3 |  256     1.0000     85.64    130.91      90.14
+
+Summary
+  uniform/42: recall>=0.98 at ef=128 (0.9860, p50=221.90 us, p99=310.31 us)
+  uniform/43: recall>=0.98 at ef=128 (0.9902, p50=200.43 us, p99=282.54 us)
+  uniform/44: recall>=0.98 at ef=128 (0.9872, p50=207.77 us, p99=262.70 us)
+  clustered/42: recall>=0.98 at ef=16 (0.9872, p50=19.53 us, p99=37.24 us)
+  overall: PASS (every dataset must reach recall>=0.98)
+  note: timings are machine-dependent; recall/build are deterministic for a fixed seed

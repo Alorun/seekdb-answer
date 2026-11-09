@@ -234,6 +234,10 @@ class Parser {
   Statement parse() {
     skipSemicolons();
     if (peek().kind == Token::Kind::End) throw NeedMore{};
+    if (peek().kind == Token::Kind::Invalid) {
+      if (peek().need_more) throw NeedMore{};
+      fail(Err::kSyntax, peek().text);
+    }
     Statement stmt;
     if (acceptKeyword("CREATE")) {
       if (acceptKeyword("TABLE")) {
@@ -324,6 +328,7 @@ class Parser {
   }
   void expectPunct(char c) {
     if (peek().kind == Token::Kind::End) throw NeedMore{};
+    requireToken();
     if (!acceptPunct(c)) {
       fail(Err::kSyntax, std::string("expected '") + c + "'");
     }
@@ -337,19 +342,22 @@ class Parser {
   }
   void expectKeyword(const char* kw) {
     if (peek().kind == Token::Kind::End) throw NeedMore{};
+    requireToken();
     if (!acceptKeyword(kw)) {
       fail(Err::kSyntax, std::string("expected ") + kw);
     }
   }
   std::string expectIdent() {
+    if (peek().kind == Token::Kind::End) throw NeedMore{};
+    requireToken();
     if (peek().kind != Token::Kind::Ident) {
-      if (peek().kind == Token::Kind::End) throw NeedMore{};
       fail(Err::kSyntax, "expected identifier");
     }
     return next().text;
   }
   uint64_t expectUInt() {
     if (peek().kind == Token::Kind::End) throw NeedMore{};
+    requireToken();
     bool neg = false;
     if (peek().kind == Token::Kind::Punct && peek().punct == '-') {
       neg = true;
@@ -371,6 +379,7 @@ class Parser {
   }
   Value parseLiteral() {
     if (peek().kind == Token::Kind::End) throw NeedMore{};
+    requireToken();
     if (peek().kind == Token::Kind::Punct && peek().punct == '-') {
       next();
       if (peek().kind != Token::Kind::Number) fail(Err::kSyntax, "expected number");
@@ -415,6 +424,12 @@ class Parser {
     }
     fail(Err::kSyntax, "unexpected token after statement: " + peek().text);
   }
+  void requireToken() {
+    if (peek().kind == Token::Kind::Invalid) {
+      if (peek().need_more) throw NeedMore{};
+      fail(Err::kSyntax, peek().text);
+    }
+  }
   [[noreturn]] void fail(int code, const std::string& msg) {
     throw ParseError(Status::Error(code, msg));
   }
@@ -444,6 +459,7 @@ class Parser {
       return stmt;
     }
     if (peek().kind == Token::Kind::End) throw NeedMore{};
+    requireToken();
     if (peek().kind == Token::Kind::String) {
       stmt.value = next().text;
     } else if (peek().kind == Token::Kind::Number) {
@@ -603,6 +619,7 @@ class Parser {
 
   std::string parseOp() {
     if (peek().kind == Token::Kind::End) throw NeedMore{};
+    requireToken();
     if (peek().kind == Token::Kind::Punct) {
       std::string t = peek().text;
       if (t.empty() && peek().punct != 0) t = std::string(1, peek().punct);
@@ -631,6 +648,7 @@ class Parser {
         item.column = expectIdent();
         expectPunct(',');
         if (peek().kind == Token::Kind::End) throw NeedMore{};
+        requireToken();
         if (peek().kind != Token::Kind::String) {
           fail(Err::kSyntax, "L2_DISTANCE requires a vector literal string");
         }
@@ -711,12 +729,6 @@ class Parser {
 ParseResult parseStatement(const std::string& input) {
   Lexer lexer(input);
   std::vector<Token> tokens = lexer.run();
-  for (const auto& t : tokens) {
-    if (t.kind == Token::Kind::Invalid) {
-      if (t.need_more) return ParseResult::MakeNeedMore();
-      return ParseResult::MakeError(Status::Error(Err::kSyntax, t.text));
-    }
-  }
   bool only_empty = true;
   for (const auto& t : tokens) {
     if (t.kind == Token::Kind::End) continue;

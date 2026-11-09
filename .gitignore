@@ -63,6 +63,7 @@ build
 build/
 build-lead/
 build-*/
+__pycache__/
 build_*/
 build_version.c
 build_version.cpp

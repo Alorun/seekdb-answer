@@ -97,7 +97,7 @@ class Database {
   Status dropTable(uint64_t id);
   Status createIndex(const std::string& name, const std::string& table,
                      const std::string& column);
-  bool indexExists(const std::string& name) const;
+  bool indexExists(const std::string& table, const std::string& name) const;
 
   Wal& wal() { return *wal_; }
   uint64_t newTableId() { return next_table_id_++; }
@@ -123,7 +123,7 @@ class Database {
     uint64_t table_id = 0;
     uint32_t column = 0;
   };
-  std::unordered_map<std::string, IndexInfo> indexes_;
+  std::map<std::pair<uint64_t, std::string>, IndexInfo> indexes_;
   uint64_t next_table_id_ = 1;
   uint64_t next_txn_id_ = 1;
   uint64_t next_lsn_ = 1;

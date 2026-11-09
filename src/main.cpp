@@ -170,6 +170,86 @@ bool isBlank(const std::string& s) {
 
 // Execute all complete statements currently in the buffer. Returns false when
 // the session should stop.
+bool isLeadingKeywordPrefix(const std::string& s) {
+  std::string t = mvdb::trim(s);
+  if (t.empty()) return false;
+  for (unsigned char c : t) {
+    if (std::isspace(c) || c == ';' || c == '\'' || c == '`') return false;
+  }
+  if (t.size() > 16) return false;
+  static const char* kKeywords[] = {
+      "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "BEGIN",
+      "COMMIT", "ROLLBACK", "SET", "USE", "DROP", "TRUNCATE", "EXIT", "QUIT"};
+  for (const char* kw : kKeywords) {
+    std::string k = kw;
+    if (t.size() < k.size()) {
+      bool prefix = true;
+      for (size_t i = 0; i < t.size(); ++i) {
+        if (std::toupper(static_cast<unsigned char>(t[i])) != k[i]) {
+          prefix = false;
+          break;
+        }
+      }
+      if (prefix) return true;
+    }
+  }
+  return false;
+}
+
+size_t findStatementBoundary(const std::string& s) {
+  bool in_string = false;
+  bool in_backtick = false;
+  bool in_line_comment = false;
+  bool in_block_comment = false;
+  for (size_t i = 0; i < s.size(); ++i) {
+    char c = s[i];
+    char n = i + 1 < s.size() ? s[i + 1] : '\0';
+    if (in_line_comment) {
+      if (c == '\n') in_line_comment = false;
+      continue;
+    }
+    if (in_block_comment) {
+      if (c == '*' && n == '/') {
+        in_block_comment = false;
+        ++i;
+      }
+      continue;
+    }
+    if (in_string) {
+      if (c == '\\') {
+        ++i;
+      } else if (c == '\'') {
+        if (n == '\'') {
+          ++i;
+        } else {
+          in_string = false;
+        }
+      }
+      continue;
+    }
+    if (in_backtick) {
+      if (c == '`') in_backtick = false;
+      continue;
+    }
+    if (c == '\'') {
+      in_string = true;
+    } else if (c == '`') {
+      in_backtick = true;
+    } else if (c == '-' && n == '-') {
+      in_line_comment = true;
+      ++i;
+    } else if (c == '#') {
+      in_line_comment = true;
+    } else if (c == '/' && n == '*') {
+      in_block_comment = true;
+      ++i;
+    } else if (c == ';') {
+      return i;
+    }
+  }
+  return std::string::npos;
+}
+
 bool drainBuffer(std::string& buffer, mvdb::Executor& exec, const Options& opt,
                  bool at_eof) {
   while (!isBlank(buffer)) {
@@ -186,9 +266,17 @@ bool drainBuffer(std::string& buffer, mvdb::Executor& exec, const Options& opt,
       return true;
     }
     if (pr.kind == mvdb::ParseResult::Kind::Error) {
+      if (!at_eof && isLeadingKeywordPrefix(buffer)) {
+        return true;
+      }
       writeError(pr.status);
-      buffer.clear();
-      return true;
+      size_t cut = findStatementBoundary(buffer);
+      if (cut == std::string::npos) {
+        buffer.clear();
+      } else {
+        buffer.erase(0, cut + 1);
+      }
+      continue;
     }
     // A complete parse at end-of-line is not enough: the next line may be a
     // continuation (WHERE / ORDER BY / LIMIT). Require an explicit semicolon
@@ -205,6 +293,8 @@ bool drainBuffer(std::string& buffer, mvdb::Executor& exec, const Options& opt,
     mvdb::Status st = exec.execute(pr.stmt, result);
     if (!st.ok()) {
       writeError(st);
+    } else if (result.sync_marker) {
+      writeOut("__mvdb_sync__\n");
     } else if (result.has_result) {
       writeResult(result);
     } else if (opt.dml_ack) {
@@ -222,18 +312,17 @@ bool drainBuffer(std::string& buffer, mvdb::Executor& exec, const Options& opt,
 
 bool drainLineBuffer(std::string& buffer, mvdb::Executor& exec,
                      const Options& opt, bool at_eof) {
+  std::string pending;
   while (true) {
     size_t pos = buffer.find('\n');
     if (pos == std::string::npos) break;
-    std::string line = buffer.substr(0, pos + 1);
+    pending += buffer.substr(0, pos + 1);
     buffer.erase(0, pos + 1);
-    if (!drainBuffer(line, exec, opt, false)) return false;
-    if (!line.empty()) {
-      // Incomplete line: keep it and wait for more input.
-      buffer = line + buffer;
-      return true;
-    }
+    if (!drainBuffer(pending, exec, opt, false)) return false;
+    // If the accumulated text is still an incomplete statement, keep it and
+    // try the next buffered line instead of stalling.
   }
+  if (!pending.empty()) buffer = pending + buffer;
   if (at_eof && !buffer.empty()) {
     return drainBuffer(buffer, exec, opt, true);
   }
@@ -286,6 +375,7 @@ int main(int argc, char** argv) {
 
   std::string buffer;
   bool stop = false;
+  bool eof = false;
   char chunk[8192];
   while (!stop && !g_stop) {
     ssize_t n = ::read(STDIN_FILENO, chunk, sizeof(chunk));
@@ -293,7 +383,10 @@ int main(int argc, char** argv) {
       if (errno == EINTR) continue;
       break;
     }
-    if (n == 0) break;
+    if (n == 0) {
+      eof = true;
+      break;
+    }
     buffer.append(chunk, static_cast<size_t>(n));
 
     if (opt.line_mode) {
@@ -302,7 +395,7 @@ int main(int argc, char** argv) {
       stop = !drainBuffer(buffer, exec, opt, false);
     }
   }
-  if (!stop && !buffer.empty()) {
+  if (!stop && !g_stop && eof && !buffer.empty()) {
     if (opt.line_mode) {
       stop = !drainLineBuffer(buffer, exec, opt, true);
     } else {

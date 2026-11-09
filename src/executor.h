@@ -20,6 +20,7 @@ struct ExecResult {
   std::vector<std::string> columns;
   std::vector<std::vector<std::string>> rows;
   uint64_t affected = 0;
+  bool sync_marker = false;
 };
 
 class Executor {
