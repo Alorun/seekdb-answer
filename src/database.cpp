@@ -303,6 +303,27 @@ bool Database::indexExists(const std::string& name) const {
   return indexes_.count(toLower(name)) != 0;
 }
 
+Status Database::dropTable(uint64_t id) {
+  auto it = by_id_.find(id);
+  if (it == by_id_.end()) return Status::Ok();
+  Table* table = it->second;
+  by_id_.erase(it);
+  by_name_.erase(toLower(table->schema.name));
+  for (auto iit = indexes_.begin(); iit != indexes_.end();) {
+    if (iit->second.table_id == id) {
+      iit = indexes_.erase(iit);
+    } else {
+      ++iit;
+    }
+  }
+  tables_.erase(std::remove_if(tables_.begin(), tables_.end(),
+                               [&](const std::unique_ptr<Table>& up) {
+                                 return up.get() == table;
+                               }),
+                tables_.end());
+  return Status::Ok();
+}
+
 Status Database::createIndex(const std::string& name, const std::string& table,
                              const std::string& column) {
   std::string key = toLower(name);
@@ -359,6 +380,16 @@ Status Database::applyRecord(const WalRecord& rec) {
         return Status::Error(Err::kIo, "recovery: missing table id " + std::to_string(rec.table));
       }
       table->locations.erase(static_cast<int64_t>(rec.pk));
+      return Status::Ok();
+    }
+    case WalType::DropTable:
+      return dropTable(rec.table);
+    case WalType::TruncateTable: {
+      Table* table = tableById(rec.table);
+      if (table) {
+        table->locations.clear();
+        table->rows.clear();
+      }
       return Status::Ok();
     }
     case WalType::CreateIndex: {

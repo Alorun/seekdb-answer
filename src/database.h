@@ -19,6 +19,8 @@ enum class WalType : uint8_t {
   Delete = 4,
   Commit = 5,
   CreateIndex = 6,
+  DropTable = 7,
+  TruncateTable = 8,
 };
 
 struct WalRecord {
@@ -92,6 +94,7 @@ class Database {
   Table* findTable(const std::string& name);
   Table* tableById(uint64_t id);
   Status addTable(std::unique_ptr<Table> table);
+  Status dropTable(uint64_t id);
   Status createIndex(const std::string& name, const std::string& table,
                      const std::string& column);
   bool indexExists(const std::string& name) const;

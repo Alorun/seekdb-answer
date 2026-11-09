@@ -252,6 +252,20 @@ int main(int argc, char** argv) {
   sigaction(SIGTERM, &sa, nullptr);
 
   Options opt;
+  if (const char* v = std::getenv("MVDB_QUERY_MODE")) {
+    std::string m = v;
+    if (m == "exact" || m == "ann") opt.query_mode = m;
+  }
+  if (const char* v = std::getenv("MVDB_STATEMENT_MODE")) {
+    if (std::string(v) == "line") opt.line_mode = true;
+  }
+  if (const char* v = std::getenv("MVDB_DML_ACK")) {
+    std::string m = v;
+    opt.dml_ack = (m == "1" || m == "ok" || m == "true");
+  }
+  if (const char* v = std::getenv("MVDB_READY_MARKER")) {
+    opt.ready_marker = v;
+  }
   if (!parseArgs(argc, argv, opt)) return 0;
 
   mvdb::Database db(opt.data_dir, opt.memory_rows);

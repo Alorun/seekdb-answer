@@ -246,9 +246,22 @@ class Parser {
       } else {
         fail(Err::kSyntax, "expected TABLE or VECTOR after CREATE");
       }
+    } else if (acceptKeyword("DROP")) {
+      expectKeyword("TABLE");
+      stmt.kind = Statement::Kind::DropTable;
+      stmt.drop_table = parseDropTable();
+    } else if (acceptKeyword("TRUNCATE")) {
+      acceptKeyword("TABLE");
+      stmt.kind = Statement::Kind::TruncateTable;
+      stmt.truncate_table = expectIdent();
+      expectEnd();
     } else if (acceptKeyword("SET")) {
       stmt.kind = Statement::Kind::Set;
       stmt.set = parseSet();
+    } else if (acceptKeyword("USE")) {
+      stmt.kind = Statement::Kind::Use;
+      stmt.use_db = expectIdent();
+      expectEnd();
     } else if (acceptKeyword("INSERT")) {
       expectKeyword("INTO");
       stmt.kind = Statement::Kind::Insert;
@@ -407,18 +420,38 @@ class Parser {
   }
 
   SetStmt parseSet() {
-    if (acceptKeyword("SESSION") || acceptKeyword("LOCAL")) {
-      // session-local setting
+    if (acceptKeyword("SESSION") || acceptKeyword("LOCAL") || acceptKeyword("GLOBAL")) {
+      // session/global setting
     }
     if (acceptPunct('@')) {
       expectPunct('@');
     }
     SetStmt stmt;
     stmt.key = expectIdent();
-    expectPunct('=');
+    // MySQL accepts scope prefixes such as @@session.autocommit.
+    while (acceptPunct('.')) {
+      stmt.key += ".";
+      stmt.key += expectIdent();
+    }
+    if (!acceptPunct('=')) {
+      // Forms such as SET NAMES utf8mb4 / SET TRANSACTION ... are accepted
+      // as session no-ops; consume the rest of this statement.
+      while (peek().kind != Token::Kind::End &&
+             !(peek().kind == Token::Kind::Punct && peek().punct == ';')) {
+        next();
+      }
+      expectEnd();
+      return stmt;
+    }
     if (peek().kind == Token::Kind::End) throw NeedMore{};
     if (peek().kind == Token::Kind::String) {
       stmt.value = next().text;
+    } else if (peek().kind == Token::Kind::Number) {
+      stmt.value = next().text;
+    } else if (peek().kind == Token::Kind::Punct && peek().punct == '-') {
+      next();
+      if (peek().kind != Token::Kind::Number) fail(Err::kSyntax, "expected number");
+      stmt.value = "-" + next().text;
     } else {
       stmt.value = expectIdent();
     }
@@ -426,8 +459,24 @@ class Parser {
     return stmt;
   }
 
+  DropTableStmt parseDropTable() {
+    DropTableStmt stmt;
+    if (acceptKeyword("IF")) {
+      expectKeyword("EXISTS");
+      stmt.if_exists = true;
+    }
+    stmt.table = expectIdent();
+    expectEnd();
+    return stmt;
+  }
+
   CreateTableStmt parseCreateTable() {
     CreateTableStmt stmt;
+    if (acceptKeyword("IF")) {
+      expectKeyword("NOT");
+      expectKeyword("EXISTS");
+      stmt.if_not_exists = true;
+    }
     stmt.table = expectIdent();
     expectPunct('(');
     bool saw_primary_key = false;

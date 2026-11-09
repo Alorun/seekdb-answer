@@ -46,6 +46,12 @@ struct CreateTableStmt {
   std::string table;
   std::vector<Column> columns;
   int pk_index = -1;
+  bool if_not_exists = false;
+};
+
+struct DropTableStmt {
+  std::string table;
+  bool if_exists = false;
 };
 
 struct UpdateStmt {
@@ -74,8 +80,11 @@ struct Statement {
   enum class Kind {
     None,
     CreateTable,
+    DropTable,
+    TruncateTable,
     CreateIndex,
     Set,
+    Use,
     Insert,
     Select,
     Update,
@@ -87,8 +96,11 @@ struct Statement {
   } kind = Kind::None;
 
   CreateTableStmt create_table;
+  DropTableStmt drop_table;
+  std::string truncate_table;
   CreateIndexStmt create_index;
   SetStmt set;
+  std::string use_db;
   InsertStmt insert;
   SelectStmt select;
   UpdateStmt update;

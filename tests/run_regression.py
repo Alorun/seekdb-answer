@@ -178,6 +178,35 @@ SELECT id, s FROM t ORDER BY id;
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_compat():
+    for extra in ([], ["--memory-rows", "0"]):
+        tag = "disk" if extra else "memory"
+        d = tempfile.mkdtemp(prefix="mvdb-reg-compat-")
+        try:
+            sql = """
+SET NAMES utf8mb4;
+USE test;
+SET autocommit=0;
+CREATE TABLE IF NOT EXISTS t (id BIGINT PRIMARY KEY, s VARCHAR(8));
+INSERT INTO t VALUES (1,'a'),(2,'b');
+TRUNCATE TABLE t;
+SELECT id FROM t;
+DROP TABLE IF EXISTS t;
+DROP TABLE IF EXISTS missing;
+CREATE TABLE t (id BIGINT PRIMARY KEY);
+INSERT INTO t VALUES (3);
+SELECT id FROM t;
+"""
+            rc, out, err = run(sql, d, extra)
+            check(f"compat-{tag}-rc", rc == 0, err)
+            check(f"compat-{tag}-truncate", "id\n3\n" in out, out)
+            check(f"compat-{tag}-drop-missing", "ERROR 1146" not in out, out)
+            rc, out, err = run("SELECT id FROM t;\n", d, extra)
+            check(f"compat-{tag}-restart", "3" in out, out)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def test_order_limit():
     for extra in ([], ["--memory-rows", "0"]):
         tag = "disk" if extra else "memory"
@@ -300,6 +329,7 @@ def main():
     test_basic()
     test_truth()
     test_transactions()
+    test_compat()
     test_order_limit()
     test_errors()
     test_crash()

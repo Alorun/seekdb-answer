@@ -49,6 +49,8 @@ class Executor {
   Status executeUpdate(const UpdateStmt& stmt, ExecResult& out);
   Status executeDelete(const DeleteStmt& stmt, ExecResult& out);
   Status executeCreateTable(const CreateTableStmt& stmt);
+  Status executeDropTable(const DropTableStmt& stmt);
+  Status executeTruncateTable(const std::string& name);
   Status executeCreateIndex(const CreateIndexStmt& stmt);
 
   Status applyInsert(Table& table, int64_t pk, Row row);

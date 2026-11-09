@@ -643,6 +643,7 @@ Status Executor::executeDelete(const DeleteStmt& stmt, ExecResult& out) {
 
 Status Executor::executeCreateTable(const CreateTableStmt& stmt) {
   if (db_.findTable(stmt.table)) {
+    if (stmt.if_not_exists) return Status::Ok();
     return Status::Error(Err::kTableExists, "table already exists: " + stmt.table);
   }
   if (active_) {
@@ -688,6 +689,71 @@ Status Executor::executeCreateTable(const CreateTableStmt& stmt) {
   auto table = std::make_unique<Table>();
   table->schema = std::move(schema);
   return db_.addTable(std::move(table));
+}
+
+Status Executor::executeDropTable(const DropTableStmt& stmt) {
+  if (active_) {
+    return Status::Error(Err::kUnsupported, "DDL inside a transaction is not supported");
+  }
+  Table* table = db_.findTable(stmt.table);
+  if (!table) {
+    if (stmt.if_exists) return Status::Ok();
+    return Status::Error(Err::kTableNotFound, "table not found: " + stmt.table);
+  }
+  const uint64_t table_id = table->schema.table_id;
+  Status st = beginTxn();
+  if (!st.ok()) return st;
+  uint64_t stmt_wal = txn_start_;
+  WalRecord rec;
+  rec.type = static_cast<uint8_t>(WalType::DropTable);
+  rec.lsn = db_.newLsn();
+  rec.txn = txn_id_;
+  rec.table = table_id;
+  st = db_.wal().append(rec);
+  if (st.ok()) {
+    first_lsn_ = rec.lsn;
+    last_lsn_ = rec.lsn;
+    op_count_ = 1;
+    st = commitTxn();
+  } else {
+    Status rb = restoreTo(0, stmt_wal);
+    active_ = false;
+    if (!rb.ok()) return rb;
+  }
+  if (!st.ok()) return st;
+  return db_.dropTable(table_id);
+}
+
+Status Executor::executeTruncateTable(const std::string& name) {
+  if (active_) {
+    return Status::Error(Err::kUnsupported, "DDL inside a transaction is not supported");
+  }
+  Table* table = db_.findTable(name);
+  if (!table) return Status::Error(Err::kTableNotFound, "table not found: " + name);
+  const uint64_t table_id = table->schema.table_id;
+  Status st = beginTxn();
+  if (!st.ok()) return st;
+  uint64_t stmt_wal = txn_start_;
+  WalRecord rec;
+  rec.type = static_cast<uint8_t>(WalType::TruncateTable);
+  rec.lsn = db_.newLsn();
+  rec.txn = txn_id_;
+  rec.table = table_id;
+  st = db_.wal().append(rec);
+  if (st.ok()) {
+    first_lsn_ = rec.lsn;
+    last_lsn_ = rec.lsn;
+    op_count_ = 1;
+    st = commitTxn();
+  } else {
+    Status rb = restoreTo(0, stmt_wal);
+    active_ = false;
+    if (!rb.ok()) return rb;
+  }
+  if (!st.ok()) return st;
+  table->locations.clear();
+  table->rows.clear();
+  return Status::Ok();
 }
 
 Status Executor::executeCreateIndex(const CreateIndexStmt& stmt) {
@@ -1036,19 +1102,31 @@ Status Executor::execute(const Statement& stmt, ExecResult& out) {
       return executeSelect(stmt.select, out);
     case Statement::Kind::CreateTable:
       return executeCreateTable(stmt.create_table);
+    case Statement::Kind::DropTable:
+      return executeDropTable(stmt.drop_table);
+    case Statement::Kind::TruncateTable:
+      return executeTruncateTable(stmt.truncate_table);
     case Statement::Kind::CreateIndex:
       return executeCreateIndex(stmt.create_index);
     case Statement::Kind::Set: {
-      if (!iequals(stmt.set.key, "query_mode") && !iequals(stmt.set.key, "mode")) {
-        return Status::Error(Err::kUnsupported, "unsupported session variable: " + stmt.set.key);
+      std::string key = toLower(stmt.set.key);
+      const bool is_query_mode =
+          key == "query_mode" || key == "mode" ||
+          (key.size() > 11 && key.ends_with(".query_mode"));
+      if (is_query_mode) {
+        std::string v = toLower(stmt.set.value);
+        if (v != "exact" && v != "ann") {
+          return Status::Error(Err::kInvalidValue, "query_mode must be exact or ann");
+        }
+        query_mode_ = v;
       }
-      std::string v = toLower(stmt.set.value);
-      if (v != "exact" && v != "ann") {
-        return Status::Error(Err::kInvalidValue, "query_mode must be exact or ann");
-      }
-      query_mode_ = v;
+      // Other session settings (SET NAMES, autocommit, sql_mode, ...) are
+      // accepted as no-ops; the single-database task does not need them.
       return Status::Ok();
     }
+    case Statement::Kind::Use:
+      // Single database: USE is accepted as a no-op.
+      return Status::Ok();
     case Statement::Kind::Insert:
     case Statement::Kind::Update:
     case Statement::Kind::Delete: {
