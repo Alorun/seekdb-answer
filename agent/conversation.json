@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "synthetic": false,
+  "material_notes": "学生消息为真实对话的书面摘要（非逐字）；命令输出与测试结果来自本地真实运行；Agent 执行的技术工作和解释单独标注，不作为学生理解证据。",
+  "user_prompts": [
+    {
+      "id": "P1",
+      "content": "先仔细阅读题目，制定详细计划并记录到文档。",
+      "source": "对话摘要"
+    },
+    {
+      "id": "P2",
+      "content": "使用 C++20；官方题包不公开；每天最多两次提交，18 号截止，因此每天都要提交并持续优化，且每次提交要符合要求和规范。",
+      "source": "对话摘要"
+    },
+    {
+      "id": "P3",
+      "content": "提交时间从今天到 18 号任意时刻即可，不固定每天的具体时间；再确认一次仓库能否被匿名拉取。",
+      "source": "对话摘要"
+    },
+    {
+      "id": "P4",
+      "content": "开发要基于官方 round2 分支；如果新建的 round2 不符合要求，要先说明。",
+      "source": "对话摘要"
+    },
+    {
+      "id": "P5",
+      "content": "每次最后由你起草问题、我确认后再写入对应文件；不要直接使用我的原话。",
+      "source": "对话摘要"
+    },
+    {
+      "id": "P6",
+      "content": "当前实现还不够完善；每次提交前尽量在本地做到最好，不要只完成一个初版；这类问题你在合理范围内自行决定，不要再来问我。",
+      "source": "对话摘要"
+    }
+  ],
+  "conversations": [
+    {
+      "id": "C1",
+      "role": "student",
+      "content": "我要求先把约束拆清楚：C++20、题包不公开、每天最多两次提交、18 号截止；每次提交前必须把本地能验证的都验证完。",
+      "prompt_ref": "P2/P6",
+      "note": "约束与质量要求"
+    },
+    {
+      "id": "C2",
+      "role": "student",
+      "content": "我指出官方仓库本来就有 round2 分支，要求先确认开发基线到底是不是官方分支，再继续。",
+      "prompt_ref": "P4",
+      "note": "对开发基线的质疑"
+    },
+    {
+      "id": "C3",
+      "role": "student",
+      "content": "我看到 v0.1 后判断它还不够完善，要求不要拿初版去提交，先把本地质量做到最好。",
+      "prompt_ref": "P6",
+      "note": "对 v0.1 的反馈"
+    },
+    {
+      "id": "C4",
+      "role": "student",
+      "content": "我要求平台反馈由我贴原文，提示词和实际结果由 Agent 整理，但不能用我的原话；整理稿要经我确认后才写入文件。",
+      "prompt_ref": "P5",
+      "note": "证据材料流程"
+    },
+    {
+      "id": "C5",
+      "role": "agent",
+      "content": "Agent 完成 v0.1 垂直切片，随后按学生要求补磁盘模式、WAL checkpoint、AVX2 距离、崩溃注入和回归测试；技术实现与解释属于 Agent 工作。",
+      "note": "非学生证据"
+    }
+  ],
+  "experiments": [
+    {
+      "id": "E1",
+      "name": "官方与 fork 的 round2 是否同一 commit",
+      "hypothesis": "如果两边 SHA 相同，开发基线就是官方 round2。",
+      "command": "git ls-remote https://github.com/oceanbase/seekdb.git refs/heads/2026-competition-round2; git ls-remote https://github.com/Alorun/seekdb-answer.git refs/heads/2026-competition-round2",
+      "output": "c842a368c3394748d0499386c18f6b465242e141",
+      "analysis": "两边输出同一个 SHA，说明提交仓库的 round2 不是另起炉灶。"
+    },
+    {
+      "id": "E2",
+      "name": "本地回归",
+      "hypothesis": "内存/磁盘模式、事务、崩溃恢复都应通过。",
+      "command": "python3 tests/run_regression.py ./build/minivectordb",
+      "output": "all regression tests passed",
+      "analysis": "包含 300 行暴力真值对拍、内存/磁盘双模式、事务回滚、崩溃注入、checkpoint 与索引用例。"
+    },
+    {
+      "id": "E3",
+      "name": "1000 次精确 TopK 性能",
+      "hypothesis": "AVX2 与有界 TopK 能把 1000 次查询压到亚秒级。",
+      "command": "/usr/bin/time -f 'queries1000=%e rss=%M' ./build/minivectordb --data-dir /tmp/mvdb_perf < /tmp/mvdb_queries.sql",
+      "output": "queries1000=0.42 rss=18256",
+      "analysis": "10k×128、K=10、一半带过滤；0.42 s，峰值 RSS 约 18 MB。"
+    },
+    {
+      "id": "E4",
+      "name": "计划文档产出",
+      "hypothesis": "把约束、提交排期和门禁写成可执行文档。",
+      "command": "wc -l docs/PLAN.md",
+      "output": "1467 docs/PLAN.md",
+      "analysis": "计划文档覆盖需求解构、存储/事务/恢复、性能、测试、提交门禁与风险。"
+    },
+    {
+      "id": "E5",
+      "name": "发布门禁",
+      "hypothesis": "源码、Docker、匿名可拉取与材料应一起通过。",
+      "command": "python3 scripts/release_gate.py --require-conversation",
+      "output": "RESULT: PASS",
+      "analysis": "门禁检查分支/SHA、匿名远端、密钥扫描、Docker 构建、内存/磁盘容器冒烟和 conversation.json。"
+    }
+  ],
+  "units": [
+    {
+      "id": "U1",
+      "dimension": "问题理解与自主拆解",
+      "score": 1.0,
+      "student_evidence": "我要求先把约束拆清楚：C++20、题包不公开、每天最多两次提交、18 号截止；每次提交前必须把本地能验证的都验证完。",
+      "student_pointer": "/conversations/0/content",
+      "result_evidence": "1467 docs/PLAN.md",
+      "result_pointer": "/experiments/3/output",
+      "reason": "学生把语言、题包不公开、提交次数、截止时间和本地验证要求先钉死，再据此拆出计划与提交门禁。"
+    },
+    {
+      "id": "U2",
+      "dimension": "独立验证与质疑",
+      "score": 1.5,
+      "student_evidence": "我指出官方仓库本来就有 round2 分支，要求先确认开发基线到底是不是官方分支，再继续。",
+      "student_pointer": "/conversations/1/content",
+      "result_evidence": "c842a368c3394748d0499386c18f6b465242e141",
+      "result_pointer": "/experiments/0/output",
+      "reason": "学生对开发基线提出质疑并给出官方分支；核对两边 SHA 后确认基线一致，修正了之前的仓库表述。"
+    },
+    {
+      "id": "U3",
+      "dimension": "实验与反馈迭代",
+      "score": 1.0,
+      "student_evidence": "我看到 v0.1 后判断它还不够完善，要求不要拿初版去提交，先把本地质量做到最好。",
+      "student_pointer": "/conversations/2/content",
+      "result_evidence": "all regression tests passed",
+      "result_pointer": "/experiments/1/output",
+      "reason": "学生看到 v0.1 后拒绝直接提交，要求先完善并本地验证；随后补磁盘模式、checkpoint 与崩溃回归，并用回归测试复验。"
+    },
+    {
+      "id": "U4",
+      "dimension": "取舍与反思",
+      "score": 1.0,
+      "student_evidence": "我要求平台反馈由我贴原文，提示词和实际结果由 Agent 整理，但不能用我的原话；整理稿要经我确认后才写入文件。",
+      "student_pointer": "/conversations/3/content",
+      "result_evidence": "RESULT: PASS",
+      "result_pointer": "/experiments/4/output",
+      "reason": "学生选择不照抄原话、由 Agent 起草并经本人确认后再写入材料；门禁通过，材料可定位、可复现。"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "decision": "实现语言用 C++20",
+      "by": "student",
+      "evidence": "P2"
+    },
+    {
+      "id": "D2",
+      "decision": "超过内存阈值转磁盘模式，并在干净关闭时压缩 WAL",
+      "by": "agent",
+      "evidence": "E2/E3"
+    },
+    {
+      "id": "D3",
+      "decision": "ann 模式暂用精确回退，优先保证 recall 与功能正确",
+      "by": "agent",
+      "evidence": "E2"
+    },
+    {
+      "id": "D4",
+      "decision": "材料由 Agent 起草、学生确认后写入，不编造实验",
+      "by": "student",
+      "evidence": "P5/C4"
+    }
+  ],
+  "retrospective": "这次开发我主要抓三件事：先把约束和验收标准定清楚；发现 v0.1 不完善后要求继续补实现并在本地验证；对仓库基线和材料真实性保持质疑。性能与协议仍有不确定性，提交前还要用平台预检和反馈继续校准。",
+  "limitations": [
+    "官方题包和测试驱动不公开，ready、DML 状态和错误码仍是可切换假设。",
+    "ann 模式目前是精确回退，Recall=1.0 但没有 ANN 的查询加速。",
+    "DDL 在显式事务内报错；磁盘模式查询仍扫描 WAL。",
+    "尚未拿到平台预检/正式提交反馈，协议与隐藏用例覆盖未验证。"
+  ]
+}
