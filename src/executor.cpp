@@ -438,7 +438,7 @@ Status Executor::applyUpdate(Table& table, int64_t pk, Row row) {
   u.table_id = table.schema.table_id;
   u.pk = pk;
   u.had_row = had_row;
-  u.old_row = std::move(old);
+  if (had_row) u.old_row = std::move(old);
   u.had_location = true;
   u.old_location = old_location;
   undo_.push_back(std::move(u));
@@ -466,7 +466,7 @@ Status Executor::applyDelete(Table& table, int64_t pk) {
   u.table_id = table.schema.table_id;
   u.pk = pk;
   u.had_row = had_row;
-  u.old_row = std::move(old);
+  if (had_row) u.old_row = std::move(old);
   u.had_location = true;
   u.old_location = old_location;
   undo_.push_back(std::move(u));
@@ -838,8 +838,15 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     orders.push_back(std::move(spec));
   }
 
-  const bool topk = stmt.has_limit && stmt.limit > 0 && orders.size() == 1 &&
-                    orders[0].is_distance && !orders[0].desc;
+  const bool limit_zero = stmt.has_limit && stmt.limit == 0;
+  const bool distance_topk = !limit_zero && stmt.has_limit && orders.size() == 1 &&
+                             orders[0].is_distance && !orders[0].desc;
+  const bool order_topk = !limit_zero && stmt.has_limit && !orders.empty() &&
+                          !distance_topk;
+  const bool early_limit = !limit_zero && stmt.has_limit && orders.empty();
+  const size_t k = (distance_topk || order_topk || early_limit)
+                       ? static_cast<size_t>(stmt.limit)
+                       : 0;
 
   struct Hit {
     double d = 0;
@@ -851,8 +858,26 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     return a.pk < b.pk;
   };
   std::priority_queue<Hit, std::vector<Hit>, decltype(worse)> heap(worse);
-  const size_t k = topk ? static_cast<size_t>(stmt.limit) : 0;
+
+  auto candidate_better = [&](const Candidate& a, const Candidate& b) {
+    for (size_t i = 0; i < orders.size(); ++i) {
+      const KeyValue& x = a.keys[i];
+      const KeyValue& y = b.keys[i];
+      int cmp = 0;
+      if (x.is_num && y.is_num) {
+        cmp = (x.num < y.num) ? -1 : (x.num > y.num ? 1 : 0);
+      } else if (!x.is_num && !y.is_num) {
+        cmp = x.str.compare(y.str);
+      }
+      if (cmp != 0) return orders[i].desc ? (cmp > 0) : (cmp < 0);
+    }
+    return a.pk < b.pk;
+  };
+  std::priority_queue<Candidate, std::vector<Candidate>,
+                      decltype(candidate_better)>
+      candidate_heap(candidate_better);
   std::vector<Candidate> candidates;
+  bool stop_scan = false;
 
   auto process = [&](int64_t pk, const Row& row) -> Status {
     Status m;
@@ -860,16 +885,26 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
       if (!m.ok()) return m;
       return Status::Ok();
     }
-    if (topk) {
-      Hit h;
-      h.d = l2Distance(row.values[orders[0].col].v, orders[0].query);
-      h.pk = pk;
-      h.row = row;
+    if (distance_topk) {
+      const double d = l2Distance(row.values[orders[0].col].v, orders[0].query);
       if (heap.size() < k) {
+        Hit h;
+        h.d = d;
+        h.pk = pk;
+        h.row = row;
         heap.push(std::move(h));
-      } else if (worse(h, heap.top())) {
-        heap.pop();
-        heap.push(std::move(h));
+      } else {
+        Hit probe;
+        probe.d = d;
+        probe.pk = pk;
+        if (worse(probe, heap.top())) {
+          Hit h;
+          h.d = d;
+          h.pk = pk;
+          h.row = row;
+          heap.pop();
+          heap.push(std::move(h));
+        }
       }
       return Status::Ok();
     }
@@ -896,46 +931,59 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
       }
       c.keys.push_back(std::move(kv));
     }
-    candidates.push_back(std::move(c));
+    if (order_topk) {
+      if (candidate_heap.size() < k) {
+        candidate_heap.push(std::move(c));
+      } else if (candidate_better(c, candidate_heap.top())) {
+        candidate_heap.pop();
+        candidate_heap.push(std::move(c));
+      }
+    } else {
+      candidates.push_back(std::move(c));
+      if (early_limit && candidates.size() >= k) stop_scan = true;
+    }
     return Status::Ok();
   };
 
-  if (table->disk_mode) {
-    Status row_status = Status::Ok();
-    Status scan = db_.wal().forEachRecord([&](const WalRecordView& v) {
-      if (v.type != static_cast<uint8_t>(WalType::Insert) &&
-          v.type != static_cast<uint8_t>(WalType::Update)) {
-        return true;
+  if (!limit_zero) {
+    if (table->disk_mode) {
+      Status row_status = Status::Ok();
+      Status scan = db_.wal().forEachRecord([&](const WalRecordView& v) {
+        if (v.type != static_cast<uint8_t>(WalType::Insert) &&
+            v.type != static_cast<uint8_t>(WalType::Update)) {
+          return true;
+        }
+        if (v.table != table->schema.table_id) return true;
+        auto it = table->locations.find(static_cast<int64_t>(v.pk));
+        if (it == table->locations.end() || it->second != v.offset) return true;
+        Row row;
+        std::string err;
+        if (!decodeRow(schema, v.payload, v.payload_size, row, err)) {
+          row_status = Status::Error(Err::kIo, "corrupt row in WAL: " + err);
+          return false;
+        }
+        Status s = process(static_cast<int64_t>(v.pk), row);
+        if (!s.ok()) {
+          row_status = s;
+          return false;
+        }
+        return !stop_scan;
+      });
+      if (!scan.ok()) return scan;
+      if (!row_status.ok()) return row_status;
+    } else {
+      for (const auto& [pk, row] : table->rows) {
+        Status s = process(pk, row);
+        if (!s.ok()) return s;
+        if (stop_scan) break;
       }
-      if (v.table != table->schema.table_id) return true;
-      auto it = table->locations.find(static_cast<int64_t>(v.pk));
-      if (it == table->locations.end() || it->second != v.offset) return true;
-      Row row;
-      std::string err;
-      if (!decodeRow(schema, v.payload, v.payload_size, row, err)) {
-        row_status = Status::Error(Err::kIo, "corrupt row in WAL: " + err);
-        return false;
-      }
-      Status s = process(static_cast<int64_t>(v.pk), row);
-      if (!s.ok()) {
-        row_status = s;
-        return false;
-      }
-      return true;
-    });
-    if (!scan.ok()) return scan;
-    if (!row_status.ok()) return row_status;
-  } else {
-    for (const auto& [pk, row] : table->rows) {
-      Status s = process(pk, row);
-      if (!s.ok()) return s;
     }
   }
 
   out.has_result = true;
   for (const auto& col : cols) out.columns.push_back(col.header);
 
-  if (topk) {
+  if (distance_topk) {
     std::vector<Hit> hits;
     hits.reserve(heap.size());
     while (!heap.empty()) {
@@ -947,23 +995,20 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     for (const auto& h : hits) out.rows.push_back(formatProjection(h.row, cols));
     return Status::Ok();
   }
-
+  if (order_topk) {
+    std::vector<Candidate> top;
+    top.reserve(candidate_heap.size());
+    while (!candidate_heap.empty()) {
+      top.push_back(candidate_heap.top());
+      candidate_heap.pop();
+    }
+    std::sort(top.begin(), top.end(), candidate_better);
+    out.rows.reserve(top.size());
+    for (auto& c : top) out.rows.push_back(std::move(c.out));
+    return Status::Ok();
+  }
   if (!orders.empty()) {
-    std::stable_sort(candidates.begin(), candidates.end(),
-                     [&](const Candidate& a, const Candidate& b) {
-                       for (size_t i = 0; i < orders.size(); ++i) {
-                         const KeyValue& x = a.keys[i];
-                         const KeyValue& y = b.keys[i];
-                         int cmp = 0;
-                         if (x.is_num && y.is_num) {
-                           cmp = (x.num < y.num) ? -1 : (x.num > y.num ? 1 : 0);
-                         } else if (!x.is_num && !y.is_num) {
-                           cmp = x.str.compare(y.str);
-                         }
-                         if (cmp != 0) return orders[i].desc ? (cmp > 0) : (cmp < 0);
-                       }
-                       return a.pk < b.pk;
-                     });
+    std::stable_sort(candidates.begin(), candidates.end(), candidate_better);
   }
   if (stmt.has_limit && candidates.size() > stmt.limit) {
     candidates.resize(static_cast<size_t>(stmt.limit));

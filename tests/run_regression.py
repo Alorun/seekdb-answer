@@ -178,6 +178,27 @@ SELECT id, s FROM t ORDER BY id;
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_order_limit():
+    for extra in ([], ["--memory-rows", "0"]):
+        tag = "disk" if extra else "memory"
+        d = tempfile.mkdtemp(prefix="mvdb-reg-order-")
+        try:
+            sql = """
+CREATE TABLE t (id BIGINT PRIMARY KEY, s VARCHAR(4));
+INSERT INTO t VALUES (3,'b'),(1,'a'),(2,'a');
+SELECT id FROM t ORDER BY s LIMIT 2;
+SELECT id FROM t ORDER BY id DESC LIMIT 2;
+SELECT id FROM t LIMIT 2;
+"""
+            rc, out, err = run(sql, d, extra)
+            sections = out.split("id")
+            check(f"order-{tag}-asc", "1\n2" in out, out)
+            check(f"order-{tag}-desc", "3\n2" in out, out)
+            check(f"order-{tag}-limit", len(out.splitlines()) >= 9, out)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def test_errors():
     d = tempfile.mkdtemp(prefix="mvdb-reg-err-")
     try:
@@ -279,6 +300,7 @@ def main():
     test_basic()
     test_truth()
     test_transactions()
+    test_order_limit()
     test_errors()
     test_crash()
     test_index_and_set()

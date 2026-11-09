@@ -16,6 +16,8 @@ Configurable with `--ready-marker`. An empty marker disables the line.
 - Statements are normally terminated by `;` (outside strings/comments).
 - A statement that is complete at end-of-line but has no `;` is held until the
   next line arrives; this keeps multi-line statements working.
+- `--statement-mode=line` executes a complete statement at end-of-line (for a
+  driver that does not send terminators). `semicolon` is the default.
 - At EOF, a final statement without `;` is executed.
 - `--` (followed by whitespace), `#`, and `/* ... */` comments are skipped.
 - Strings use single quotes; `''`, `\'`, `\\`, `\n`, `\t` are supported.
@@ -36,8 +38,9 @@ id	content	distance
 
 - A zero-row result prints only the header.
 - Distances use `%.9g`.
-- DML/DDL produce no stdout by default. `--dml-ack` (local testing) prints
-  `OK <affected>`.
+- DML/DDL produce no stdout by default. `--dml-ack` prints `OK <affected>`;
+  this is the main protocol variable to switch if the driver waits for a DML
+  acknowledgement.
 - This is the mysqltest-like assumption; `--protocol` is accepted but only the
   `mysqltest` profile is implemented so far.
 

@@ -215,6 +215,23 @@ def run_container_smoke(image):
         for needle in ["1", "2", "3"]:
             if needle not in p2.stdout:
                 return fail("restart smoke missing row " + needle)
+        # Forced disk mode must produce the same rows.
+        tmp2 = tempfile.mkdtemp(prefix="mvdb-gate-disk-")
+        try:
+            p3 = run(
+                ["docker", "run", "--rm", "-i", "--network", "none",
+                 "-v", f"{tmp2}:/data", image, "--data-dir", "/data",
+                 "--memory-rows", "0"],
+                input_text=sql,
+                timeout=120,
+            )
+            if p3.returncode != 0:
+                return fail("disk-mode smoke exited " + str(p3.returncode))
+            for needle in ["id\tcontent\tdistance", "1\t事务与恢复"]:
+                if needle not in p3.stdout:
+                    return fail("disk-mode smoke missing " + repr(needle))
+        finally:
+            shutil.rmtree(tmp2, ignore_errors=True)
         print("container smoke: ok")
         return True
     finally:

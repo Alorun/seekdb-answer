@@ -2,14 +2,14 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档版本 | v2.7 / 2026-11-09（v1.0–v2.6 同日） |
+| 文档版本 | v2.8 / 2026-11-09（v1.0–v2.7 同日） |
 | 对应赛题 | `db.md`：实现支持 SQL、持久化存储与事务的轻量向量数据库（总分 80） |
 | 目标仓库 | 官方 `oceanbase/seekdb` 的 `2026-competition-round2` 分支（tip `c842a368c`）；提交仓库**建议使用真正的官方 Fork**（当前 `Alorun/seekdb-answer` 是非 fork 克隆，见 §12.5） |
 | 语言决定 | **C++20**（已确认，不再变更） |
 | 截止时间 | **2026-11-18 比赛结束**（以平台实际截止时刻为准；最后提交至少留 4 小时缓冲） |
 | 提交节奏 | **每天计划 2 次正式提交（平台上限 2 次），具体时刻自定**（建议两班之间留出结果回流时间）；额度当日清零、不结转；提交前必须通过与规范相关的发布门禁 |
 | 题包状态 | **官方题包/测试驱动不公开展示**；只能靠赛题说明、平台预检、正式提交反馈和协议自适配来逼近 |
-| 当前状态 | 仓库已 public、分支已推送；**v0.2 已实现**：WAL+位置索引、内存/磁盘双模式、checkpoint 压缩、AVX2 距离、崩溃注入回归、Docker，待补真实 ANN、协议校准、材料 |
+| 当前状态 | 仓库已 public、分支已推送；**v0.3 已实现**：磁盘模式、WAL checkpoint、AVX2 距离、有界 TopK、崩溃注入回归、Docker；待补真实 ANN、协议校准、材料 |
 | 一句话策略 | 用 9 天、最多约 20 次提交打一场"发布列车"：每次提交都是可构建、可运行、材料同 commit 的合规候选；先拿功能准入，再抢性能，最后用早期通过版本兜底。 |
 
 **变更记录**
@@ -30,6 +30,7 @@
 14. **v2.5**：区分"基于官方 round2 开发"与"GitHub fork 关系"；当前仓库 `fork:false`，建议做真正的官方 Fork 并把同一分支推过去，或先向组委会确认非 fork 公开仓库是否可接受。
 15. **v2.6**：v0.1 代码落地（C++20）；本地 10k×128 写入约 0.49 s、1000 次精确 TopK 约 0.86 s、重启约 0.04 s；Docker 构建/运行/重启通过。
 16. **v2.7**：v0.2 加入 WAL 位置索引与磁盘模式（超过内存阈值不再全表驻留）、干净关闭时的 WAL checkpoint 压缩、AVX2/FMA 距离内核、行数据/事务/checkpoint/恢复崩溃注入与完整回归；本地 1000 次精确 TopK 约 0.67 s。
+17. **v2.8**：v0.3 把普通 ORDER BY + LIMIT 改为有界堆、无 ORDER BY + LIMIT 提前停止、距离 TopK 只为入选行复制行数据；1000 次精确 TopK 降到约 0.40 s。
 
 > 本文档是实施计划，不包含实现代码。所有带 ⚠️ 的条目表示依赖题包/平台确认，不能靠猜测硬编码。
 
@@ -1429,7 +1430,7 @@ admission_pass, local_E_write, local_E_query, recall, notes
 
 > 计划冻结后，任何偏离都要在本文档更新"变更记录"并说明原因，避免范围悄悄膨胀。
 
-## 19. 实现进度（2026-11-09，v0.2）
+## 19. 实现进度（2026-11-09，v0.3）
 
 **已完成**
 
@@ -1441,6 +1442,7 @@ admission_pass, local_E_write, local_E_query, recall, notes
 - SQL：`CREATE TABLE`、多行 `INSERT`、`SELECT`（投影/`*`/WHERE/AND/ORDER BY/LIMIT/`L2_DISTANCE`）、`UPDATE`、`DELETE`、`BEGIN/COMMIT/ROLLBACK`、`CREATE VECTOR INDEX`、`SET query_mode`。
 - 类型校验：BIGINT 溢出、VARCHAR 码点长度、VECTOR 维度/NaN/Inf/float32 溢出、主键唯一、每表一个向量列。
 - 精确 TopK：过滤后取 K、距离并列按主键升序、不足 K 返回全部；AVX2/FMA 运行时派发，标量回退。
+- 有界 TopK：普通 `ORDER BY ... LIMIT` 用 K 大小堆；无 `ORDER BY` 的 `LIMIT` 命中 K 条即停；距离 TopK 只为入选行复制行数据。
 - 协议开关：`--ready-marker`、`--statement-mode=semicolon|line`、`--dml-ack`、`--query-mode=exact|ann`；未知参数忽略。
 - 崩溃注入：`MVDB_CRASH_POINT` 覆盖写 WAL、commit fsync、checkpoint rename、恢复 pass1/truncate。
 - 测试：`tests/run_smoke.py`（内存/磁盘、重启、kill -9）与 `tests/run_regression.py`（暴力真值、事务、错误、崩溃、索引、checkpoint）。
@@ -1450,7 +1452,7 @@ admission_pass, local_E_write, local_E_query, recall, notes
 | 项 | 结果 |
 | --- | --- |
 | 10k×128 批量写入（100 行/批，含 fsync） | 约 0.49 s |
-| 1000 次精确 TopK（K=10，一半带过滤） | 约 0.67 s |
+| 1000 次精确 TopK（K=10，一半带过滤） | 约 0.40 s |
 | 重启恢复（5.6 MB WAL） | 约 0.05 s |
 | 峰值 RSS（10k 内存模式） | 约 18 MB |
 | 50k×128 磁盘模式（含装载+TopK） | 约 2.36 s，RSS 约 37 MB |
