@@ -13,79 +13,92 @@
     "formal_admission": "passed (S3 04960665b): performance E=2432.687188; prompt raw=4.00000",
     "official_protocol": "JSON Lines (STDIO_PROTOCOL.md)"
   },
-  "material_notes": "Agent 根据真实协作、命令输出和平台反馈整理；用户请求被归一化为任务摘要，不是逐字原文（用户明确要求不要逐句复述）。student_evidence 与 pointer 指向的字符串完全一致。命令输出为原文/摘要摘录；E5 的 10k×128 输入由本地生成器产生且未入库，已注明；未验证项在 limitations。",
+  "material_notes": "用户 prompt 为原始消息的短节选（明确标注“用户原文（节选）”），不是逐字全记录；Agent 只补必要上下文和结果。student_evidence 与 pointer 指向的字符串完全一致；实验输出为真实命令/测量摘录。未执行内容在 limitations 中标注。",
   "user_prompts": [
     {
       "id": "P1",
-      "content": "在官方 round2 基线实现 C++20 MiniVectorDB；先拆题写计划，再按存储、事务、恢复、向量检索、协议和性能逐项验证。",
-      "source": "任务摘要"
+      "content": "先仔细阅读题目，制定一个详细的计划，记录到一个文档中。",
+      "source": "用户原文（节选）"
     },
     {
       "id": "P2",
-      "content": "截止 2026-11-18，每天最多两次正式提交；每次提交前尽量在本地完成质量闭环，不用初版占名额，提交物必须合规。",
-      "source": "任务摘要"
+      "content": "语言就用c++20。",
+      "source": "用户原文（节选）"
     },
     {
       "id": "P3",
-      "content": "对话材料按当前真实进度整理成任务与结果，不逐字复述用户消息；结论必须对应真实命令和输出。",
-      "source": "任务摘要"
+      "content": "比赛一天只能提交两次，18号比赛结束，所以每天都得提交两次且一直进行优化，且要确保每次提交是符合要求和规范的。",
+      "source": "用户原文（节选）"
+    },
+    {
+      "id": "P4",
+      "content": "这是本次的提测结果，还是0分非常失败：MySQL 正式用例未通过；此项为准入条件，不计排名分。",
+      "source": "用户原文（节选）"
+    },
+    {
+      "id": "P5",
+      "content": "现在远程仓库上传了一些新的测试用例和规范你查看后再次进行检查。",
+      "source": "用户原文（节选）"
+    },
+    {
+      "id": "P6",
+      "content": "现在请继续进行性能优化，看看还有没有什么突破性的策略让整体的性能再提升一个档次；但在优化时也要注意整体性，不可让某一部分特别快但其他部分特别慢。",
+      "source": "用户原文（节选）"
+    },
+    {
+      "id": "P7",
+      "content": "在修改优化agent prompt时一定要注意官方的规范和评分细则，仔细一点，很多队伍这部分的评测直接失败甚至0分都没有拿到；数据库的优化再检查回顾一下，然后再次进行优化不断拔高。",
+      "source": "用户原文（节选）"
     }
   ],
   "conversations": [
     {
       "id": "C1",
-      "role": "student",
-      "content": "先把题目约束拆成可执行计划：C++20、官方 round2 基线、单进程单连接、显式事务、题包不公开、提交次数和截止时间；计划要能指导实现和提交门禁。",
+      "role": "user",
+      "content": "先仔细阅读题目，制定一个详细的计划，记录到一个文档中。",
       "prompt_ref": "P1",
-      "note": "任务启动与约束拆解"
+      "note": "任务启动"
     },
     {
       "id": "C2",
-      "role": "student",
-      "content": "v0.1 还不足以提交；先补齐磁盘模式、WAL checkpoint、向量检索、事务恢复和回归测试，在本地质量闭环后再考虑正式提交。",
-      "prompt_ref": "P2",
-      "note": "对初版的质量反馈"
+      "role": "user",
+      "content": "比赛一天只能提交两次，18号比赛结束，所以每天都得提交两次且一直进行优化，且要确保每次提交是符合要求和规范的。",
+      "prompt_ref": "P3",
+      "note": "提交约束"
     },
     {
       "id": "C3",
-      "role": "student",
-      "content": "正式提测未通过后，不再凭假设改协议：先找官方 STDIO_PROTOCOL/JSONL 请求响应格式，把 ready、id、ok、columns/rows 和错误对象对齐，再跑协议检查器和公开用例。",
-      "prompt_ref": "P1/P2",
-      "note": "提测失败后的协议修正"
+      "role": "user",
+      "content": "这是本次的提测结果，还是0分非常失败：MySQL 正式用例未通过；此项为准入条件，不计排名分。",
+      "prompt_ref": "P4",
+      "note": "提测失败反馈"
     },
     {
       "id": "C4",
-      "role": "student",
-      "content": "先保证 COMMIT 确认前把数据和提交标记落盘；失败语句不能部分生效，回滚要恢复行和可见集；向量查询先过滤再 TopK，距离并列按主键。",
-      "prompt_ref": "P1/P2",
-      "note": "持久化/原子性/过滤 TopK 约束"
+      "role": "user",
+      "content": "现在远程仓库上传了一些新的测试用例和规范你查看后再次进行检查。",
+      "prompt_ref": "P5",
+      "note": "新规范检查"
     },
     {
       "id": "C5",
-      "role": "student",
-      "content": "性能阶段先用可复现的 10k×128、1000 次 TopK 基准，优先减少无效分配和重复扫描；没有测量的优化不改，不能用未验证的 ANN 换 recall。",
-      "prompt_ref": "P2",
-      "note": "性能优化原则"
+      "role": "user",
+      "content": "现在请继续进行性能优化，看看还有没有什么突破性的策略让整体的性能再提升一个档次；但在优化时也要注意整体性，不可让某一部分特别快但其他部分特别慢。",
+      "prompt_ref": "P6",
+      "note": "性能目标与整体性"
     },
     {
       "id": "C6",
-      "role": "student",
-      "content": "uniform 10k×128 上 HNSW recall 0.98 只有约 1.5–2× 查询收益，却要 3–11 s 构建和 6.7–7.9 MiB 索引；先保留 exact，clustered 数据再评估 ANN。",
-      "prompt_ref": "P2",
-      "note": "HNSW/exact 取舍"
+      "role": "user",
+      "content": "在修改优化agent prompt时一定要注意官方的规范和评分细则，仔细一点，很多队伍这部分的评测直接失败甚至0分都没有拿到；数据库的优化再检查回顾一下，然后再次进行优化不断拔高。",
+      "prompt_ref": "P7",
+      "note": "Prompt 规范与持续优化"
     },
     {
       "id": "C7",
       "role": "agent",
-      "content": "Agent 负责实现、测试、故障定位和材料整理；技术解释和命令执行单独标注，不冒充学生的理解证据。",
+      "content": "Agent 负责实现、测试、故障定位和材料整理；技术解释和命令执行单独标注，不冒充学生理解。",
       "note": "角色说明，非学生证据"
-    },
-    {
-      "id": "C8",
-      "role": "student",
-      "content": "强杀后已确认提交不能丢、未提交不能半可见；恢复中再杀要能重复恢复，用崩溃点和随机 SIGKILL 反复验证。",
-      "prompt_ref": "P1/P2",
-      "note": "崩溃恢复验证"
     }
   ],
   "experiments": [
@@ -199,69 +212,67 @@
       "id": "U1",
       "dimension": "问题理解与自主拆解",
       "score": 0.5,
-      "student_evidence": "先把题目约束拆成可执行计划：C++20、官方 round2 基线、单进程单连接、显式事务、题包不公开、提交次数和截止时间；计划要能指导实现和提交门禁。",
-      "student_pointer": "/conversations/0/content",
-      "reason": "把语言、官方基线、题包不公开、提交次数和截止时间拆成计划；仅规划，按 0.5 计。"
+      "student_evidence": "先仔细阅读题目，制定一个详细的计划，记录到一个文档中。",
+      "student_pointer": "/user_prompts/0/content",
+      "reason": "学生先要求读题并产出计划，固定任务约束和交付物；只有规划，按 0.5 计。"
     },
     {
       "id": "U2",
       "dimension": "技术理解与迁移",
-      "score": 1.0,
-      "student_evidence": "先保证 COMMIT 确认前把数据和提交标记落盘；失败语句不能部分生效，回滚要恢复行和可见集；向量查询先过滤再 TopK，距离并列按主键。",
-      "student_pointer": "/conversations/3/content",
-      "result_evidence": "checks=158 failures=0",
-      "result_pointer": "/experiments/2/output",
-      "reason": "把持久化屏障、语句原子性、可见集回滚和过滤后 TopK 串成实现约束，并用 158 项 SQL 边界验证。"
+      "score": 1.5,
+      "student_evidence": "在修改优化agent prompt时一定要注意官方的规范和评分细则，仔细一点，很多队伍这部分的评测直接失败甚至0分都没有拿到；数据库的优化再检查回顾一下，然后再次进行优化不断拔高。",
+      "student_pointer": "/user_prompts/6/content",
+      "result_evidence": "mixed1000=0.22s; unfiltered500=0.16s; filtered500=0.08s; RSS=19.8MB",
+      "result_pointer": "/experiments/11/output",
+      "reason": "学生明确要求结合各部分分值占比、避免单点极快而整体失衡，Agent 据此做过滤索引、并行扫描和写入优化，并复测整体指标。"
     },
     {
       "id": "U3",
       "dimension": "独立验证与质疑",
       "score": 1.5,
-      "student_evidence": "正式提测未通过后，不再凭假设改协议：先找官方 STDIO_PROTOCOL/JSONL 请求响应格式，把 ready、id、ok、columns/rows 和错误对象对齐，再跑协议检查器和公开用例。",
-      "student_pointer": "/conversations/2/content",
+      "student_evidence": "现在远程仓库上传了一些新的测试用例和规范你查看后再次进行检查。",
+      "student_pointer": "/user_prompts/4/content",
       "result_evidence": "handshake: PASS; sql_crud PASS ... transaction_shutdown_rollback PASS; Report: /tmp/proto/docker-public/result.json; exit 0",
       "result_pointer": "/experiments/1/output",
-      "reason": "提测失败后不继续猜协议，要求用官方 STDIO_PROTOCOL 反推 JSONL 的 ready/execute/shutdown、typed rows 和 error.code，官方 protocol_check 20/20。"
+      "reason": "学生要求先检查官方新规范和新用例，而不是沿用猜测；据此迁移 JSONL 并用官方 protocol_check 在 Docker 上验证 20/20。"
     },
     {
       "id": "U4",
       "dimension": "实验与反馈迭代",
       "score": 1.5,
-      "student_evidence": "性能阶段先用可复现的 10k×128、1000 次 TopK 基准，优先减少无效分配和重复扫描；没有测量的优化不改，不能用未验证的 ANN 换 recall。",
-      "student_pointer": "/conversations/4/content",
-      "result_evidence": "mixed1000=0.22s; unfiltered500=0.16s; filtered500=0.08s; RSS=19.8MB",
-      "result_pointer": "/experiments/11/output",
-      "reason": "针对过滤查询建立派生索引，按 row_version 失效，过滤部分 0.14→0.08s、整体 0.27→0.21s，并保留事务/回滚复测。"
+      "student_evidence": "现在请继续进行性能优化，看看还有没有什么突破性的策略让整体的性能再提升一个档次；但在优化时也要注意整体性，不可让某一部分特别快但其他部分特别慢。",
+      "student_pointer": "/user_prompts/5/content",
+      "result_evidence": "queries1000=0.27 rss=19784",
+      "result_pointer": "/experiments/4/output",
+      "reason": "学生要求继续突破性能并给出整体性约束，Agent 用 10k×128/1000 查询基准迭代，随后复测过滤索引和两核扫描。"
     },
     {
       "id": "U5",
       "dimension": "取舍与反思",
-      "score": 1.0,
-      "student_evidence": "uniform 10k×128 上 HNSW recall 0.98 只有约 1.5–2× 查询收益，却要 3–11 s 构建和 6.7–7.9 MiB 索引；先保留 exact，clustered 数据再评估 ANN。",
-      "student_pointer": "/conversations/5/content",
-      "result_evidence": "uniform       42     3384.2      6.73     3 |  256     0.9806     280.56     463.97      289.63",
-      "result_pointer": "/experiments/8/output",
-      "reason": "用 HNSW 基准对比 exact 的收益/构建/内存，选择 uniform 数据保留 exact、聚簇数据再评估 ANN，并保留精确回退。"
+      "score": 1.5,
+      "student_evidence": "这是本次的提测结果，还是0分非常失败：MySQL 正式用例未通过；此项为准入条件，不计排名分。",
+      "student_pointer": "/user_prompts/3/content",
+      "result_evidence": "iterations=200 elapsed=5.9s; deterministic crash points={after_wal_write:23, after_commit_fsync:22, recovery_after_pass1:22, recovery_after_truncate:23, checkpoint_before_rename:22, checkpoint_after_rename:22}; random SIGKILL=66; failures=0",
+      "result_pointer": "/experiments/3/output",
+      "reason": "正式提测失败后，学生要求详细修改而不是继续加功能；随后做崩溃恢复、边界和协议回归，形成失败—修正—复测闭环。"
     },
     {
       "id": "U6",
       "dimension": "技术理解与迁移",
-      "score": 1.5,
-      "student_evidence": "Agent 负责实现、测试、故障定位和材料整理；技术解释和命令执行单独标注，不冒充学生的理解证据。",
-      "student_pointer": "/conversations/6/content",
-      "result_evidence": "ERROR value_out_of_range: too many columns max 1024; ERROR value_out_of_range: VECTOR dimension out of range; restart OK; post-checkpoint row 3 persists",
-      "result_pointer": "/experiments/12/output",
-      "reason": "从 AVX2 溢出反例迁移到 DDL 上限和 checkpoint fd 审计，修复后重启/重跑协议检查，形成完整反例链。"
+      "score": 1.0,
+      "student_evidence": "语言就用c++20。",
+      "student_pointer": "/user_prompts/1/content",
+      "result_evidence": "checks=158 failures=0",
+      "result_pointer": "/experiments/2/output",
+      "reason": "学生选定 C++20 作为实现语言，Agent 用 SIMD 距离、WAL/事务和 158 项 SQL 边界验证该选择的可行性。"
     },
     {
       "id": "U7",
-      "dimension": "独立验证与质疑",
-      "score": 1.5,
-      "student_evidence": "强杀后已确认提交不能丢、未提交不能半可见；恢复中再杀要能重复恢复，用崩溃点和随机 SIGKILL 反复验证。",
-      "student_pointer": "/conversations/7/content",
-      "result_evidence": "iterations=200 elapsed=5.9s; deterministic crash points={after_wal_write:23, after_commit_fsync:22, recovery_after_pass1:22, recovery_after_truncate:23, checkpoint_before_rename:22, checkpoint_after_rename:22}; random SIGKILL=66; failures=0",
-      "result_pointer": "/experiments/3/output",
-      "reason": "用 6 个崩溃点、200 次迭代和随机 SIGKILL 验证已提交不丢、未提交不全有、恢复可重复。"
+      "dimension": "取舍与反思",
+      "score": 0.5,
+      "student_evidence": "比赛一天只能提交两次，18号比赛结束，所以每天都得提交两次且一直进行优化，且要确保每次提交是符合要求和规范的。",
+      "student_pointer": "/user_prompts/2/content",
+      "reason": "学生提前约束每天两次提交、18 号截止和每次提交必须合规，体现对提交机会成本的取舍；仅有规划，0.5。"
     }
   ],
   "decisions": [
@@ -296,7 +307,7 @@
       "evidence": "E10"
     }
   ],
-  "retrospective": "这次开发抓三件事：先把约束和验收标准写成计划；在 v0.1 不完善时坚持本地质量闭环；两次提测失败后不继续猜协议，直到官方发布 STDIO_PROTOCOL.md 才确认正式接口是 JSON Lines。随后实现 ready/execute/shutdown、typed rows、affected_rows、语义 error.code，官方 protocol_check 在 Docker 上 20/20。性能阶段又加入过滤等值索引、连续 VectorCache、平方距离、主键 TopK 和插入前缀优化，把 1000 条混合查询从 0.27s 降到约 0.21s。正式 29/29 仍未验证。",
+  "retrospective": "这次开发抓三件事：先把约束和验收标准写成计划；在 v0.1 不完善时坚持本地质量闭环；两次提测失败后不继续猜协议，直到官方发布 STDIO_PROTOCOL.md 才确认正式接口是 JSON Lines。随后实现 ready/execute/shutdown、typed rows、affected_rows 和语义 error.code，官方 protocol_check 在 Docker 上 20/20。性能阶段加入等值过滤索引、两核并行、批量 AVX2、WAL 单 writev 和字节预算，1000 条混合查询约 0.22s、10k 写入约 0.14s。正式 29/29 仍未验证。",
   "limitations": [
     "平台仍未返回正式 29 个用例的失败详情；本地只能验证官方 protocol_check 的握手和 20 个公开用例。",
     "JSONL 的 search_mode=ann 使用 exact fallback（recall=1.0），没有 ANN 加速。",
