@@ -114,7 +114,7 @@ struct QuantCache {
   size_t dim = 0;
   float minv = 0;
   float scale = 1;
-  std::vector<int8_t> q;  // pks.size() * dim, row-major
+  std::vector<uint8_t> q;  // pks.size() * dim, row-major, 0..255
   bool valid = false;
 };
 

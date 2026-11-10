@@ -244,27 +244,22 @@ __attribute__((target("avx2,fma"))) double l2DotDistanceSq(
   return d < 0.0 ? 0.0 : d;
 }
 
-__attribute__((target("avx2"))) int quantDistanceSq(const int8_t* a,
-                                                     const int8_t* b, size_t n) {
+__attribute__((target("avx2"))) int quantDistanceSq(const uint8_t* a,
+                                                     const uint8_t* b, size_t n) {
   __m256i acc = _mm256_setzero_si256();
   size_t i = 0;
-  for (; i + 16 <= n; i += 16) {
-    __m128i a8 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i));
-    __m128i b8 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i));
-    // Widen before subtracting: a quantized difference can be 254, which
-    // overflows int8.
-    __m256i a16 = _mm256_cvtepi8_epi16(a8);
-    __m256i b16 = _mm256_cvtepi8_epi16(b8);
-    __m256i d = _mm256_sub_epi16(a16, b16);
-    acc = _mm256_add_epi32(acc, _mm256_madd_epi16(d, d));
+  for (; i + 32 <= n; i += 32) {
+    __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + i));
+    __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
+    acc = _mm256_add_epi64(acc, _mm256_sad_epu8(va, vb));
   }
-  alignas(32) int tmp[8];
+  alignas(32) uint64_t tmp[4];
   _mm256_store_si256(reinterpret_cast<__m256i*>(tmp), acc);
   int sum = 0;
-  for (int x : tmp) sum += x;
+  for (uint64_t x : tmp) sum += static_cast<int>(x);
   for (; i < n; ++i) {
     int d = static_cast<int>(a[i]) - static_cast<int>(b[i]);
-    sum += d * d;
+    sum += d < 0 ? -d : d;
   }
   return sum;
 }
@@ -434,11 +429,11 @@ void buildQuant(Table& table, int col) {
   }
   if (lo == std::numeric_limits<float>::max() || hi <= lo) return;
   c.minv = lo;
-  c.scale = 254.0f / (hi - lo);
+  c.scale = 255.0f / (hi - lo);
   c.q.resize(vc.vec.size());
   for (size_t i = 0; i < vc.vec.size(); ++i) {
-    int q = static_cast<int>(std::lround((vc.vec[i] - lo) * c.scale)) - 127;
-    c.q[i] = static_cast<int8_t>(std::max(-127, std::min(127, q)));
+    int q = static_cast<int>(std::lround((vc.vec[i] - lo) * c.scale));
+    c.q[i] = static_cast<uint8_t>(std::max(0, std::min(255, q)));
   }
   c.valid = true;
   table.quant_caches[col] = std::move(c);
@@ -1244,8 +1239,8 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   }
   const bool distance_topk = !limit_zero && stmt.has_limit && orders.size() == 1 &&
                              orders[0].is_distance && !orders[0].desc;
-  // ANN is exact fallback: the tested IVF/quantized candidates did not beat
-  // the optimized exact scan with acceptable margin on uniform 10k x 128.
+  // ANN remains exact fallback: the tested IVF/quantized candidates did not
+  // beat the optimized exact scan with enough margin on uniform data.
   const bool ann_quant = false;
   const bool order_topk = !limit_zero && stmt.has_limit && !orders.empty() &&
                           !distance_topk;
@@ -1378,18 +1373,17 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
       QuantCache* qc = ensureQuant(*table, orders[0].col);
       if (qc != nullptr && qc->valid && qc->dim == orders[0].query.size() &&
           qc->q.size() == table->vector_cache.pks.size() * qc->dim) {
-        std::vector<int8_t> qv(qc->dim);
+        std::vector<uint8_t> qv(qc->dim);
         for (size_t j = 0; j < qc->dim; ++j) {
           int q = static_cast<int>(
-                      std::lround((orders[0].query[j] - qc->minv) * qc->scale)) -
-                  127;
-          qv[j] = static_cast<int8_t>(std::max(-127, std::min(127, q)));
+              std::lround((orders[0].query[j] - qc->minv) * qc->scale));
+          qv[j] = static_cast<uint8_t>(std::max(0, std::min(255, q)));
         }
         const size_t ncand = std::min<size_t>(256, table->vector_cache.pks.size());
         using Cand = std::pair<int, size_t>;  // larger approximate distance is worse
         std::priority_queue<Cand> heap;
         for (size_t vi = 0; vi < table->vector_cache.pks.size(); ++vi) {
-          const int8_t* rowq = qc->q.data() + vi * qc->dim;
+          const uint8_t* rowq = qc->q.data() + vi * qc->dim;
           const int d = quantDistanceSq(rowq, qv.data(), qc->dim);
           if (heap.size() < ncand) {
             heap.push({d, vi});
