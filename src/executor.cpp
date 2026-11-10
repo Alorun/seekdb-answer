@@ -157,8 +157,9 @@ double l2ScalarSq(const float* a, const float* b, size_t n) {
   return sum;
 }
 
-__attribute__((target("avx2,fma"))) double l2Avx2Sq(const float* a, const float* b,
-                                                  size_t n) {
+__attribute__((target("avx2,fma"))) double l2Avx2DoubleSq(const float* a,
+                                                          const float* b,
+                                                          size_t n) {
   // Accumulate in double: the inputs are float32 but a finite component can be
   // as large as FLT_MAX; float accumulation would overflow the squared distance
   // and can also lose precision for large-but-finite vectors.
@@ -190,6 +191,37 @@ __attribute__((target("avx2,fma"))) double l2Avx2Sq(const float* a, const float*
     sum += d * d;
   }
   return sum;
+}
+
+__attribute__((target("avx2,fma"))) double l2Avx2FastSq(const float* a,
+                                                          const float* b,
+                                                          size_t n) {
+  __m256 acc = _mm256_setzero_ps();
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    __m256 va = _mm256_loadu_ps(a + i);
+    __m256 vb = _mm256_loadu_ps(b + i);
+    __m256 d = _mm256_sub_ps(va, vb);
+    acc = _mm256_fmadd_ps(d, d, acc);
+  }
+  alignas(32) float tmp[8];
+  _mm256_store_ps(tmp, acc);
+  float sum = tmp[0] + tmp[1] + tmp[2] + tmp[3] + tmp[4] + tmp[5] +
+              tmp[6] + tmp[7];
+  for (; i < n; ++i) {
+    float d = a[i] - b[i];
+    sum += d * d;
+  }
+  return static_cast<double>(sum);
+}
+
+__attribute__((target("avx2,fma"))) double l2Avx2Sq(const float* a,
+                                                    const float* b, size_t n) {
+  double fast = l2Avx2FastSq(a, b, n);
+  if (std::isfinite(fast)) return fast;
+  // Valid float32 components can overflow the float accumulator or their
+  // difference; recompute in double only on that rare path.
+  return l2Avx2DoubleSq(a, b, n);
 }
 
 using L2SqFn = double (*)(const float*, const float*, size_t);
@@ -1003,6 +1035,8 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     }
   };
   const bool limit_zero = stmt.has_limit && stmt.limit == 0;
+  const bool use_avx2 = __builtin_cpu_supports("avx2") &&
+                        __builtin_cpu_supports("fma");
   const bool pk_order_topk = !limit_zero && stmt.has_limit &&
                              !table->disk_mode && orders.size() == 1 &&
                              !orders[0].is_distance &&
@@ -1082,6 +1116,8 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   std::vector<Candidate> candidates;
   bool stop_scan = false;
 
+  double worst_d = std::numeric_limits<double>::infinity();
+  int64_t worst_pk = std::numeric_limits<int64_t>::max();
   auto consider_hit = [&](int64_t pk, const Row& row, double d) {
     if (heap.size() < k) {
       Hit h;
@@ -1089,18 +1125,19 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
       h.pk = pk;
       h.row = row;
       heap.push(std::move(h));
-    } else {
-      Hit probe;
-      probe.d = d;
-      probe.pk = pk;
-      if (worse(probe, heap.top())) {
-        Hit h;
-        h.d = d;
-        h.pk = pk;
-        h.row = row;
-        heap.pop();
-        heap.push(std::move(h));
+      if (heap.size() == k) {
+        worst_d = heap.top().d;
+        worst_pk = heap.top().pk;
       }
+    } else if (d < worst_d || (d == worst_d && pk < worst_pk)) {
+      Hit h;
+      h.d = d;
+      h.pk = pk;
+      h.row = row;
+      heap.pop();
+      heap.push(std::move(h));
+      worst_d = heap.top().d;
+      worst_pk = heap.top().pk;
     }
   };
 
@@ -1111,7 +1148,11 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
       return Status::Ok();
     }
     if (distance_topk) {
-      const double d = l2DistanceSq(row.values[orders[0].col].v, orders[0].query);
+      const auto& vv = row.values[orders[0].col].v;
+      const double d = use_avx2
+                           ? l2Avx2Sq(vv.data(), orders[0].query.data(),
+                                      std::min(vv.size(), orders[0].query.size()))
+                           : l2DistanceSq(vv, orders[0].query);
       consider_hit(pk, row, d);
       return Status::Ok();
     }
@@ -1168,8 +1209,11 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
             if (!m.ok()) return m;
             continue;
           }
-          const double d = l2DistanceSq(cache.vec.data() + i * cache.dim, q,
-                                        cache.dim);
+          const double d = use_avx2
+                               ? l2Avx2Sq(cache.vec.data() + i * cache.dim, q,
+                                          cache.dim)
+                               : l2DistanceSq(cache.vec.data() + i * cache.dim,
+                                              q, cache.dim);
           consider_hit(cache.pks[i], row, d);
         }
         cache_scanned = true;

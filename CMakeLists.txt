@@ -16,7 +16,7 @@ add_executable(minivectordb
 
 target_compile_features(minivectordb PRIVATE cxx_std_20)
 target_compile_options(minivectordb PRIVATE
-  -O2
+  -O3
   -Wall
   -Wextra
   -Wpedantic
