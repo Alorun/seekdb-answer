@@ -317,6 +317,42 @@ __attribute__((target("avx2,fma"))) void scanCacheAvx2(
   (void)rows;
 }
 
+__attribute__((target("avx2"))) void scanQuantAvx2(
+    const uint8_t* q, const int64_t* pks, size_t n, size_t dim,
+    const uint8_t* qv, size_t k, std::vector<RawHit>& out) {
+  std::priority_queue<RawHit, std::vector<RawHit>, RawWorse> heap;
+  for (size_t vi = 0; vi < n; ++vi) {
+    const uint8_t* a = q + vi * dim;
+    __m256i acc = _mm256_setzero_si256();
+    size_t i = 0;
+    for (; i + 32 <= dim; i += 32) {
+      __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + i));
+      __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(qv + i));
+      acc = _mm256_add_epi64(acc, _mm256_sad_epu8(va, vb));
+    }
+    alignas(32) uint64_t tmp[4];
+    _mm256_store_si256(reinterpret_cast<__m256i*>(tmp), acc);
+    int d = 0;
+    for (uint64_t x : tmp) d += static_cast<int>(x);
+    for (; i < dim; ++i) {
+      int x = static_cast<int>(a[i]) - static_cast<int>(qv[i]);
+      d += x < 0 ? -x : x;
+    }
+    RawHit h{static_cast<double>(d), pks[vi], vi};
+    if (heap.size() < k) {
+      heap.push(h);
+    } else if (RawWorse{}(h, heap.top())) {
+      heap.pop();
+      heap.push(h);
+    }
+  }
+  out.reserve(heap.size());
+  while (!heap.empty()) {
+    out.push_back(heap.top());
+    heap.pop();
+  }
+}
+
 using L2SqFn = double (*)(const float*, const float*, size_t);
 L2SqFn pickL2Sq() {
   if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma")) {
@@ -1292,8 +1328,6 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   }
   const bool distance_topk = !limit_zero && stmt.has_limit && orders.size() == 1 &&
                              orders[0].is_distance && !orders[0].desc;
-  // ANN remains exact fallback: the tested IVF/quantized candidates did not
-  // beat the optimized exact scan with enough margin on uniform data.
   const bool ann_quant = false;
   const bool order_topk = !limit_zero && stmt.has_limit && !orders.empty() &&
                           !distance_topk;
@@ -1433,29 +1467,19 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
           qv[j] = static_cast<uint8_t>(std::max(0, std::min(255, q)));
         }
         const size_t ncand = std::min<size_t>(256, table->vector_cache.pks.size());
-        using Cand = std::pair<int, size_t>;  // larger approximate distance is worse
-        std::priority_queue<Cand> heap;
-        for (size_t vi = 0; vi < table->vector_cache.pks.size(); ++vi) {
-          const uint8_t* rowq = qc->q.data() + vi * qc->dim;
-          const int d = quantDistanceSq(rowq, qv.data(), qc->dim);
-          if (heap.size() < ncand) {
-            heap.push({d, vi});
-          } else if (d < heap.top().first) {
-            heap.pop();
-            heap.push({d, vi});
-          }
-        }
+        std::vector<RawHit> candidates;
+        scanQuantAvx2(qc->q.data(), table->vector_cache.pks.data(),
+                      table->vector_cache.pks.size(), qc->dim, qv.data(),
+                      ncand, candidates);
         const VectorCache& vc = table->vector_cache;
-        while (!heap.empty()) {
-          size_t vi = heap.top().second;
-          heap.pop();
-          const Row& row = *vc.rows[vi];
+        for (const RawHit& h : candidates) {
+          const Row& row = *vc.rows[h.vi];
           const double d = use_avx2
-                               ? l2Avx2Sq(vc.vec.data() + vi * vc.dim,
+                               ? l2Avx2Sq(vc.vec.data() + h.vi * vc.dim,
                                           orders[0].query.data(), vc.dim)
-                               : l2DistanceSq(vc.vec.data() + vi * vc.dim,
+                               : l2DistanceSq(vc.vec.data() + h.vi * vc.dim,
                                               orders[0].query.data(), vc.dim);
-          consider_hit(vc.pks[vi], row, d);
+          consider_hit(vc.pks[h.vi], row, d);
         }
         cache_scanned = true;
       }
