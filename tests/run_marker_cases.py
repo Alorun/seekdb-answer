@@ -2,7 +2,7 @@ import subprocess,tempfile,shutil,os,json,time,select,collections,sys
 ROOT=os.path.dirname(os.path.dirname(os.path.abspath(__file__))); BIN=os.environ.get('MVD_BIN', ROOT+'/build/minivectordb'); CASES=ROOT+'/tests/public_cases/cases'; MARK=b'__MVD_READY__'
 class P:
     def __init__(self,d,args):
-        self.p=subprocess.Popen([BIN,'--data-dir',d,'--ready-marker=__MVD_READY__']+args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
+        self.p=subprocess.Popen([BIN,'--data-dir',d,'--protocol','text','--ready-marker=__MVD_READY__']+args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
         # Delay deliberately: a startup marker must not shift the first reply.
         time.sleep(0.12)
         self.buf=b''

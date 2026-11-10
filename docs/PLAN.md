@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档版本 | v3.7 / 2026-11-09（v1.0–v3.6 同日） |
+| 文档版本 | v3.8 / 2026-11-10（v1.0–v3.7 同日） |
 | 对应赛题 | `db.md`：实现支持 SQL、持久化存储与事务的轻量向量数据库（总分 80） |
 | 目标仓库 | 官方 `oceanbase/seekdb` 的 `2026-competition-round2` 分支（tip `c842a368c`）；提交仓库**建议使用真正的官方 Fork**（当前 `Alorun/seekdb-answer` 是非 fork 克隆，见 §12.5） |
 | 语言决定 | **C++20**（已确认，不再变更） |
@@ -40,6 +40,7 @@
 24. **v3.5（关键协议修复）**：补上驱动常见的 **ready-marker 响应分帧**：驱动传入 `--ready-marker` 后，程序在每个语句响应（含错误）后输出该标记；若首条 SQL 已写入 stdin，则不再额外输出启动标记，等待型驱动仍会在 50 ms 后得到启动标记。此前只把标记当启动行，驱动若按标记读响应会超时，这是两次正式提测均失败的更可能原因。新增 `tests/run_marker_cases.py`，用带标记的驱动模拟跑 20 个公开用例，20/20 通过。
 25. **v3.6（错误语义修复）**：默认错误行改为公开包使用的语义名（`duplicate_key`、`unsupported_sql`、`dimension_mismatch` 等），并保留 `--numeric-errors` 供本地数字码套件；公开 20 个用例在无标记与 marker 分帧下都用严格错误名前缀校验通过。另补 `--vector-mode` 别名，避免官方驱动以该名称切换模式时产生未知参数噪声。
 26. **v3.7（语法边界收紧）**：按公开题包/公开实现的语法子集，`TRUNCATE` 与 `CREATE TABLE IF NOT EXISTS` 改为 `unsupported_sql`（`DROP TABLE [IF EXISTS]` 保留）；这避免正式隐藏用例把不在子集内的语句当成功而失败。
+27. **v3.8（协议根因修复）**：官方在 `f4d4e2665` 发布 `STDIO_PROTOCOL.md` 和 `protocol_check/`，确认正式协议是 **JSON Lines**：启动 `{"type":"ready"}`、execute 请求 `id/op/sql/search_mode`、查询 `columns/rows`、DML `affected_rows`、语义 `error.code`、shutdown `{"id":N,"ok":true}`。此前所有文本/ready-marker 猜测均不适用于正式判题器。已实现 JSONL 前端；官方 `protocol_check/run.py` 的握手和 20 个公开用例（本地命令与 Docker 镜像）全部 PASS。
 
 > 本文档是实施计划，不包含实现代码。所有带 ⚠️ 的条目表示依赖题包/平台确认，不能靠猜测硬编码。
 

@@ -17,18 +17,34 @@ cmake --build build -j"$(nproc)"
 ./build/minivectordb --data-dir /data
 ```
 
-The process reads SQL from stdin and writes results to stdout. Startup
-diagnostics and errors are written to stderr. The default data directory is
-`/data`.
+The default protocol is the official **JSON Lines** protocol: one JSON request
+per line on stdin, one JSON response per line on stdout, and the startup
+handshake is exactly:
 
-```
-ready
-CREATE TABLE docs (id BIGINT PRIMARY KEY, category VARCHAR(32), content VARCHAR(1024), embedding VECTOR(4));
-INSERT INTO docs VALUES (1,'database','事务与恢复','[1,0,0,0]');
-SELECT id, content FROM docs ORDER BY id;
+```json
+{"type":"ready"}
 ```
 
-## Supported SQL (v0.1)
+Then requests look like:
+
+```json
+{"id":1,"op":"execute","sql":"CREATE TABLE docs (id BIGINT PRIMARY KEY, content VARCHAR(16));","search_mode":"exact"}
+{"id":2,"op":"execute","sql":"INSERT INTO docs VALUES (1,'你好');","search_mode":"exact"}
+{"id":3,"op":"execute","sql":"SELECT id, content FROM docs ORDER BY id;","search_mode":"exact"}
+{"id":4,"op":"shutdown"}
+```
+
+Responses carry the same `id`; query responses include typed `columns` and
+`rows`, DML responses include `affected_rows`, failures use
+`{"ok":false,"error":{"code":"...","message":"..."}}`, and shutdown responds
+`{"id":4,"ok":true}` then exits 0. The official `protocol_check/run.py` from the
+task pack passes handshake and all 20 public cases against this image.
+
+For local SQL-script tests only, `--protocol=text` enables the legacy
+line/semicolon profile (`ready`, `OK <n>`, `ERROR ...`). It is not the
+submission protocol.
+
+## Supported SQL
 
 - `CREATE TABLE` with `BIGINT`, `VARCHAR(n)`, `VECTOR(n)` and one BIGINT
   primary key.
@@ -69,7 +85,7 @@ and stream WAL records for scans (`--memory-rows N` to tune). On a clean
 shutdown, a WAL larger than 64 MiB is compacted into a new WAL containing only
 live rows, table definitions and index metadata (`--checkpoint-bytes N`).
 
-## Known limitations (v0.2)
+## Known limitations
 
 - No NULL, JOIN, aggregates, subqueries, ALTER TABLE, foreign keys, nested
   transactions or primary-key updates.

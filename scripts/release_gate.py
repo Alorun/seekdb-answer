@@ -242,41 +242,74 @@ def check_conversation(path, required):
     return True
 
 
+def json_requests():
+    return [
+        {"id": 1, "op": "execute", "search_mode": "exact",
+         "sql": "CREATE TABLE docs (id BIGINT PRIMARY KEY, category VARCHAR(32), "
+                "content VARCHAR(1024), embedding VECTOR(4));"},
+        {"id": 2, "op": "execute", "search_mode": "exact",
+         "sql": "INSERT INTO docs VALUES (1,'database','事务与恢复','[1,0,0,0]'),"
+                "(2,'database','向量索引','[0,1,0,0]'),(3,'travel','旅行攻略','[0,0,1,0]');"},
+        {"id": 3, "op": "execute", "search_mode": "exact",
+         "sql": "SELECT id, content, L2_DISTANCE(embedding,'[0.9,0.1,0,0]') AS distance "
+                "FROM docs WHERE category = 'database' ORDER BY distance LIMIT 2;"},
+        {"id": 4, "op": "execute", "search_mode": "exact",
+         "sql": "SELECT id, content FROM docs ORDER BY id;"},
+        {"id": 5, "op": "shutdown"},
+    ]
+
+
+def json_input(reqs):
+    return "\n".join(json.dumps(r, ensure_ascii=False) for r in reqs) + "\n"
+
+
 def run_container_smoke(image):
     tmp = tempfile.mkdtemp(prefix="mvdb-gate-")
     try:
-        # Official public cases use one complete SQL per line (no semicolons)
-        # and assert affected_rows/columns/rows, so the default protocol is
-        # line framing plus an explicit DML status.
-        sql = (
-            "CREATE TABLE docs (id BIGINT PRIMARY KEY, category VARCHAR(32), "
-            "content VARCHAR(1024), embedding VECTOR(4))\n"
-            "INSERT INTO docs VALUES (1,'database','事务与恢复','[1,0,0,0]'),"
-            "(2,'database','向量索引','[0,1,0,0]'),(3,'travel','旅行攻略','[0,0,1,0]')\n"
-            "SELECT id, content, L2_DISTANCE(embedding,'[0.9,0.1,0,0]') AS distance "
-            "FROM docs WHERE category = 'database' ORDER BY distance LIMIT 2\n"
-            "SELECT id, content FROM docs ORDER BY id\n"
-        )
+        reqs = json_requests()
         p = run(
             ["docker", "run", "--rm", "-i", "--network", "none",
              "-v", f"{tmp}:/data", image],
-            input_text=sql,
+            input_text=json_input(reqs),
             timeout=120,
         )
         if p.returncode != 0:
             return fail("container smoke exited " + str(p.returncode) + ": " + p.stderr[-500:])
-        for needle in ["id\tcontent\tdistance", "1\t事务与恢复", "2\t向量索引"]:
-            if needle not in p.stdout:
-                return fail("container smoke missing " + repr(needle))
+        try:
+            msgs = [json.loads(line) for line in p.stdout.splitlines()]
+        except Exception as exc:
+            return fail("invalid JSONL stdout: " + str(exc) + " " + p.stdout[:500])
+        if len(msgs) != 6 or msgs[0] != {"type": "ready"}:
+            return fail("bad JSONL handshake/output: " + repr(msgs[:7]))
+        if not all(m.get("ok") is True and m.get("id") == i
+                   for i, m in enumerate(msgs[1:], 1)):
+            return fail("bad JSONL responses: " + repr(msgs[:6]))
+        if msgs[2].get("affected_rows") != 3:
+            return fail("bad affected_rows: " + repr(msgs[2]))
+        if msgs[3].get("columns") != ["id", "content", "distance"]:
+            return fail("bad columns: " + repr(msgs[3]))
+        rows = msgs[3].get("rows", [])
+        if len(rows) != 2 or rows[0][0] != 1 or rows[1][0] != 2:
+            return fail("bad rows: " + repr(rows))
+        # Restart with the same data directory.
         p2 = run(
             ["docker", "run", "--rm", "-i", "--network", "none",
              "-v", f"{tmp}:/data", image],
-            input_text="SELECT id FROM docs ORDER BY id\n",
+            input_text=json_input([
+                {"id": 1, "op": "execute", "search_mode": "exact",
+                 "sql": "SELECT id FROM docs ORDER BY id;"},
+                {"id": 2, "op": "shutdown"},
+            ]),
             timeout=60,
         )
-        for needle in ["1", "2", "3"]:
-            if needle not in p2.stdout:
-                return fail("restart smoke missing row " + needle)
+        if p2.returncode != 0:
+            return fail("restart smoke exited " + str(p2.returncode))
+        try:
+            m2 = [json.loads(line) for line in p2.stdout.splitlines()]
+        except Exception as exc:
+            return fail("restart invalid JSONL: " + str(exc))
+        if len(m2) != 3 or m2[0] != {"type": "ready"} or m2[1].get("rows") != [[1], [2], [3]]:
+            return fail("restart rows missing: " + repr(m2[:4]))
         # Forced disk mode must produce the same rows.
         tmp2 = tempfile.mkdtemp(prefix="mvdb-gate-disk-")
         try:
@@ -284,21 +317,25 @@ def run_container_smoke(image):
                 ["docker", "run", "--rm", "-i", "--network", "none",
                  "-v", f"{tmp2}:/data", image, "--data-dir", "/data",
                  "--memory-rows", "0"],
-                input_text=sql,
+                input_text=json_input(reqs),
                 timeout=120,
             )
             if p3.returncode != 0:
                 return fail("disk-mode smoke exited " + str(p3.returncode))
-            for needle in ["id\tcontent\tdistance", "1\t事务与恢复"]:
-                if needle not in p3.stdout:
-                    return fail("disk-mode smoke missing " + repr(needle))
+            try:
+                m3 = [json.loads(line) for line in p3.stdout.splitlines()]
+            except Exception as exc:
+                return fail("disk-mode invalid JSONL: " + str(exc))
+            drow = m3[3].get("rows", [])[:1] if len(m3) > 3 else []
+            if (len(m3) != 6 or m3[0] != {"type": "ready"} or not drow
+                    or drow[0][0] != 1 or drow[0][1] != "事务与恢复"):
+                return fail("disk-mode rows missing: " + repr(m3[:5]))
         finally:
             shutil.rmtree(tmp2, ignore_errors=True)
         print("container smoke: ok")
         return True
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-
 
 def check_docker(image):
     # Reuse Docker's layer cache: COPY src invalidates the build when the

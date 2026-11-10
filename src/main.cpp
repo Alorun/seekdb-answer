@@ -1,4 +1,6 @@
 #include <cerrno>
+#include <charconv>
+#include <cmath>
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
@@ -9,6 +11,7 @@
 #include "database.h"
 #include "executor.h"
 #include "parser.h"
+#include "jsonl.h"
 
 namespace {
 
@@ -21,7 +24,7 @@ struct Options {
   std::string data_dir = "/data";
   std::string ready_marker = "ready";
   std::string query_mode = "exact";
-  std::string protocol = "mysqltest";
+  std::string protocol = "jsonl";
   // The official public cases send one complete SQL per line and assert
   // affected_rows, columns and rows; line framing + an explicit DML status is
   // therefore the default. Local multi-line scripts opt into semicolon mode.
@@ -427,6 +430,152 @@ bool drainLineBuffer(std::string& buffer, mvdb::Executor& exec,
   return true;
 }
 
+std::string jsonId(const mvdb::jsonl::Value& id) {
+  using mvdb::jsonl::Value;
+  if (id.type == Value::Type::String) return mvdb::jsonl::quote(id.s);
+  if (id.type == Value::Type::Number) {
+    return id.is_int ? mvdb::jsonl::number(id.i) : mvdb::jsonl::number(id.d);
+  }
+  if (id.type == Value::Type::Null) return "null";
+  if (id.type == Value::Type::Bool) return id.b ? "true" : "false";
+  return "null";
+}
+
+std::string jsonField(const std::string& text, const mvdb::ResultColumn& kind) {
+  using RK = mvdb::ResultKind;
+  if (kind.kind == RK::Int) {
+    int64_t v = 0;
+    auto r = std::from_chars(text.data(), text.data() + text.size(), v);
+    if (r.ec == std::errc() && r.ptr == text.data() + text.size()) {
+      return mvdb::jsonl::number(v);
+    }
+    return mvdb::jsonl::quote(text);
+  }
+  if (kind.kind == RK::Double) {
+    char* end = nullptr;
+    double d = std::strtod(text.c_str(), &end);
+    if (end == text.c_str() + text.size() && std::isfinite(d)) {
+      return mvdb::jsonl::number(d);
+    }
+    return mvdb::jsonl::quote(text);
+  }
+  if (kind.kind == RK::Vec) {
+    std::vector<float> v;
+    std::string err;
+    if (mvdb::parseVectorLiteral(text, v, err)) {
+      std::string out = "[";
+      for (size_t i = 0; i < v.size(); ++i) {
+        if (i) out.push_back(',');
+        out += mvdb::jsonl::number(static_cast<double>(v[i]));
+      }
+      out.push_back(']');
+      return out;
+    }
+    return mvdb::jsonl::quote(text);
+  }
+  return mvdb::jsonl::quote(text);
+}
+
+int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
+  writeOut("{\"type\":\"ready\"}\n");
+  std::string line;
+  while (!g_stop && std::getline(std::cin, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.empty()) continue;
+    mvdb::jsonl::Value req;
+    std::string err;
+    if (!mvdb::jsonl::parse(line, req, err)) {
+      writeOut("{\"id\":null,\"ok\":false,\"error\":{\"code\":\"invalid_json\",\"message\":" +
+               mvdb::jsonl::quote(err) + "}}\n");
+      continue;
+    }
+    const auto* id = req.get("id");
+    const auto* op = req.get("op");
+    std::string idtxt = id ? jsonId(*id) : "null";
+    if (!op || op->type != mvdb::jsonl::Value::Type::String) {
+      writeOut("{\"id\":" + idtxt +
+               ",\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"missing op\"}}\n");
+      continue;
+    }
+    if (op->s == "shutdown") {
+      exec.shutdown();
+      mvdb::Status cp = db.checkpointIfNeeded(opt.checkpoint_bytes);
+      if (!cp.ok()) std::cerr << "warning: checkpoint failed: " << cp.message << "\n";
+      writeOut("{\"id\":" + idtxt + ",\"ok\":true}\n");
+      return 0;
+    }
+    if (op->s != "execute") {
+      writeOut("{\"id\":" + idtxt +
+               ",\"ok\":false,\"error\":{\"code\":\"unsupported_op\",\"message\":\"unsupported op\"}}\n");
+      continue;
+    }
+    const auto* sqlv = req.get("sql");
+    if (!sqlv || sqlv->type != mvdb::jsonl::Value::Type::String) {
+      writeOut("{\"id\":" + idtxt +
+               ",\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"missing sql\"}}\n");
+      continue;
+    }
+    mvdb::ParseResult pr = mvdb::parseStatement(sqlv->s);
+    if (pr.kind == mvdb::ParseResult::Kind::NeedMore) {
+      writeOut("{\"id\":" + idtxt +
+               ",\"ok\":false,\"error\":{\"code\":\"syntax_error\",\"message\":\"incomplete statement\"}}\n");
+      continue;
+    }
+    if (pr.kind == mvdb::ParseResult::Kind::Error) {
+      writeOut("{\"id\":" + idtxt + ",\"ok\":false,\"error\":{\"code\":" +
+               mvdb::jsonl::quote(semanticError(pr.status)) + ",\"message\":" +
+               mvdb::jsonl::quote(pr.status.message) + "}}\n");
+      continue;
+    }
+    if (pr.kind == mvdb::ParseResult::Kind::Empty) {
+      writeOut("{\"id\":" + idtxt + ",\"ok\":true}\n");
+      continue;
+    }
+    mvdb::ExecResult result;
+    mvdb::Status st = exec.execute(pr.stmt, result);
+    if (!st.ok()) {
+      writeOut("{\"id\":" + idtxt + ",\"ok\":false,\"error\":{\"code\":" +
+               mvdb::jsonl::quote(semanticError(st)) + ",\"message\":" +
+               mvdb::jsonl::quote(st.message) + "}}\n");
+      continue;
+    }
+    std::string out = "{\"id\":" + idtxt + ",\"ok\":true";
+    if (result.has_result) {
+      out += ",\"columns\":[";
+      for (size_t i = 0; i < result.columns.size(); ++i) {
+        if (i) out.push_back(',');
+        out += mvdb::jsonl::quote(result.columns[i]);
+      }
+      out += "],\"rows\":[";
+      for (size_t r = 0; r < result.rows.size(); ++r) {
+        if (r) out.push_back(',');
+        out.push_back('[');
+        for (size_t c = 0; c < result.rows[r].size(); ++c) {
+          if (c) out.push_back(',');
+          mvdb::ResultColumn kind;
+          if (c < result.column_kinds.size()) kind = result.column_kinds[c];
+          out += jsonField(result.rows[r][c], kind);
+        }
+        out.push_back(']');
+      }
+      out += "]";
+    } else {
+      bool count = pr.stmt.kind == mvdb::Statement::Kind::Insert ||
+                   pr.stmt.kind == mvdb::Statement::Kind::Update ||
+                   pr.stmt.kind == mvdb::Statement::Kind::Delete;
+      if (count) {
+        out += ",\"affected_rows\":" + std::to_string(result.affected);
+      }
+    }
+    out += "}\n";
+    writeOut(out);
+  }
+  exec.shutdown();
+  mvdb::Status cp = db.checkpointIfNeeded(opt.checkpoint_bytes);
+  if (!cp.ok()) std::cerr << "warning: checkpoint failed: " << cp.message << "\n";
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -472,6 +621,9 @@ int main(int argc, char** argv) {
             << " protocol=" << opt.protocol << " query_mode=" << opt.query_mode
             << " dml_ack=" << (opt.dml_ack ? "ok" : "none")
             << " statement_mode=" << (opt.line_mode ? "line" : "semicolon") << "\n";
+  if (opt.protocol == "jsonl" || opt.protocol == "json") {
+    return runJson(opt, db, exec);
+  }
   if (!opt.ready_marker.empty() && !opt.marker_frame) {
     bool adaptive = std::getenv("MVDB_ADAPTIVE_READY") != nullptr;
     bool defer = false;

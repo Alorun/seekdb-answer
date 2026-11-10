@@ -1,106 +1,98 @@
-# Protocol profile (current assumptions)
+# MiniVectorDB protocol profile
 
-The official test pack is not public. This file records exactly what the current
-build assumes, so each submission can switch one variable at a time.
+The competition protocol is the official **JSON Lines** stdin/stdout protocol
+from `STDIO_PROTOCOL.md` in the round-2 pack. The database defaults to it.
 
 ## Startup
 
-- Recover the WAL and rebuild catalog/index metadata before printing anything.
-- Without an explicit marker, print `ready\n` once and flush.
-- With `--ready-marker` (or `MVDB_READY_MARKER`), the marker is a **response
-  terminator**: print it after every statement response, including errors.
-  The driver reads lines until the marker, so it never guesses where a reply
-  ends. The same marker is not printed at startup if the first SQL is already
-  pending; if the driver waits, it is printed after a 50 ms poll.
-- All diagnostics go to stderr.
+After data recovery, print exactly one line and flush before reading stdin:
 
-Configurable with `--ready-marker`. An empty marker disables the line.
-The same knobs can be set with `MVDB_READY_MARKER`, `MVDB_STATEMENT_MODE`,
-`MVDB_DML_ACK`, and `MVDB_QUERY_MODE`; CLI arguments override them. The Docker
-image sets `MVDB_ADAPTIVE_READY=1`: if SQL is already pending when the process
-starts (a batch driver), the ready line is suppressed so it cannot corrupt the
-first response; a request/response driver gets the marker after a 50 ms poll.
-Explicit `--ready-marker` always enables per-response framing.
-
-## Statement framing
-
-- Input is read in raw byte chunks, not by lines; a statement does not need a
-  trailing newline.
-- Statements are normally terminated by `;` (outside strings/comments).
-- A statement that is complete at end-of-line but has no `;` is held until the
-  next chunk arrives; this keeps multi-line statements working.
-- If a complete line arrives without a trailing newline and no more bytes
-  follow for 10 ms, it is executed; this covers drivers that write one SQL and
-  wait without a newline.
-- `line` mode executes a complete statement at end-of-line; it is the default
-  because the official public cases use one complete SQL per line (newer
-  cases include the trailing `;`, older ones omit it). Incomplete lines are
-  accumulated, so a multi-line statement works as long as its first line is
-  not already complete. Continuation clauses on later lines after a complete
-  first line need `semicolon` mode.
-- `--statement-mode=semicolon` keeps the classic multi-line script behavior.
-- At EOF, a final statement without `;` is executed.
-- `--` (followed by whitespace), `#`, and `/* ... */` comments are skipped.
-- Strings use single quotes; `''`, `\'`, `\\`, `\n`, `\t` are supported.
-
-This means the driver can either send a whole script or one terminated
-statement at a time. A driver that sends one statement per line **without** a
-terminator and then waits is handled by the 10 ms idle path.
-
-## Results
-
-`SELECT` prints a header line and then rows, fields separated by TAB:
-
-```text
-id	content	distance
-1	事务与恢复	0.141421374
+```json
+{"type":"ready"}
 ```
 
-- A zero-row result prints only the header.
-- Distances use `%.9g`.
-- DML/DDL print `OK <affected>` by default; the official public cases assert
-  `affected_rows`, so the driver needs this status. Use `--dml-ack=none` for a
-  quiet mysqltest-style output. SELECT prints a header plus rows and no
-  terminator; the driver knows the expected row count.
-- This is the mysqltest-like assumption; `--protocol` is accepted but only the
-  `mysqltest` profile is implemented so far.
+No `READY`, prompt, banner, or extra field is written to stdout. Diagnostics go
+to stderr. Every restart (normal or recovery) prints ready again.
 
-## Errors
+## Requests
 
-Default (semantic names, matching the public pack's `error` assertions):
+One request per physical line, UTF-8 and newline-terminated:
 
-```text
-ERROR duplicate_key: duplicate primary key: 1
-ERROR unsupported_sql: unsupported or unknown statement
-ERROR dimension_mismatch: vector dimension mismatch for column e: expected 2, got 1
+```json
+{"id":1,"op":"execute","sql":"SELECT id FROM docs ORDER BY id;","search_mode":"exact"}
+{"id":2,"op":"shutdown"}
 ```
 
-Other names: `syntax_error`, `duplicate_table`, `table_not_found`,
-`column_not_found`, `column_count_mismatch`, `value_too_long`,
-`value_out_of_range`, `type_mismatch`, `invalid_vector`, `invalid_value`,
-`transaction_state`, `duplicate_index`, `index_not_found`, `io_error`.
-`--numeric-errors` (or `MVDB_NUMERIC_ERRORS=1`) switches to the MySQL-style
-`ERROR <code>: <message>` form used by the local numeric test suites; the
-public/formal driver profile is semantic.
+`id` is echoed with the same JSON type; `op` is `execute` or `shutdown`;
+`search_mode` is `exact` or `ann` (ANN currently uses the exact fallback, so
+recall is 1.0).
 
-## Query mode
+## Responses
 
-- Default `exact` (always exact scan).
-- `--query-mode=exact|ann` accepted.
-- `SET query_mode='ann';` / `SET @@query_mode='ann';` accepted in-session.
-- `ann` currently falls back to exact execution; recall is 1.0.
+Success, query:
 
-## Session compatibility
+```json
+{"id":1,"ok":true,"columns":["id"],"rows":[[1],[2]]}
+```
 
-`SET NAMES ...`, `SET autocommit=...`, `SET @@session...`, `USE db` and similar
-session setup statements are accepted as no-ops (the task semantics remain:
-autocommit plus explicit `BEGIN`). `DROP TABLE [IF EXISTS]` is supported.
-`CREATE TABLE IF NOT EXISTS` and `TRUNCATE [TABLE]` are outside the task SQL
-subset and return `unsupported_sql`. The test-only `SET __mvdb_sync__='1'`
-prints `__mvdb_sync__` and is used by the local fuzz harness; it is not part of
-the competition SQL contract.
+Success, DML:
 
-## Exit
+```json
+{"id":2,"ok":true,"affected_rows":1}
+```
 
-- EOF, `EXIT`, `QUIT`, SIGINT, SIGTERM: roll back an active transaction, sync
-  anything needed, exit 0. SIGKILL: recovery on next start.
+DDL, transaction control and SET return `{"id":N,"ok":true}` with no
+`affected_rows`. Failure:
+
+```json
+{"id":3,"ok":false,"error":{"code":"duplicate_key","message":"duplicate primary key"}}
+```
+
+`ok` is a JSON boolean; `error.code` is a non-empty semantic string. Expected
+SQL errors do not terminate the process. BIGINT is a JSON integer (no float
+round-trip); strings are JSON strings; vector projections are JSON arrays of
+float32 values; rows are two-dimensional arrays.
+
+## Shutdown
+
+`{"id":N,"op":"shutdown"}` rolls back an active transaction, checkpoints if
+needed, responds `{"id":N,"ok":true}`, flushes, and exits 0. No bytes are
+written after the shutdown response.
+
+## Legacy text profile
+
+`--protocol=text` is for local SQL-script tests only. It keeps the previous
+`ready` line, line/semicolon SQL framing, `OK <n>` status, `ERROR ...` lines,
+and the test-only `--ready-marker` behavior. It is not used by the judge.
+
+## SQL compatibility
+
+- `CREATE TABLE` with `BIGINT`, `VARCHAR(n)`, `VECTOR(n)`, one BIGINT primary key.
+- `DROP TABLE [IF EXISTS]`, `USE`, common `SET` no-ops.
+- `TRUNCATE` and `CREATE TABLE IF NOT EXISTS` are outside the task subset and
+  return `unsupported_sql`.
+- `INSERT` (multi-row and explicit column lists), `SELECT` projection/`*`,
+  `WHERE` comparisons with AND, `ORDER BY` (column, alias, ordinal, or
+  `L2_DISTANCE` expression), `LIMIT`, `L2_DISTANCE`.
+- `UPDATE`, `DELETE`, `BEGIN`/`COMMIT`/`ROLLBACK`, autocommit.
+- `CREATE VECTOR INDEX` catalog metadata; exact execution fallback.
+
+## Persistence
+
+All state is under `--data-dir` (default `/data`). WAL records are checksummed
+and have a commit marker; commit acknowledges only after `fdatasync`. Recovery
+replays committed transactions only and truncates an uncommitted/invalid tail.
+Small tables (default 50,000 rows and 64 MiB estimated) cache rows in memory;
+larger/wide tables stream WAL records. Clean shutdown compacts a WAL larger than
+64 MiB (`--checkpoint-bytes`), and the WAL descriptor is reopened after the
+atomic rename.
+
+## Error codes
+
+Semantic names are used in JSON `error.code`: `syntax_error`,
+`duplicate_table`, `table_not_found`, `column_not_found`, `duplicate_key`,
+`column_count_mismatch`, `value_too_long`, `dimension_mismatch`,
+`invalid_vector`, `invalid_value`, `value_out_of_range`, `type_mismatch`,
+`unsupported_sql`, `transaction_state`, `duplicate_index`, `index_not_found`,
+`io_error`. The local text suites can request numeric MySQL-style codes with
+`--numeric-errors`; the official JSON profile always uses semantic names.

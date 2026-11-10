@@ -19,6 +19,7 @@
 | H4（中） | 驱动对 SELECT 的结束判定依赖预期行数 | `.result` 给出精确 `rows` | 输出 header + 精确行；不加额外终止行，避免污染下一条响应 |
 | H6（高） | 驱动用 `--ready-marker` 做**逐响应分帧** | 公开驱动约定；失败提交只把标记当启动行 | 传入 marker 时每个响应后输出标记；首条 SQL 已写入时不额外输出启动标记 |
 | H7（高） | 错误断言使用**语义名**而不是数字码 | 公开 `.result` 使用 `duplicate_key`/`unsupported_sql`/`dimension_mismatch` | 默认输出语义名；`--numeric-errors` 保留数字码本地套件 |
+| H8（确定根因） | 正式协议是 **JSON Lines**，不是文本/ready-marker | 官方 `STDIO_PROTOCOL.md` + `protocol_check/` | 默认 JSONL：ready、execute、typed rows、affected_rows、error.code、shutdown；`--protocol=text` 仅供本地脚本 |
 | H5（低） | 驱动要求 JSON 响应 | 题面明确说不再采用 JSON 请求/响应；公开 README 说 `.result` 不是运行协议 | 保持文本 `OK <n>` + TAB 结果 |
 
 ## 3. 修改项
@@ -40,7 +41,8 @@
 
 | 项目 | 命令 | 期望 |
 | --- | --- | --- |
-| 官方公开用例（v4，无标记） | `python3 tests/run_public_cases.py --bin ./build/minivectordb` | 20/20 PASS |
+| 官方协议握手/公开用例 | `protocol_check/run.py --image ...`（官方工具） | 握手 + 20/20 PASS |
+| 官方公开用例（v4，无标记，本地文本） | `python3 tests/run_public_cases.py --bin ./build/minivectordb` | 20/20 PASS |
 | 官方公开用例（v4，marker 分帧） | `python3 tests/run_marker_cases.py` | 20/20 PASS |
 | 严格错误语义 | 公开 runner 的 `error` 分支要求 `ERROR <name>:` | 20/20 PASS |
 | SQL 边界 | `python3 tests/run_sql_edges.py --bin ./build/minivectordb` | 158 项 × 2 模式，0 失败 |

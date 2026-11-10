@@ -15,10 +15,18 @@ struct ResolvedCond {
   Value literal;
 };
 
+enum class ResultKind { Int, Str, Vec, Double };
+
+struct ResultColumn {
+  ResultKind kind = ResultKind::Str;
+  size_t dim = 0;
+};
+
 struct ExecResult {
   bool has_result = false;
   std::vector<std::string> columns;
   std::vector<std::vector<std::string>> rows;
+  std::vector<ResultColumn> column_kinds;
   uint64_t affected = 0;
   bool sync_marker = false;
 };

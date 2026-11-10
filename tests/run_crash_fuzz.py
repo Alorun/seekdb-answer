@@ -422,7 +422,8 @@ class Session:
                  crash_point: Optional[str] = None,
                  checkpoint_bytes: Optional[int] = None,
                  start_timeout: float = 10.0):
-        args = [binary, "--data-dir", data_dir, "--dml-ack", "--numeric-errors"]
+        args = [binary, "--data-dir", data_dir, "--protocol", "text",
+                "--dml-ack", "--numeric-errors"]
         if mode == "disk":
             args += ["--memory-rows", "0"]
         if checkpoint_bytes is not None:
@@ -1348,7 +1349,8 @@ def run_recovery_point(binary: str, data_dir: str, it: Iteration,
     env = dict(os.environ)
     env.pop("MVDB_CRASH_POINT", None)
     env["MVDB_CRASH_POINT"] = point
-    args = [binary, "--data-dir", data_dir, "--dml-ack", "--numeric-errors"]
+    args = [binary, "--data-dir", data_dir, "--protocol", "text",
+            "--dml-ack", "--numeric-errors"]
     if it.mode == "disk":
         args += ["--memory-rows", "0"]
     try:

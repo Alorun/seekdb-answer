@@ -983,6 +983,25 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     orders.push_back(std::move(spec));
   }
 
+  auto fill_result_columns = [&](ExecResult& r) {
+    r.columns.clear();
+    r.column_kinds.clear();
+    r.columns.reserve(cols.size());
+    r.column_kinds.reserve(cols.size());
+    for (const auto& col : cols) {
+      r.columns.push_back(col.header);
+      ResultColumn rc;
+      if (col.kind == OutCol::Kind::Distance) {
+        rc.kind = ResultKind::Double;
+      } else {
+        const Column& schema_col = schema.columns[col.col];
+        if (schema_col.type == ColumnType::BigInt) rc.kind = ResultKind::Int;
+        else if (schema_col.type == ColumnType::Varchar) rc.kind = ResultKind::Str;
+        else { rc.kind = ResultKind::Vec; rc.dim = schema_col.length; }
+      }
+      r.column_kinds.push_back(rc);
+    }
+  };
   const bool limit_zero = stmt.has_limit && stmt.limit == 0;
   const bool pk_order_topk = !limit_zero && stmt.has_limit &&
                              !table->disk_mode && orders.size() == 1 &&
@@ -992,9 +1011,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     // The in-memory row map is already ordered by primary key. This avoids
     // building and sorting a Candidate (and its projection) for every row.
     out.has_result = true;
-    out.columns.clear();
-    out.columns.reserve(cols.size());
-    for (const auto& col : cols) out.columns.push_back(col.header);
+    fill_result_columns(out);
     out.rows.reserve(static_cast<size_t>(stmt.limit));
     auto take_row = [&](const Row& row) -> Status {
       Status m;
@@ -1195,7 +1212,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   }
 
   out.has_result = true;
-  for (const auto& col : cols) out.columns.push_back(col.header);
+  fill_result_columns(out);
 
   if (distance_topk) {
     std::vector<Hit> hits;

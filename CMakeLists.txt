@@ -11,6 +11,7 @@ add_executable(minivectordb
   src/parser.cpp
   src/database.cpp
   src/executor.cpp
+  src/jsonl.cpp
 )
 
 target_compile_features(minivectordb PRIVATE cxx_std_20)

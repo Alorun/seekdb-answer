@@ -37,7 +37,7 @@ def run_batch(bin_path: str, data_dir: str, script, args=(), env=None,
     """
     e = dict(os.environ)
     e.update(env or {})
-    cmd = [bin_path, "--data-dir", data_dir] + list(args)
+    cmd = [bin_path, "--data-dir", data_dir, "--protocol", "text"] + list(args)
     if isinstance(script, str):
         script = script.encode()
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -62,7 +62,7 @@ class Session:
         e = dict(os.environ)
         e.update(env or {})
         self.proc = subprocess.Popen(
-            [bin_path, "--data-dir", self.data_dir] + list(args),
+            [bin_path, "--data-dir", self.data_dir, "--protocol", "text"] + list(args),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, env=e)
         self._out = b""
