@@ -36,6 +36,7 @@ class Executor {
   explicit Executor(Database& db) : db_(db) {}
 
   Status execute(const Statement& stmt, ExecResult& out);
+  void setQueryMode(const std::string& mode) { query_mode_ = mode; }
   Status shutdown();
 
  private:

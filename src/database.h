@@ -108,6 +108,35 @@ struct VectorCache {
   bool valid = false;
 };
 
+struct QuantCache {
+  uint64_t version = 0;
+  int col = -1;
+  size_t dim = 0;
+  float minv = 0;
+  float scale = 1;
+  std::vector<int8_t> q;  // pks.size() * dim, row-major
+  bool valid = false;
+};
+
+struct FilterCache {
+  uint64_t version = 0;
+  int col = -1;
+  bool valid = false;
+  std::unordered_map<std::string, std::vector<int64_t>> str;
+  std::unordered_map<int64_t, std::vector<int64_t>> num;
+};
+
+struct IvfCache {
+  uint64_t version = 0;
+  int col = -1;
+  size_t dim = 0;
+  size_t nlist = 0;
+  size_t nprobe = 0;
+  std::vector<std::vector<float>> centroids;
+  std::vector<std::vector<size_t>> lists;  // indices into Table::vector_cache
+  bool valid = false;
+};
+
 struct Table {
   Schema schema;
   // Small tables keep rows in memory for fast scans. Large tables set
@@ -117,6 +146,9 @@ struct Table {
   bool disk_mode = false;
   uint64_t row_version = 0;
   VectorCache vector_cache;
+  std::unordered_map<int, FilterCache> filter_caches;
+  std::unordered_map<int, IvfCache> ivf_caches;
+  std::unordered_map<int, QuantCache> quant_caches;
 };
 
 class Database {

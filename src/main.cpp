@@ -531,6 +531,11 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
       writeOut("{\"id\":" + idtxt + ",\"ok\":true}\n");
       continue;
     }
+    if (const auto* sm = req.get("search_mode");
+        sm && sm->type == mvdb::jsonl::Value::Type::String &&
+        (sm->s == "exact" || sm->s == "ann")) {
+      exec.setQueryMode(sm->s);
+    }
     mvdb::ExecResult result;
     mvdb::Status st = exec.execute(pr.stmt, result);
     if (!st.ok()) {
@@ -616,6 +621,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   mvdb::Executor exec(db);
+  exec.setQueryMode(opt.query_mode);
 
   std::cerr << "minivectordb: data_dir=" << opt.data_dir
             << " protocol=" << opt.protocol << " query_mode=" << opt.query_mode

@@ -8,7 +8,7 @@ platform confirms all MySQL cases pass.
 | S1 | 2026-11-09 | eade40b445b9fa991be27375d4c6b58463b94803 |  | 0b9e9e71 / 8677 | PASS | not run | MySQL formal failed | fail | 0.49 s | 0.42 s | semicolon + no DML status; see agent/evidence/platform/2026-11-09.md |
 | S2 | 2026-11-09 | 2be8b38a57515021111b9a89d7c151a5f79466d4 |  | c7ac94cb / 10285 | PASS | not run | MySQL formal failed | fail | 0.49 s | 0.42 s | marker framing/error names missing; marker fix not submitted |
 
-| S3 |  |  |  |  |  |  |  |  |  |  |  |
+| S3 | 2026-11-10 | 04960665bfde08bfc4e0b2a5720af5896cd7f6f6 |  | b3857e97 / 16055 | PASS | not run | admission PASS; E=2432.687188; prompt=4.00000 | pass | 0.15 s | 0.27 s | JSONL protocol; top performance 4237.889320, top prompt 8.0 |
 | S4 |  |  |  |  |  |  |  |  |  |  |  |
 | S5 |  |  |  |  |  |  |  |  |  |  |  |
 | S6 |  |  |  |  |  |  |  |  |  |  |  |

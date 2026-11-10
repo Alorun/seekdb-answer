@@ -7,6 +7,7 @@
 #include <immintrin.h>
 #include <queue>
 #include <set>
+#include <thread>
 #include <sstream>
 #include <unordered_set>
 
@@ -224,6 +225,50 @@ __attribute__((target("avx2,fma"))) double l2Avx2Sq(const float* a,
   return l2Avx2DoubleSq(a, b, n);
 }
 
+__attribute__((target("avx2,fma"))) double l2DotDistanceSq(
+    const float* a, const float* b, size_t n, double na, double nb) {
+  __m256 acc = _mm256_setzero_ps();
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    __m256 va = _mm256_loadu_ps(a + i);
+    __m256 vb = _mm256_loadu_ps(b + i);
+    acc = _mm256_fmadd_ps(va, vb, acc);
+  }
+  alignas(32) float tmp[8];
+  _mm256_store_ps(tmp, acc);
+  float dot = tmp[0] + tmp[1] + tmp[2] + tmp[3] + tmp[4] + tmp[5] +
+              tmp[6] + tmp[7];
+  for (; i < n; ++i) dot += a[i] * b[i];
+  if (!std::isfinite(dot)) return std::numeric_limits<double>::quiet_NaN();
+  double d = na + nb - 2.0 * static_cast<double>(dot);
+  return d < 0.0 ? 0.0 : d;
+}
+
+__attribute__((target("avx2"))) int quantDistanceSq(const int8_t* a,
+                                                     const int8_t* b, size_t n) {
+  __m256i acc = _mm256_setzero_si256();
+  size_t i = 0;
+  for (; i + 16 <= n; i += 16) {
+    __m128i a8 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i));
+    __m128i b8 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i));
+    // Widen before subtracting: a quantized difference can be 254, which
+    // overflows int8.
+    __m256i a16 = _mm256_cvtepi8_epi16(a8);
+    __m256i b16 = _mm256_cvtepi8_epi16(b8);
+    __m256i d = _mm256_sub_epi16(a16, b16);
+    acc = _mm256_add_epi32(acc, _mm256_madd_epi16(d, d));
+  }
+  alignas(32) int tmp[8];
+  _mm256_store_si256(reinterpret_cast<__m256i*>(tmp), acc);
+  int sum = 0;
+  for (int x : tmp) sum += x;
+  for (; i < n; ++i) {
+    int d = static_cast<int>(a[i]) - static_cast<int>(b[i]);
+    sum += d * d;
+  }
+  return sum;
+}
+
 using L2SqFn = double (*)(const float*, const float*, size_t);
 L2SqFn pickL2Sq() {
   if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma")) {
@@ -279,6 +324,135 @@ void ensureVectorCache(Table& table, int vec_col) {
     return;
   }
   rebuildVectorCache(table, vec_col);
+}
+
+void rebuildFilterCache(Table& table, int col) {
+  FilterCache c;
+  c.version = table.row_version;
+  c.col = col;
+  c.valid = true;
+  const bool is_str = table.schema.columns[col].type == ColumnType::Varchar;
+  for (const auto& [pk, row] : table.rows) {
+    const Value& v = row.values[col];
+    if (is_str) {
+      if (v.type == Value::Type::Str) c.str[v.s].push_back(pk);
+    } else if (v.type == Value::Type::Int) {
+      c.num[v.i].push_back(pk);
+    }
+  }
+  table.filter_caches[col] = std::move(c);
+}
+
+FilterCache* ensureFilterCache(Table& table, int col) {
+  auto it = table.filter_caches.find(col);
+  if (it != table.filter_caches.end() && it->second.valid &&
+      it->second.version == table.row_version && it->second.col == col) {
+    return &it->second;
+  }
+  rebuildFilterCache(table, col);
+  return &table.filter_caches[col];
+}
+
+void buildIvf(Table& table, int col) {
+  const size_t n = table.rows.size();
+  if (n < 2000) return;
+  IvfCache c;
+  c.col = col;
+  c.dim = table.schema.columns[col].length;
+  c.nlist = std::max<size_t>(8, std::min<size_t>(256, static_cast<size_t>(std::sqrt(static_cast<double>(n)))));
+  c.nprobe = std::min<size_t>(c.nlist, 16);
+  ensureVectorCache(table, col);
+  const VectorCache& vc = table.vector_cache;
+  if (!vc.valid || vc.dim != c.dim) return;
+  c.centroids.assign(c.nlist, std::vector<float>(c.dim, 0.0f));
+  // Deterministic, spread-out initialization from the PK-ordered rows.
+  size_t k = 0;
+  for (size_t i = 0; i < vc.pks.size() && k < c.nlist; ++i) {
+    std::copy(vc.vec.begin() + i * c.dim,
+              vc.vec.begin() + (i + 1) * c.dim, c.centroids[k].begin());
+    ++k;
+  }
+  if (k < c.nlist) return;
+  std::vector<size_t> assign(n, 0);
+  std::vector<size_t> counts(c.nlist, 0);
+  std::vector<std::vector<float>> sums(c.nlist, std::vector<float>(c.dim, 0.0f));
+  for (int iter = 0; iter < 5; ++iter) {
+    for (auto& s : sums) std::fill(s.begin(), s.end(), 0.0f);
+    std::fill(counts.begin(), counts.end(), 0);
+    for (size_t idx = 0; idx < vc.pks.size(); ++idx) {
+      const float* v = vc.vec.data() + idx * c.dim;
+      size_t best = 0;
+      double bestd = std::numeric_limits<double>::infinity();
+      for (size_t q = 0; q < c.nlist; ++q) {
+        double d = l2DistanceSq(v, c.centroids[q].data(), c.dim);
+        if (d < bestd) { bestd = d; best = q; }
+      }
+      assign[idx] = best;
+      ++counts[best];
+      for (size_t j = 0; j < c.dim; ++j) sums[best][j] += v[j];
+    }
+    for (size_t q = 0; q < c.nlist; ++q) {
+      if (counts[q] == 0) continue;
+      for (size_t j = 0; j < c.dim; ++j) {
+        c.centroids[q][j] = sums[q][j] / static_cast<float>(counts[q]);
+      }
+    }
+  }
+  c.lists.assign(c.nlist, {});
+  for (size_t idx = 0; idx < vc.pks.size(); ++idx) {
+    c.lists[assign[idx]].push_back(idx);
+  }
+  c.version = table.row_version;
+  c.valid = true;
+  table.ivf_caches[col] = std::move(c);
+}
+
+IvfCache* ensureIvf(Table& table, int col) {
+  auto it = table.ivf_caches.find(col);
+  if (it != table.ivf_caches.end() && it->second.valid &&
+      it->second.version == table.row_version && it->second.col == col) {
+    return &it->second;
+  }
+  buildIvf(table, col);
+  it = table.ivf_caches.find(col);
+  return it == table.ivf_caches.end() ? nullptr : &it->second;
+}
+
+void buildQuant(Table& table, int col) {
+  ensureVectorCache(table, col);
+  const VectorCache& vc = table.vector_cache;
+  if (!vc.valid || vc.pks.empty()) return;
+  QuantCache c;
+  c.col = col;
+  c.dim = vc.dim;
+  c.version = table.row_version;
+  float lo = std::numeric_limits<float>::max();
+  float hi = -std::numeric_limits<float>::max();
+  for (float v : vc.vec) {
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  if (lo == std::numeric_limits<float>::max() || hi <= lo) return;
+  c.minv = lo;
+  c.scale = 254.0f / (hi - lo);
+  c.q.resize(vc.vec.size());
+  for (size_t i = 0; i < vc.vec.size(); ++i) {
+    int q = static_cast<int>(std::lround((vc.vec[i] - lo) * c.scale)) - 127;
+    c.q[i] = static_cast<int8_t>(std::max(-127, std::min(127, q)));
+  }
+  c.valid = true;
+  table.quant_caches[col] = std::move(c);
+}
+
+QuantCache* ensureQuant(Table& table, int col) {
+  auto it = table.quant_caches.find(col);
+  if (it != table.quant_caches.end() && it->second.valid &&
+      it->second.version == table.row_version && it->second.col == col) {
+    return &it->second;
+  }
+  buildQuant(table, col);
+  it = table.quant_caches.find(col);
+  return it == table.quant_caches.end() ? nullptr : &it->second;
 }
 
 }  // namespace
@@ -1070,6 +1244,9 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   }
   const bool distance_topk = !limit_zero && stmt.has_limit && orders.size() == 1 &&
                              orders[0].is_distance && !orders[0].desc;
+  // ANN is exact fallback: the tested IVF/quantized candidates did not beat
+  // the optimized exact scan with acceptable margin on uniform 10k x 128.
+  const bool ann_quant = false;
   const bool order_topk = !limit_zero && stmt.has_limit && !orders.empty() &&
                           !distance_topk;
   const bool early_limit = !limit_zero && stmt.has_limit && orders.empty();
@@ -1197,60 +1374,187 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
 
   if (!limit_zero) {
     bool cache_scanned = false;
-    if (distance_topk && !table->disk_mode) {
-      ensureVectorCache(*table, orders[0].col);
-      const VectorCache& cache = table->vector_cache;
-      if (cache.valid && cache.dim == orders[0].query.size()) {
-        const float* q = orders[0].query.data();
-        Status m;
-        for (size_t i = 0; i < cache.pks.size(); ++i) {
-          const Row& row = *cache.rows[i];
-          if (!conds.empty() && !matchConditions(row, conds, m)) {
-            if (!m.ok()) return m;
-            continue;
+    if (ann_quant) {
+      QuantCache* qc = ensureQuant(*table, orders[0].col);
+      if (qc != nullptr && qc->valid && qc->dim == orders[0].query.size() &&
+          qc->q.size() == table->vector_cache.pks.size() * qc->dim) {
+        std::vector<int8_t> qv(qc->dim);
+        for (size_t j = 0; j < qc->dim; ++j) {
+          int q = static_cast<int>(
+                      std::lround((orders[0].query[j] - qc->minv) * qc->scale)) -
+                  127;
+          qv[j] = static_cast<int8_t>(std::max(-127, std::min(127, q)));
+        }
+        const size_t ncand = std::min<size_t>(256, table->vector_cache.pks.size());
+        using Cand = std::pair<int, size_t>;  // larger approximate distance is worse
+        std::priority_queue<Cand> heap;
+        for (size_t vi = 0; vi < table->vector_cache.pks.size(); ++vi) {
+          const int8_t* rowq = qc->q.data() + vi * qc->dim;
+          const int d = quantDistanceSq(rowq, qv.data(), qc->dim);
+          if (heap.size() < ncand) {
+            heap.push({d, vi});
+          } else if (d < heap.top().first) {
+            heap.pop();
+            heap.push({d, vi});
           }
+        }
+        const VectorCache& vc = table->vector_cache;
+        while (!heap.empty()) {
+          size_t vi = heap.top().second;
+          heap.pop();
+          const Row& row = *vc.rows[vi];
           const double d = use_avx2
-                               ? l2Avx2Sq(cache.vec.data() + i * cache.dim, q,
-                                          cache.dim)
-                               : l2DistanceSq(cache.vec.data() + i * cache.dim,
-                                              q, cache.dim);
-          consider_hit(cache.pks[i], row, d);
+                               ? l2Avx2Sq(vc.vec.data() + vi * vc.dim,
+                                          orders[0].query.data(), vc.dim)
+                               : l2DistanceSq(vc.vec.data() + vi * vc.dim,
+                                              orders[0].query.data(), vc.dim);
+          consider_hit(vc.pks[vi], row, d);
         }
         cache_scanned = true;
       }
     }
-    if (cache_scanned) {
-      // already scanned through the contiguous cache
-    } else if (table->disk_mode) {
-      Status row_status = Status::Ok();
-      Status scan = db_.wal().forEachRecord([&](const WalRecordView& v) {
-        if (v.type != static_cast<uint8_t>(WalType::Insert) &&
-            v.type != static_cast<uint8_t>(WalType::Update)) {
-          return true;
+    if (!cache_scanned && distance_topk && !table->disk_mode) {
+      static const std::vector<int64_t> kNoMatches;
+      const std::vector<int64_t>* filtered = nullptr;
+      for (const auto& cond : conds) {
+        if (cond.op != "=") continue;
+        FilterCache* fc = ensureFilterCache(*table, cond.col);
+        const std::vector<int64_t>* list = nullptr;
+        if (cond.literal.type == Value::Type::Str) {
+          auto it = fc->str.find(cond.literal.s);
+          if (it != fc->str.end()) list = &it->second;
+        } else if (cond.literal.type == Value::Type::Int) {
+          auto it = fc->num.find(cond.literal.i);
+          if (it != fc->num.end()) list = &it->second;
         }
-        if (v.table != table->schema.table_id) return true;
-        auto it = table->locations.find(static_cast<int64_t>(v.pk));
-        if (it == table->locations.end() || it->second != v.offset) return true;
-        Row row;
-        std::string err;
-        if (!decodeRow(schema, v.payload, v.payload_size, row, err)) {
-          row_status = Status::Error(Err::kIo, "corrupt row in WAL: " + err);
-          return false;
+        if (list == nullptr) list = &kNoMatches;
+        if (filtered == nullptr || list->size() < filtered->size()) {
+          filtered = list;
         }
-        Status s = process(static_cast<int64_t>(v.pk), row);
-        if (!s.ok()) {
-          row_status = s;
-          return false;
+      }
+      if (filtered != nullptr) {
+        const float* q = orders[0].query.data();
+        for (int64_t pk : *filtered) {
+          auto it = table->rows.find(pk);
+          if (it == table->rows.end()) continue;
+          const Row& row = it->second;
+          Status m;
+          if (!conds.empty() && !matchConditions(row, conds, m)) {
+            if (!m.ok()) return m;
+            continue;
+          }
+          const auto& vv = row.values[orders[0].col].v;
+          const size_t dim = std::min(vv.size(), orders[0].query.size());
+          const double d = use_avx2 ? l2Avx2Sq(vv.data(), q, dim)
+                                    : l2DistanceSq(vv, orders[0].query);
+          consider_hit(pk, row, d);
         }
-        return !stop_scan;
-      }, nullptr, false);
-      if (!scan.ok()) return scan;
-      if (!row_status.ok()) return row_status;
-    } else {
-      for (const auto& [pk, row] : table->rows) {
-        Status s = process(pk, row);
-        if (!s.ok()) return s;
-        if (stop_scan) break;
+        cache_scanned = true;
+      }
+      if (!cache_scanned) {
+        ensureVectorCache(*table, orders[0].col);
+        const VectorCache& cache = table->vector_cache;
+        if (cache.valid && cache.dim == orders[0].query.size()) {
+          const float* q = orders[0].query.data();
+          const size_t n = cache.pks.size();
+          if (conds.empty() && n >= 2000 && k > 0 &&
+              std::thread::hardware_concurrency() >= 2) {
+            auto scan = [&](size_t begin, size_t end,
+                            std::priority_queue<Hit, std::vector<Hit>,
+                                                decltype(worse)>& local) {
+              for (size_t i = begin; i < end; ++i) {
+                const double d = use_avx2
+                                     ? l2Avx2Sq(cache.vec.data() + i * cache.dim,
+                                                q, cache.dim)
+                                     : l2DistanceSq(cache.vec.data() + i * cache.dim,
+                                                    q, cache.dim);
+                if (local.size() < k) {
+                  Hit h;
+                  h.d = d;
+                  h.pk = cache.pks[i];
+                  h.row = *cache.rows[i];
+                  local.push(std::move(h));
+                } else {
+                  Hit probe;
+                  probe.d = d;
+                  probe.pk = cache.pks[i];
+                  if (worse(probe, local.top())) {
+                    Hit h;
+                    h.d = d;
+                    h.pk = cache.pks[i];
+                    h.row = *cache.rows[i];
+                    local.pop();
+                    local.push(std::move(h));
+                  }
+                }
+              }
+            };
+            std::priority_queue<Hit, std::vector<Hit>, decltype(worse)> left(worse), right(worse);
+            const size_t mid = n / 2;
+            std::thread t1(scan, 0, mid, std::ref(left));
+            std::thread t2(scan, mid, n, std::ref(right));
+            t1.join();
+            t2.join();
+            while (!left.empty()) {
+              consider_hit(left.top().pk, left.top().row, left.top().d);
+              left.pop();
+            }
+            while (!right.empty()) {
+              consider_hit(right.top().pk, right.top().row, right.top().d);
+              right.pop();
+            }
+          } else {
+            Status m;
+            for (size_t i = 0; i < n; ++i) {
+              const Row& row = *cache.rows[i];
+              if (!conds.empty() && !matchConditions(row, conds, m)) {
+                if (!m.ok()) return m;
+                continue;
+              }
+              const double d = use_avx2
+                                   ? l2Avx2Sq(cache.vec.data() + i * cache.dim, q,
+                                              cache.dim)
+                                   : l2DistanceSq(cache.vec.data() + i * cache.dim,
+                                                  q, cache.dim);
+              consider_hit(cache.pks[i], row, d);
+            }
+          }
+          cache_scanned = true;
+        }
+      }
+    }
+    if (!cache_scanned) {
+      if (table->disk_mode) {
+        Status row_status = Status::Ok();
+        Status scan = db_.wal().forEachRecord([&](const WalRecordView& v) {
+          if (v.type != static_cast<uint8_t>(WalType::Insert) &&
+              v.type != static_cast<uint8_t>(WalType::Update)) {
+            return true;
+          }
+          if (v.table != table->schema.table_id) return true;
+          auto it = table->locations.find(static_cast<int64_t>(v.pk));
+          if (it == table->locations.end() || it->second != v.offset) return true;
+          Row row;
+          std::string err;
+          if (!decodeRow(schema, v.payload, v.payload_size, row, err)) {
+            row_status = Status::Error(Err::kIo, "corrupt row in WAL: " + err);
+            return false;
+          }
+          Status s = process(static_cast<int64_t>(v.pk), row);
+          if (!s.ok()) {
+            row_status = s;
+            return false;
+          }
+          return !stop_scan;
+        }, nullptr, false);
+        if (!scan.ok()) return scan;
+        if (!row_status.ok()) return row_status;
+      } else {
+        for (const auto& [pk, row] : table->rows) {
+          Status s = process(pk, row);
+          if (!s.ok()) return s;
+          if (stop_scan) break;
+        }
       }
     }
   }
