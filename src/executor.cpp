@@ -264,6 +264,59 @@ __attribute__((target("avx2"))) int quantDistanceSq(const uint8_t* a,
   return sum;
 }
 
+struct RawHit {
+  double d = 0;
+  int64_t pk = 0;
+  size_t vi = 0;
+};
+
+struct RawWorse {
+  bool operator()(const RawHit& a, const RawHit& b) const {
+    if (a.d != b.d) return a.d < b.d;
+    return a.pk < b.pk;
+  }
+};
+
+__attribute__((target("avx2,fma"))) void scanCacheAvx2(
+    const float* vec, const int64_t* pks, const float* rows, size_t n,
+    size_t dim, const float* q, size_t k, std::vector<RawHit>& out) {
+  std::priority_queue<RawHit, std::vector<RawHit>, RawWorse> heap;
+  for (size_t vi = 0; vi < n; ++vi) {
+    const float* a = vec + vi * dim;
+    __m256 acc = _mm256_setzero_ps();
+    size_t i = 0;
+    for (; i + 8 <= dim; i += 8) {
+      __m256 va = _mm256_loadu_ps(a + i);
+      __m256 vb = _mm256_loadu_ps(q + i);
+      __m256 d = _mm256_sub_ps(va, vb);
+      acc = _mm256_fmadd_ps(d, d, acc);
+    }
+    alignas(32) float tmp[8];
+    _mm256_store_ps(tmp, acc);
+    float sum = tmp[0] + tmp[1] + tmp[2] + tmp[3] + tmp[4] + tmp[5] +
+                tmp[6] + tmp[7];
+    for (; i < dim; ++i) {
+      float d = a[i] - q[i];
+      sum += d * d;
+    }
+    double ds = std::isfinite(sum) ? static_cast<double>(sum)
+                                   : l2Avx2DoubleSq(a, q, dim);
+    RawHit h{ds, pks[vi], vi};
+    if (heap.size() < k) {
+      heap.push(h);
+    } else if (RawWorse{}(h, heap.top())) {
+      heap.pop();
+      heap.push(h);
+    }
+  }
+  out.reserve(heap.size());
+  while (!heap.empty()) {
+    out.push_back(heap.top());
+    heap.pop();
+  }
+  (void)rows;
+}
+
 using L2SqFn = double (*)(const float*, const float*, size_t);
 L2SqFn pickL2Sq() {
   if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma")) {
@@ -1451,51 +1504,26 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
         if (cache.valid && cache.dim == orders[0].query.size()) {
           const float* q = orders[0].query.data();
           const size_t n = cache.pks.size();
-          if (conds.empty() && n >= 2000 && k > 0 &&
+          if (conds.empty() && n >= 2000 && k > 0 && use_avx2 &&
               std::thread::hardware_concurrency() >= 2) {
-            auto scan = [&](size_t begin, size_t end,
-                            std::priority_queue<Hit, std::vector<Hit>,
-                                                decltype(worse)>& local) {
-              for (size_t i = begin; i < end; ++i) {
-                const double d = use_avx2
-                                     ? l2Avx2Sq(cache.vec.data() + i * cache.dim,
-                                                q, cache.dim)
-                                     : l2DistanceSq(cache.vec.data() + i * cache.dim,
-                                                    q, cache.dim);
-                if (local.size() < k) {
-                  Hit h;
-                  h.d = d;
-                  h.pk = cache.pks[i];
-                  h.row = *cache.rows[i];
-                  local.push(std::move(h));
-                } else {
-                  Hit probe;
-                  probe.d = d;
-                  probe.pk = cache.pks[i];
-                  if (worse(probe, local.top())) {
-                    Hit h;
-                    h.d = d;
-                    h.pk = cache.pks[i];
-                    h.row = *cache.rows[i];
-                    local.pop();
-                    local.push(std::move(h));
-                  }
-                }
-              }
-            };
-            std::priority_queue<Hit, std::vector<Hit>, decltype(worse)> left(worse), right(worse);
             const size_t mid = n / 2;
-            std::thread t1(scan, 0, mid, std::ref(left));
-            std::thread t2(scan, mid, n, std::ref(right));
+            std::vector<RawHit> left, right;
+            std::thread t1([&] {
+              scanCacheAvx2(cache.vec.data(), cache.pks.data(),
+                            nullptr, mid, cache.dim, q, k, left);
+            });
+            std::thread t2([&] {
+              scanCacheAvx2(cache.vec.data() + mid * cache.dim,
+                            cache.pks.data() + mid, nullptr, n - mid,
+                            cache.dim, q, k, right);
+            });
             t1.join();
             t2.join();
-            while (!left.empty()) {
-              consider_hit(left.top().pk, left.top().row, left.top().d);
-              left.pop();
+            for (const RawHit& h : left) {
+              consider_hit(h.pk, *cache.rows[h.vi], h.d);
             }
-            while (!right.empty()) {
-              consider_hit(right.top().pk, right.top().row, right.top().d);
-              right.pop();
+            for (const RawHit& h : right) {
+              consider_hit(h.pk, *cache.rows[h.vi + mid], h.d);
             }
           } else {
             Status m;
