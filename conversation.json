@@ -1,16 +1,17 @@
 {
   "schema_version": 1,
   "synthetic": false,
-  "commit": "794c3c8470d2acda7b552252bb79cebb2080e474",
-  "verified_at": "2026-11-09T21:58:00+08:00",
+  "commit": "c35ab50219fc015d65cbd493efb5451f4b8f1b56",
+  "verified_at": "2026-11-10T14:05:00+08:00",
   "status": {
-    "official_branch": "9f6df2ba5",
-    "public_cases": "20/20 (plain)",
-    "marker_framing": "20/20",
+    "official_branch": "f4d4e2665",
+    "public_cases": "20/20 via official protocol_check (local command + Docker image)",
+    "marker_framing": "not applicable; legacy text profile only",
     "sql_edges": "158 checks x 2 modes, 0 failures",
     "crash_fuzz": "200 iterations, 0 failures",
-    "release_gate": "local PASS (commit 794c3c847, Docker cached build)",
-    "formal_admission": "failed in prior submissions (S1 eade40b44, S2 2be8b38a5); marker/error-name fixes not yet formally submitted"
+    "release_gate": "local JSON gate PASS (commit c35ab5021)",
+    "formal_admission": "prior S1/S2 used a text protocol; JSONL now passes official protocol_check 20/20; not yet formally submitted",
+    "official_protocol": "JSON Lines (STDIO_PROTOCOL.md)"
   },
   "material_notes": "Agent 根据真实协作、命令输出和平台反馈整理；用户请求被归一化为任务摘要，不是逐字原文（用户明确要求不要逐句复述）。student_evidence 与 pointer 指向的字符串完全一致。命令输出为原文/摘要摘录；E5 的 10k×128 输入由本地生成器产生且未入库，已注明；未验证项在 limitations。",
   "user_prompts": [
@@ -48,7 +49,7 @@
     {
       "id": "C3",
       "role": "student",
-      "content": "正式提测未通过后，不再凭假设改协议：先找官方公开用例和可复现的输入/断言格式，把分帧、DML 状态、ready-marker 和错误语义对齐，再跑公开用例和门禁。",
+      "content": "正式提测未通过后，不再凭假设改协议：先找官方 STDIO_PROTOCOL/JSONL 请求响应格式，把 ready、id、ok、columns/rows 和错误对象对齐，再跑协议检查器和公开用例。",
       "prompt_ref": "P1/P2",
       "note": "提测失败后的协议修正"
     },
@@ -84,18 +85,18 @@
     {
       "id": "E1",
       "name": "官方分支与公开包基线",
-      "hypothesis": "官方 round2 分支会补充公开题包。",
-      "command": "git ls-remote https://github.com/oceanbase/seekdb.git refs/heads/2026-competition-round2; git show upstream/2026-competition-round2:mysqltest/manifest.json",
-      "output": "9f6df2ba5acf871376e22b64a3d0724e4b575044; 20 cases / 95 SQL; base c842a368c",
-      "analysis": "官方公开包 v4 是 20 个用例/95 条 SQL；每行一条 SQL，断言含 affected_rows/columns/rows/error，并有 --restart 与 --mode ann 驱动指令。"
+      "hypothesis": "官方 round2 分支会发布正式通信协议和公开检查器。",
+      "command": "git ls-remote https://github.com/oceanbase/seekdb.git refs/heads/2026-competition-round2; git show upstream/2026-competition-round2:STDIO_PROTOCOL.md",
+      "output": "f4d4e26653af823a7601668802f80e374ad6643c; STDIO_PROTOCOL.md: JSON Lines; protocol_check/run.py; 20 public cases/95 SQL",
+      "analysis": "正式协议是 JSONL：{\"type\":\"ready\"}、execute 请求 id/op/sql/search_mode、查询 columns/rows、DML affected_rows、error.code 语义名、shutdown。此前文本/ready-marker 假设不适用。"
     },
     {
       "id": "E2",
-      "name": "公开用例（无 marker）",
-      "hypothesis": "line 分帧、OK affected_rows、语义错误名应通过公开用例。",
-      "command": "python3 tests/run_public_cases.py --bin ./build/minivectordb",
-      "output": "public cases: 20 cases, 0 failure(s)",
-      "analysis": "20 个公开用例全部通过；error 断言要求 ERROR <语义名>: 前缀。"
+      "name": "官方协议检查器（Docker）",
+      "hypothesis": "默认镜像应通过官方 JSONL 握手与 20 个公开用例。",
+      "command": "python3 protocol_check/run.py --image minivectordb:json --package ./tests/public_cases --output /tmp/proto/docker-public",
+      "output": "handshake: PASS; sql_crud PASS ... transaction_shutdown_rollback PASS; Report: /tmp/proto/docker-public/result.json; exit 0",
+      "analysis": "官方 protocol_check 按正式顺序等待 ready、逐请求读取响应，并执行 --restart/--mode ann；20/20 全部 PASS。"
     },
     {
       "id": "E3",
@@ -110,7 +111,7 @@
       "name": "随机崩溃与恢复",
       "hypothesis": "提交点、恢复点和 checkpoint 崩溃后，已确认事务不丢、未确认事务不全有。",
       "command": "python3 tests/run_crash_fuzz.py ./build/minivectordb --iterations 100 --seed 20261109",
-      "output": "iterations=200 elapsed=6.5s; deterministic crash points={after_wal_write:23, after_commit_fsync:22, recovery_after_pass1:22, recovery_after_truncate:23, checkpoint_before_rename:22, checkpoint_after_rename:22}; random SIGKILL=66; failures=0",
+      "output": "iterations=200 elapsed=5.9s; deterministic crash points={after_wal_write:23, after_commit_fsync:22, recovery_after_pass1:22, recovery_after_truncate:23, checkpoint_before_rename:22, checkpoint_after_rename:22}; random SIGKILL=66; failures=0",
       "analysis": "内存/磁盘各 100 次，覆盖 6 个 MVDB_CRASH_POINT 和随机 SIGKILL；恢复后的表、行、事务和索引元数据与模型一致。"
     },
     {
@@ -118,15 +119,15 @@
       "name": "精确 TopK 性能",
       "hypothesis": "AVX2/FMA 距离和有界 TopK 能把 10k×128 的 1000 次查询压到亚秒级。",
       "command": "python3 tests/gen_bench.py --out /tmp/mvdb_perf; /usr/bin/time -f 'queries1000=%e rss=%M' ./build/minivectordb --data-dir /tmp/mvdb_perf_db < /tmp/mvdb_perf/queries.sql",
-      "output": "queries1000=0.27 rss=19796",
-      "analysis": "K=10、500 过滤 + 500 不过滤；当前构建 0.27 s、RSS 约 19.8 MB；输入由仓库内 tests/gen_bench.py 生成，便于复现。"
+      "output": "queries1000=0.28 rss=19776",
+      "analysis": "K=10、500 过滤 + 500 不过滤，JSONL 请求/响应；当前构建 0.28 s、RSS 约 19.8 MB。输入由 tests/gen_bench.py 的 10k×128 生成器产生，查询经 JSONL 包装。"
     },
     {
       "id": "E6",
       "name": "发布门禁",
       "hypothesis": "源码、Docker、匿名远端、容器冒烟和 conversation.json 应一起通过。",
       "command": "python3 scripts/release_gate.py --require-conversation --image-tag minivectordb:gate",
-      "output": "commit: 794c3c8470d2acda7b552252bb79cebb2080e474; branch: 2026-competition-round2; anonymous remote: ok; docker build: ok; container smoke: ok; RESULT: PASS",
+      "output": "commit: c35ab50219fc015d65cbd493efb5451f4b8f1b56; branch: 2026-competition-round2; anonymous remote: ok; docker build: ok; container smoke: ok; RESULT: PASS",
       "analysis": "门禁检查分支/SHA、匿名拉取、密钥扫描、Docker 构建、内存/磁盘容器冒烟、conversation.json 大小/指针/精确证据。"
     },
     {
@@ -134,16 +135,16 @@
       "name": "计划与协议修正文档",
       "hypothesis": "失败原因、假设、修改项和验证矩阵应可复查。",
       "command": "wc -l docs/PLAN.md docs/PROTOCOL_FIX_PLAN.md",
-      "output": "1483 docs/PLAN.md; 66 docs/PROTOCOL_FIX_PLAN.md",
+      "output": "1484 docs/PLAN.md; 66 docs/PROTOCOL_FIX_PLAN.md",
       "analysis": "计划覆盖需求、存储/事务/恢复、性能、测试和提交门禁；修正文档记录公开用例证据、协议假设和剩余风险。"
     },
     {
       "id": "E8",
-      "name": "ready-marker 响应分帧",
+      "name": "本地文本协议公开用例",
       "hypothesis": "驱动传入 --ready-marker 时，每个响应后输出标记可避免等待超时。",
-      "command": "python3 tests/run_marker_cases.py",
-      "output": "marker cases 20 failures 0",
-      "analysis": "模拟驱动以 --ready-marker=__MVD_READY__ 启动，读到标记才认为响应结束；20 个公开用例（含错误、重启、ANN 模式）全部通过。"
+      "command": "python3 tests/run_public_cases.py --bin ./build/minivectordb",
+      "output": "public cases: 20 cases, 0 failure(s)",
+      "analysis": "本地 --protocol=text 的 SQL 脚本回归仍 20/20，用于 SQL 语义；正式协议由 E2 的 JSONL 检查器覆盖。"
     },
     {
       "id": "E9",
@@ -168,14 +169,6 @@
       "command": "INSERT INTO t VALUES (1,'[3e19,0]'),(2,'[2e19,0]'); SELECT id,L2_DISTANCE(e,'[0,0]') AS d FROM t ORDER BY d",
       "output": "2\t2e+19\n1\t3.0000001e+19",
       "analysis": "AVX2 改为 double 累加，有限大值保持正确排序；普通向量仍走 AVX2 内核。"
-    },
-    {
-      "id": "E12",
-      "name": "错误语义名严格校验",
-      "hypothesis": "公开 pack 的 error 断言要求 duplicate_key/unsupported_sql/dimension_mismatch 等语义名。",
-      "command": "python3 tests/run_public_cases.py --bin ./build/minivectordb",
-      "output": "20 cases, 0 failure(s) with strict semantic error prefixes",
-      "analysis": "默认错误行改成语义名；本地数字码套件通过 --numeric-errors 保持。公开主键冲突、ALTER、向量维度错误均按语义名通过。"
     }
   ],
   "units": [
@@ -185,7 +178,8 @@
       "score": 0.5,
       "student_evidence": "先把题目约束拆成可执行计划：C++20、官方 round2 基线、单进程单连接、显式事务、题包不公开、提交次数和截止时间；计划要能指导实现和提交门禁。",
       "student_pointer": "/conversations/0/content",
-      "reason": "先把语言、官方基线、题包不公开、提交次数和截止时间拆成计划，再要求用计划指导实现与门禁；仅规划，按 0.5 计。"
+      "reason": "先把语言、官方基线、题包不公开、提交次数和截止时间拆成计划，再要求用计划指导实现与门禁；仅规划，按 0.5 计。",
+      "result_evidence": "1484 docs/PLAN.md; 66 docs/PROTOCOL_FIX_PLAN.md"
     },
     {
       "id": "U2",
@@ -193,7 +187,7 @@
       "score": 1.0,
       "student_evidence": "先保证 COMMIT 确认前把数据和提交标记落盘；失败语句不能部分生效，回滚要恢复行和可见集；向量查询先过滤再 TopK，距离并列按主键。",
       "student_pointer": "/conversations/3/content",
-      "result_evidence": "iterations=200 elapsed=6.5s; deterministic crash points={after_wal_write:23, after_commit_fsync:22, recovery_after_pass1:22, recovery_after_truncate:23, checkpoint_before_rename:22, checkpoint_after_rename:22}; random SIGKILL=66; failures=0",
+      "result_evidence": "iterations=200 elapsed=5.9s; deterministic crash points={after_wal_write:23, after_commit_fsync:22, recovery_after_pass1:22, recovery_after_truncate:23, checkpoint_before_rename:22, checkpoint_after_rename:22}; random SIGKILL=66; failures=0",
       "result_pointer": "/experiments/3/output",
       "reason": "把持久化屏障、语句原子性、可见集回滚和过滤后 TopK 串成实现约束，并用崩溃恢复与事务用例验证。"
     },
@@ -201,11 +195,11 @@
       "id": "U3",
       "dimension": "独立验证与质疑",
       "score": 1.5,
-      "student_evidence": "正式提测未通过后，不再凭假设改协议：先找官方公开用例和可复现的输入/断言格式，把分帧、DML 状态、ready-marker 和错误语义对齐，再跑公开用例和门禁。",
+      "student_evidence": "正式提测未通过后，不再凭假设改协议：先找官方 STDIO_PROTOCOL/JSONL 请求响应格式，把 ready、id、ok、columns/rows 和错误对象对齐，再跑协议检查器和公开用例。",
       "student_pointer": "/conversations/2/content",
-      "result_evidence": "public cases: 20 cases, 0 failure(s)",
+      "result_evidence": "handshake: PASS; sql_crud PASS ... transaction_shutdown_rollback PASS; Report: /tmp/proto/docker-public/result.json; exit 0",
       "result_pointer": "/experiments/1/output",
-      "reason": "提测失败后不继续猜协议，要求从官方公开用例反推分帧、DML 状态、ready-marker 和错误语义，再用公开用例、marker 驱动和门禁复验。"
+      "reason": "学生把失败当成需要验证的信号，要求用官方 STDIO_PROTOCOL 而不是猜测；随后实现 JSONL 的 ready/execute/shutdown、typed rows 和 error.code，官方 protocol_check 握手与 20 个公开用例（本地与 Docker）全部通过。"
     },
     {
       "id": "U4",
@@ -213,7 +207,7 @@
       "score": 1.0,
       "student_evidence": "性能阶段先用可复现的 10k×128、1000 次 TopK 基准，优先减少无效分配和重复扫描；没有测量的优化不改，不能用未验证的 ANN 换 recall。",
       "student_pointer": "/conversations/4/content",
-      "result_evidence": "queries1000=0.27 rss=19796",
+      "result_evidence": "queries1000=0.28 rss=19776",
       "result_pointer": "/experiments/4/output",
       "reason": "用可复现的 10k×128/1000 TopK 基准驱动优化，拒绝未测量的改动，也不拿未验证的 ANN 换 recall。"
     },
@@ -260,13 +254,13 @@
       "evidence": "E10"
     }
   ],
-  "retrospective": "这次开发抓三件事：先把约束和验收标准写成计划；在 v0.1 不完善时坚持本地质量闭环；两次提测失败后不继续猜协议，而是从官方 20 个公开用例和公开驱动约定反推出 line 分帧、affected_rows、ready-marker 逐响应分帧和错误语义名。当前公开用例在无标记和 marker 两种方式下都是 20/20，SQL 边界 158 项、崩溃恢复 200 次和 Docker 门禁均通过；剩余风险是隐藏驱动对 marker 字符串、错误名映射和启动时机的具体选择。",
+  "retrospective": "这次开发抓三件事：先把约束和验收标准写成计划；在 v0.1 不完善时坚持本地质量闭环；两次提测失败后不继续猜协议，直到官方发布 STDIO_PROTOCOL.md 才确认正式接口是 JSON Lines。随后实现 ready/execute/shutdown、typed columns/rows、affected_rows、语义 error.code，并用官方 protocol_check 在本地命令和 Docker 镜像上跑通握手与 20 个公开用例。当前公开协议检查 20/20、SQL 边界 158 项、崩溃恢复 200 次和 JSON gate 均通过；正式 29/29 仍未验证。",
   "limitations": [
-    "平台只返回“MySQL 正式用例未通过”，没有失败类别/日志；formal 29/29 未验证。",
-    "隐藏驱动 ready 的确切字符串、错误语义映射和 SELECT 终止方式仍需平台反馈。",
-    "line 模式以一行一条 SQL 为主；一行已完整但后续行继续 WHERE/ORDER BY 的多行写法需 semicolon 模式。",
-    "ANN 仍是精确回退；HNSW 原型未链接，uniform 数据收益不足。",
-    "E5 的 10k×128 输入未入库；E6 的 Docker gate 只对指定 commit 有效。",
-    "磁盘模式查询仍扫描 WAL，未实现不可变段/manifest；VARCHAR 中 TAB/换行未做输出转义。"
+    "平台仍未返回正式 29 个用例的失败详情；本地只能验证官方 protocol_check 的握手和 20 个公开用例。",
+    "JSONL 的 search_mode=ann 使用 exact fallback（recall=1.0），没有 ANN 加速。",
+    "line/semicolon 文本 profile 仅用于本地脚本；正式默认是 JSONL。",
+    "HNSW 原型未链接；uniform 数据收益不足。",
+    "E5 性能是文本本地 harness 的 10k×128 测量；正式 JSONL 会多一层 JSON 编解码。",
+    "磁盘模式查询仍扫描 WAL；VARCHAR 中 TAB/换行未做输出转义。"
   ]
 }
