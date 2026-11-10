@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
   "synthetic": false,
-  "commit": "bff189b898f4c27d69f87576fb651568c15fdcfa",
-  "verified_at": "2026-11-10T20:12:00+08:00",
+  "commit": "56af98b5c442c7de3f3fb700aa0498e0c49d3b94",
+  "verified_at": "2026-11-10T20:18:00+08:00",
   "status": {
     "official_branch": "f4d4e2665",
     "public_cases": "20/20 via official protocol_check (Docker)",
     "marker_framing": "not applicable; legacy text profile only",
     "sql_edges": "158 checks x 2 modes, 0 failures",
     "crash_fuzz": "200 iterations, 0 failures",
-    "release_gate": "local JSON gate PASS (code commit bff189b89)",
+    "release_gate": "local JSON gate PASS (commit 56af98b5c)",
     "formal_admission": "passed (S3 04960665b): performance E=2432.687188; prompt raw=4.00000",
     "official_protocol": "JSON Lines (STDIO_PROTOCOL.md)"
   },
@@ -134,7 +134,7 @@
       "name": "发布门禁",
       "hypothesis": "源码、Docker、匿名远端、容器冒烟和 conversation.json 应一起通过。",
       "command": "python3 scripts/release_gate.py --require-conversation --image-tag minivectordb:gate",
-      "output": "commit: bff189b898f4c27d69f87576fb651568c15fdcfa; branch: 2026-competition-round2; anonymous remote: ok; docker build: ok; container smoke: ok; RESULT: PASS",
+      "output": "commit: 56af98b5c442c7de3f3fb700aa0498e0c49d3b94; branch: 2026-competition-round2; anonymous remote: ok; docker build: ok; container smoke: ok; RESULT: PASS",
       "analysis": "门禁检查分支/SHA、匿名拉取、密钥扫描、Docker 构建、内存/磁盘容器冒烟、conversation.json 大小/指针/精确证据。"
     },
     {
