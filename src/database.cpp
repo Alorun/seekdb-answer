@@ -1,6 +1,7 @@
 #include "database.h"
 
 #include <fcntl.h>
+#include <sys/uio.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -67,6 +68,30 @@ Status Wal::writeAll(const char* data, size_t n) {
   return Status::Ok();
 }
 
+Status Wal::writeAllV(struct iovec* iov, int iovcnt) {
+  int idx = 0;
+  while (idx < iovcnt) {
+    ssize_t w = ::writev(fd_, iov + idx, iovcnt - idx);
+    if (w < 0) {
+      if (errno == EINTR) continue;
+      return Status::Error(Err::kIo,
+                           "WAL writev failed: " + std::string(std::strerror(errno)));
+    }
+    if (w == 0) return Status::Error(Err::kIo, "WAL writev returned 0");
+    size_t consumed = static_cast<size_t>(w);
+    while (idx < iovcnt && consumed >= iov[idx].iov_len) {
+      consumed -= iov[idx].iov_len;
+      ++idx;
+    }
+    if (idx < iovcnt && consumed > 0) {
+      auto* base = static_cast<char*>(iov[idx].iov_base);
+      iov[idx].iov_base = base + consumed;
+      iov[idx].iov_len -= consumed;
+    }
+  }
+  return Status::Ok();
+}
+
 Status Wal::append(const WalRecord& rec, uint64_t* out_offset) {
   if (rec.payload.size() > kMaxPayload) {
     return Status::Error(Err::kIo, "record too large");
@@ -85,9 +110,12 @@ Status Wal::append(const WalRecord& rec, uint64_t* out_offset) {
   putU64(header, rec.table);
   putU64(header, rec.pk);
 
-  Status st = writeAll(header.data(), header.size());
-  if (!st.ok()) return st;
-  st = writeAll(rec.payload.data(), rec.payload.size());
+  struct iovec iov[2];
+  iov[0].iov_base = header.data();
+  iov[0].iov_len = header.size();
+  iov[1].iov_base = const_cast<char*>(rec.payload.data());
+  iov[1].iov_len = rec.payload.size();
+  Status st = writeAllV(iov, 2);
   if (!st.ok()) {
     if (::ftruncate(fd_, static_cast<off_t>(start)) != 0) {
       // Best effort: the caller already has an I/O error to report.

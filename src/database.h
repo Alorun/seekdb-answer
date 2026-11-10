@@ -72,6 +72,7 @@ class Wal {
 
  private:
   Status writeAll(const char* data, size_t n);
+  Status writeAllV(struct iovec* iov, int iovcnt);
 
   int fd_ = -1;
   uint64_t size_ = 0;
