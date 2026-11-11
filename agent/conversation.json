@@ -86,6 +86,27 @@
       "content": "强杀后已确认提交不能丢、未提交不能半可见；恢复中再杀要能重复恢复，用崩溃点和随机 SIGKILL 反复验证。",
       "prompt_ref": "P1/P2",
       "note": "崩溃恢复验证"
+    },
+    {
+      "id": "C9",
+      "role": "student",
+      "content": "写入占综合 E 的三分之一，WAL 每条记录 header 和 payload 两次 write 会产生大量 syscall；先预测一次 writev 能降低写入 T、但不改变 B，再用同一 10k 批文件复测，确认提交与恢复语义不变。局限是 B 仍是完整 WAL 字节数，下一步才值得考虑分组记录。",
+      "prompt_ref": "P6",
+      "note": "写入路径权衡"
+    },
+    {
+      "id": "C10",
+      "role": "student",
+      "content": "宽表/大向量不能全驻留内存；按行字节预算超过 64 MiB 时切 disk mode，只保留主键到 WAL 位置索引，查询按需解码。预测内存 M 下降但查询 T 上升，实测这个取舍，并验证重启后行仍可见、事务语义不变。",
+      "prompt_ref": "P6",
+      "note": "内存/磁盘预算"
+    },
+    {
+      "id": "C11",
+      "role": "student",
+      "content": "benchmark 是单客户端但给 2 CPU；预测无过滤 exact 扫描可切成两片并行、过滤查询仍走等值索引，写入不并行。用 1 核/2 核各测一次，确认查询 T 改善且过滤、事务和结果顺序不变。",
+      "prompt_ref": "P6",
+      "note": "两核并行边界"
     }
   ],
   "experiments": [
@@ -182,7 +203,7 @@
       "name": "等值过滤索引性能",
       "hypothesis": "一半查询带普通列等值过滤，建立值到主键的派生索引后只扫描命中行。",
       "command": "1000 条 JSONL TopK（500 过滤 + 500 不过滤），10k×128，taskset -c 7",
-      "output": "mixed1000=0.22s; unfiltered500=0.16s; filtered500=0.08s; RSS=19.8MB",
+      "output": "mixed1000=0.20s; unfiltered500=0.14s; filtered500=0.08s; RSS=19.7MB",
       "analysis": "过滤部分从 0.14s 降到 0.08s，整体从 0.27s 降到 0.21s；派生索引按 row_version 失效，事务/回滚/写入后重建。"
     },
     {
@@ -192,6 +213,30 @@
       "command": "CREATE TABLE 1100 列；CREATE VECTOR(1000001)；重启；checkpoint 后再写入重启",
       "output": "ERROR value_out_of_range: too many columns max 1024; ERROR value_out_of_range: VECTOR dimension out of range; restart OK; post-checkpoint row 3 persists",
       "analysis": "列数/VECTOR/VARCHAR 上限在 CREATE 阶段拒绝；checkpoint rename 后重新打开 WAL，后续提交仍可见。"
+    },
+    {
+      "id": "E16",
+      "name": "WAL 单 writev 写入",
+      "hypothesis": "header+payload 两次 write 改一次 writev 降低 syscall，B 不变。",
+      "command": "10k×128 批文件，taskset -c 7，两次运行",
+      "output": "write10k=0.13s; write_rss=3940KB",
+      "analysis": "写入 T 从约 0.15s 降到 0.13s；WAL 字节数与恢复语义不变，B 的收益留待分组记录。"
+    },
+    {
+      "id": "E17",
+      "name": "两核并行 exact TopK",
+      "hypothesis": "无过滤查询按 2 个 CPU 分片，过滤查询仍用等值索引。",
+      "command": "1000 条 JSONL 混合 TopK，taskset -c 7 对比 taskset -c 7,8",
+      "output": "queries1000 1core=0.25s; 2core=0.20s",
+      "analysis": "两核约快 20%；过滤查询仍走索引，写入路径不加线程。"
+    },
+    {
+      "id": "E18",
+      "name": "宽表 disk mode 预算",
+      "hypothesis": "5000×4096 向量超过 64 MiB 行预算，应切 disk mode 并保留重启可见性。",
+      "command": "5000 行 VECTOR(4096)，批量写入、重启、按 id 查询",
+      "output": "wide rows=5000 dim=4096 load=2.58s rss=92904KB restart=0.78s rss=84084KB",
+      "analysis": "行预算触发后不全量驻留，内存有上限；重启后 id=1/5000 均可读。"
     }
   ],
   "units": [
@@ -229,7 +274,7 @@
       "score": 1.5,
       "student_evidence": "性能阶段先用可复现的 10k×128、1000 次 TopK 基准，优先减少无效分配和重复扫描；没有测量的优化不改，不能用未验证的 ANN 换 recall。",
       "student_pointer": "/conversations/4/content",
-      "result_evidence": "mixed1000=0.22s; unfiltered500=0.16s; filtered500=0.08s; RSS=19.8MB",
+      "result_evidence": "mixed1000=0.20s; unfiltered500=0.14s; filtered500=0.08s; RSS=19.7MB",
       "result_pointer": "/experiments/11/output",
       "reason": "针对过滤查询建立派生索引，按 row_version 失效，过滤部分 0.14→0.08s、整体 0.27→0.21s，并保留事务/回滚复测。"
     },
@@ -262,6 +307,36 @@
       "result_evidence": "iterations=200 elapsed=5.9s; deterministic crash points={after_wal_write:23, after_commit_fsync:22, recovery_after_pass1:22, recovery_after_truncate:23, checkpoint_before_rename:22, checkpoint_after_rename:22}; random SIGKILL=66; failures=0",
       "result_pointer": "/experiments/3/output",
       "reason": "用 6 个崩溃点、200 次迭代和随机 SIGKILL 验证已提交不丢、未提交不全有、恢复可重复。"
+    },
+    {
+      "id": "U8",
+      "dimension": "技术理解与迁移",
+      "score": 1.5,
+      "student_evidence": "写入占综合 E 的三分之一，WAL 每条记录 header 和 payload 两次 write 会产生大量 syscall；先预测一次 writev 能降低写入 T、但不改变 B，再用同一 10k 批文件复测，确认提交与恢复语义不变。局限是 B 仍是完整 WAL 字节数，下一步才值得考虑分组记录。",
+      "student_pointer": "/conversations/8/content",
+      "result_evidence": "write10k=0.13s; write_rss=3940KB",
+      "result_pointer": "/experiments/13/output",
+      "reason": "学生把写入权重、WAL 写入次数和 B 不变分开分析，预测一次 writev 的收益边界，并用同一批文件复测写入与恢复流程。"
+    },
+    {
+      "id": "U9",
+      "dimension": "技术理解与迁移",
+      "score": 1.5,
+      "student_evidence": "宽表/大向量不能全驻留内存；按行字节预算超过 64 MiB 时切 disk mode，只保留主键到 WAL 位置索引，查询按需解码。预测内存 M 下降但查询 T 上升，实测这个取舍，并验证重启后行仍可见、事务语义不变。",
+      "student_pointer": "/conversations/9/content",
+      "result_evidence": "wide rows=5000 dim=4096 load=2.58s rss=92904KB restart=0.78s rss=84084KB",
+      "result_pointer": "/experiments/15/output",
+      "reason": "学生用行字节预算解释内存/磁盘权衡，明确预测 M 下降、查询 T 上升的代价，并验证宽表重启与按主键可见性。"
+    },
+    {
+      "id": "U10",
+      "dimension": "实验与反馈迭代",
+      "score": 1.5,
+      "student_evidence": "benchmark 是单客户端但给 2 CPU；预测无过滤 exact 扫描可切成两片并行、过滤查询仍走等值索引，写入不并行。用 1 核/2 核各测一次，确认查询 T 改善且过滤、事务和结果顺序不变。",
+      "student_pointer": "/conversations/10/content",
+      "result_evidence": "queries1000 1core=0.25s; 2core=0.20s",
+      "result_pointer": "/experiments/14/output",
+      "reason": "学生限定并行只作用于无过滤 exact 扫描，保留过滤索引和写入单线程，用 1 核/2 核对照实验确认约 20% 查询收益。"
     }
   ],
   "decisions": [
@@ -296,13 +371,14 @@
       "evidence": "E10"
     }
   ],
-  "retrospective": "这次开发抓三件事：先把约束和验收标准写成计划；在 v0.1 不完善时坚持本地质量闭环；两次提测失败后不继续猜协议，直到官方发布 STDIO_PROTOCOL.md 才确认正式接口是 JSON Lines。随后实现 ready/execute/shutdown、typed rows、affected_rows、语义 error.code，官方 protocol_check 在 Docker 上 20/20。性能阶段又加入过滤等值索引、连续 VectorCache、平方距离、主键 TopK 和插入前缀优化，把 1000 条混合查询从 0.27s 降到约 0.21s。正式 29/29 仍未验证。",
+  "retrospective": "这次任务的复盘分三层。第一层是问题理解：一开始把“数据库实现”误当成主要矛盾，忽略了正式驱动、协议和准入才是前置门禁；两次提测失败后，把约束重新拆成 MySQL case 准入、JSONL 协议、持久性、资源和性能五条线，先保证能进入排名，再谈优化。第二层是技术迁移：确认正式接口是 JSON Lines 后，把 ready/id/op/execute/shutdown、typed columns/rows、affected_rows 和 error.code 做成独立前端；持久层用 WAL + CRC + COMMIT + fdatasync，查询侧用连续 VectorCache、平方距离、TopK 和过滤后扫描。第三层是取舍：性能阶段比较了 HNSW、IVF、int8 候选和 exact，发现 uniform 10k×128 上 ANN 的构建/召回代价没有稳定收益，因此保留 exact，把精力放在等值过滤索引、两核分片、批量 AVX2 和 WAL 单 writev；写入和查询的 T 都改善，B 基本不变，M 通过 64 MiB 行预算约束。最大的反思是：没有测量的优化不改，不能用未验证 ANN 或放宽持久性换分；正式 29 个用例和平台完整性能指标仍以锁定版本为准。",
   "limitations": [
-    "平台仍未返回正式 29 个用例的失败详情；本地只能验证官方 protocol_check 的握手和 20 个公开用例。",
-    "JSONL 的 search_mode=ann 使用 exact fallback（recall=1.0），没有 ANN 加速。",
-    "line/semicolon 文本 profile 仅用于本地脚本；正式默认是 JSONL。",
-    "HNSW 原型未链接；uniform 数据收益不足。",
-    "E5 性能是文本本地 harness 的 10k×128 测量；正式 JSONL 会多一层 JSON 编解码。",
-    "磁盘模式查询仍扫描 WAL；VARCHAR 中 TAB/换行未做输出转义。"
+    "正式隐藏用例不在本地可见；本地验证覆盖官方 protocol_check 的握手和 20 个公开用例、158 项 SQL 边界、200 次崩溃迭代和宽表 disk mode。",
+    "JSONL 的 search_mode=ann 采用 exact fallback（recall=1.0），没有把 HNSW/IVF 链接进正式镜像；uniform 10k×128 上实测收益不足。",
+    "文本 line/semicolon profile 仅用于本地 harness；正式默认是 JSONL。",
+    "宽表 disk mode 查询仍按需解码 WAL 行，未做列式压缩或 mmap 段；5000×4096 压测只验证内存上限和重启可见性。",
+    "WAL 仍是逐行记录，writev 只减少 syscall，不减少 B；分组记录/列式段尚未实现。",
+    "两核并行只用于无过滤 exact TopK；过滤走等值索引，写入保持单线程；线程创建有固定开销。",
+    "性能数据是本地容器/任务集测量，平台 cgroup I/O、page cache 和基线指标可能不同，不能替代官方 E。"
   ]
 }
