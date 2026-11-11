@@ -631,11 +631,18 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
     return 0;
   };
 
+  size_t inpos = 0;
   while (!g_stop) {
-    size_t nl = inbuf.find('\n');
+    size_t nl = inbuf.find('\n', inpos);
     if (nl == std::string::npos) {
       if (group && !stdinHasData(0)) {
         if (!flushGroup()) return 1;
+      }
+      // Drop the consumed prefix before growing the buffer; this keeps the
+      // read buffer bounded for a long pipelined stream.
+      if (inpos > 0) {
+        inbuf.erase(0, inpos);
+        inpos = 0;
       }
       char chunk[65536];
       ssize_t n = ::read(STDIN_FILENO, chunk, sizeof(chunk));
@@ -644,9 +651,8 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
         break;
       }
       if (n == 0) {
-        if (!inbuf.empty()) {
-          int r = process(inbuf);
-          inbuf.clear();
+        if (inpos < inbuf.size()) {
+          int r = process(inbuf.substr(inpos));
           if (r == 1) return 0;
           if (r == 2) return 1;
         }
@@ -655,8 +661,13 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
       inbuf.append(chunk, static_cast<size_t>(n));
       continue;
     }
-    std::string line = inbuf.substr(0, nl);
-    inbuf.erase(0, nl + 1);
+    if (inpos > (1u << 20) && inpos * 2 > inbuf.size()) {
+      inbuf.erase(0, inpos);
+      nl -= inpos;
+      inpos = 0;
+    }
+    std::string line = inbuf.substr(inpos, nl - inpos);
+    inpos = nl + 1;
     if (!line.empty() && line.back() == '\r') line.pop_back();
     int r = process(line);
     if (r == 1) return 0;
