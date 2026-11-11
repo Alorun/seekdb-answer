@@ -453,6 +453,18 @@ std::string jsonField(const std::string& text, const mvdb::ResultColumn& kind) {
     return mvdb::jsonl::quote(text);
   }
   if (kind.kind == RK::Double) {
+    // formatProjection() already produced %.9g text, which is a valid JSON
+    // number; re-parsing and re-printing it (strtod + snprintf per field) was
+    // pure overhead on the hot query path.
+    bool numeric = !text.empty() && (text[0] == '-' || (text[0] >= '0' && text[0] <= '9'));
+    bool has_digit = false;
+    for (size_t i = 0; numeric && i < text.size(); ++i) {
+      const char c = text[i];
+      if (c >= '0' && c <= '9') { has_digit = true; continue; }
+      if (c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-') continue;
+      numeric = false;
+    }
+    if (numeric && has_digit) return text;
     char* end = nullptr;
     double d = std::strtod(text.c_str(), &end);
     if (end == text.c_str() + text.size() && std::isfinite(d)) {

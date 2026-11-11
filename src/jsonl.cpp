@@ -304,8 +304,13 @@ std::string number(int64_t v) { return std::to_string(v); }
 std::string number(double v) {
   if (!std::isfinite(v)) return "0";
   char buf[64];
-  std::snprintf(buf, sizeof(buf), "%.9g", v);
-  return buf;
+  auto r = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::general, 9);
+  if (r.ec != std::errc()) {
+    std::snprintf(buf, sizeof(buf), "%.9g", v);
+    return buf;
+  }
+  *r.ptr = '\0';
+  return std::string(buf);
 }
 
 }  // namespace mvdb::jsonl

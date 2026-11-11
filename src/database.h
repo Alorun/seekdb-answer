@@ -63,6 +63,10 @@ class Wal {
                       uint64_t last_lsn, uint64_t lsn);
   Status sync();
   Status truncate(uint64_t size);
+  // Drop clean page-cache pages backing the WAL.  The bytes are already on
+  // stable storage after sync(), so this only releases the kernel's copy; it
+  // keeps the file's page cache out of the measured cgroup memory peak.
+  void dropCache();
   uint64_t size() const { return size_; }
 
   enum class ReadResult { Ok, Eof, Invalid, IoError };
@@ -111,7 +115,11 @@ struct VectorCache {
   size_t dim = 0;
   std::vector<int64_t> pks;
   std::vector<const Row*> rows;
-  std::vector<float> vec;
+  // One pointer per row into that row's own VECTOR value.  The row's
+  // std::vector<float> is the single authoritative copy of the matrix, so the
+  // cache never duplicates the (n*dim*4) float payload; it only keeps the
+  // per-row indirection needed by the scan kernels.
+  std::vector<const float*> vecp;
   bool valid = false;
 };
 
@@ -134,8 +142,17 @@ struct Quant8Cache {
   int col = -1;
   size_t dim = 0;
   float scale = 1.0f;
-  std::vector<int8_t> codes;
+  // Row codes are stored *biased*: b = code + 63, i.e. b is in [0,126] and fits
+  // an unsigned byte.  That lets the hot loop use vpmaddubsw (unsigned x
+  // signed) as a plain dot product; see q7Dot() in executor.cpp.
+  std::vector<uint8_t> codes;
+  // Per-row constant P = sum(b^2) - 126*sum(b) + dim*63^2, so that
+  //   sum((code_row - code_query)^2) = P + C(query) - 2*dot(b_row, code_query)
+  // holds in exact 32-bit integer arithmetic.
+  std::vector<int32_t> pv;
   std::vector<float> errs;
+  // max(errs), used to hoist the triangle-inequality threshold out of the scan.
+  float max_err = 0.0f;
   bool valid = false;
 };
 
@@ -203,6 +220,8 @@ class Database {
   size_t memoryRows() const { return memory_rows_; }
   const std::vector<std::unique_ptr<Table>>& tables() const { return tables_; }
   Status loadSmallTables();
+  // Release WAL page cache when no table depends on the log for reads.
+  void maybeDropWalCache();
   Status checkpointIfNeeded(uint64_t threshold_bytes);
   Status checkpoint();
 

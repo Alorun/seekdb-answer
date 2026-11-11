@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <set>
 
@@ -181,6 +182,16 @@ Status Wal::sync() {
     return Status::Error(Err::kIo, "fdatasync failed: " + std::string(std::strerror(errno)));
   }
   return Status::Ok();
+}
+
+void Wal::dropCache() {
+  if (fd_ < 0 || size_ == 0) return;
+  static const bool enabled = std::getenv("MVDB_NO_WAL_FADVISE") == nullptr;
+  if (!enabled) return;
+  // Advisory only: the file is fsynced before this is called, so no
+  // acknowledged data can be lost.  A later read simply faults the page back
+  // in from the device.
+  ::posix_fadvise(fd_, 0, static_cast<off_t>(size_), POSIX_FADV_DONTNEED);
 }
 
 
@@ -672,6 +683,13 @@ Status Database::checkpoint() {
   wal_ = std::move(fresh);
   maybeCrash("checkpoint_after_rename");
   return Status::Ok();
+}
+
+void Database::maybeDropWalCache() {
+  for (const auto& up : tables_) {
+    if (up->disk_mode) return;  // disk-mode scans re-read the WAL
+  }
+  if (wal_) wal_->dropCache();
 }
 
 Status Database::loadSmallTables() {

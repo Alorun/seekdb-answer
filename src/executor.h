@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
@@ -14,10 +15,15 @@
 
 namespace mvdb {
 
-// Reusable two-way scan executor. The benchmark issues one TopK request at a
+// Reusable two-way scan executor.  The benchmark issues one TopK request at a
 // time, so creating two std::threads per query costs more than the scan itself
-// at 10k rows. This keeps one helper thread alive for the whole session; the
+// at 10k rows.  This keeps one helper thread alive for the whole session; the
 // caller runs the first half of the scan while the helper runs the second.
+//
+// The handshake is a pair of atomics plus a bounded spin: a condition-variable
+// wake-up costs several microseconds and would eat most of what a ~20us scan
+// half has to gain, so the worker spins for a while after finishing a job and
+// only falls back to sleeping (2ms re-check) when the session goes idle.
 class ScanPool {
  public:
   ScanPool();
@@ -35,7 +41,10 @@ class ScanPool {
   void workerLoop();
 
   std::thread worker_;
+  std::mutex mu_;
+  std::condition_variable cv_;
   std::function<void()> job_;
+  std::exception_ptr error_;
   std::atomic<uint64_t> seq_{0};
   std::atomic<uint64_t> done_{0};
   std::atomic<bool> stop_{false};
