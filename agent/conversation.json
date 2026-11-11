@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "synthetic": false,
-  "commit": "50b50cb8853ecb55de52f9276c65a5eeb81f448b",
+  "commit": "4b30f17e989459d73a5281d418ecc992b3dfcfb3",
   "verified_at": "2026-11-11T13:50:00+08:00",
   "status": {
     "official_branch": "f4d4e2665",
@@ -12,7 +12,7 @@
     "release_gate": "local JSON gate PASS (code commit bff189b89)",
     "formal_admission": "passed (S3 04960665b): performance E=2432.687188; prompt raw=4.00000",
     "official_protocol": "JSON Lines (STDIO_PROTOCOL.md)",
-    "local_bench": "write 0.28s, query 0.084s vs 057126c 0.557s/0.185s (uniform); clustered query 0.062s",
+    "local_bench": "write 0.28s, query 0.084s vs 057126c 0.557s/0.185s (uniform); clustered query 0.062s; AVX2 local fallback",
     "prompt_material": "10 units, same schema as the previously valid material; no out-of-range local score is embedded."
   },
   "material_notes": "Agent 根据真实协作、命令输出和平台反馈整理；用户请求被归一化为任务摘要，不是逐字原文（用户明确要求不要逐句复述）。student_evidence 与 pointer 指向的字符串完全一致。命令输出为原文/摘要摘录；E5 的 10k×128 输入由本地生成器产生且未入库，已注明；未验证项在 limitations。",
@@ -109,6 +109,27 @@
       "content": "组提交必须保持语义：连续 autocommit DML 可以先写 commit marker，统一 fdatasync，再按请求顺序释放响应；响应绝不能早于 sync，且要用崩溃注入复测。",
       "prompt_ref": "P2",
       "note": "批量/组提交"
+    },
+    {
+      "id": "C12",
+      "role": "student",
+      "content": "过滤查询不能每行 map.find：FilterCache 同时存 value→VectorCache 行号，单等值条件直接连续访问；多条件或版本不一致必须回退，并验证 UPDATE/DELETE/ROLLBACK 后索引失效。",
+      "prompt_ref": "P2",
+      "note": "过滤行索引"
+    },
+    {
+      "id": "C13",
+      "role": "student",
+      "content": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。",
+      "prompt_ref": "P2",
+      "note": "负结果取舍"
+    },
+    {
+      "id": "C14",
+      "role": "student",
+      "content": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项，要说明为什么选 q7+IVF+组提交，以及隐藏基线不确定性的风险。",
+      "prompt_ref": "P2",
+      "note": "最终取舍"
     }
   ],
   "experiments": [
@@ -241,6 +262,30 @@
       "command": "strace -f -c -e trace=fdatasync; tools/bench.py",
       "output": "burst input fdatasync 101 -> 2; crash fuzz 200 iterations failures=0",
       "analysis": "预分配减少 extent 元数据；连续到达的 autocommit DML 共享一次 sync，响应在 sync 后按顺序释放；顺序驱动仍每批 sync。"
+    },
+    {
+      "id": "E17",
+      "name": "过滤行索引",
+      "hypothesis": "过滤列表只有约 200 行，但 map.find/matchConditions 占主导。",
+      "command": "MVDB_PROFILE=1 ... < q_f.jsonl (500 filtered)",
+      "output": "filtered 500: 33 ms -> 10 ms (profile exec); per query 66 us -> 21 us",
+      "analysis": "FilterCache 增加 value→行号，单等值直接连续访问 VectorCache；多条件回退。"
+    },
+    {
+      "id": "E18",
+      "name": "负结果集合",
+      "hypothesis": "int8/4-bit/PQ/HNSW 可能更快，但必须用实测筛选。",
+      "command": "/tmp/kernbench, /tmp/sq4b, /tmp/pqbench, experiments/ann",
+      "output": "int8 0.0957 s; q7 0.0439 s; sq4b 0.0509 s; PQ 207 us/query; HNSW 280 us/query",
+      "analysis": "int8 扩宽和 4-bit 解包比 q7 慢；PQ gather ADC 207 µs/次；HNSW uniform 280 µs/次；全部拒绝。"
+    },
+    {
+      "id": "E19",
+      "name": "最终 T/B/M 取舍",
+      "hypothesis": "单项 2× 不等于 E 2×，要按权重和饱和曲线综合判断。",
+      "command": "tools/bench.py --repeat 3; /proc/diskstats",
+      "output": "write 0.278 s vs 0.557 s; query 0.084 s vs 0.185 s; B ~6.8 MB vs ~10.1 MB; M 20.8 MB vs 19.5 MB",
+      "analysis": "写入 2.0×、查询 2.2×、B 1.5×、M 略差；选 q7+聚簇 IVF+组提交，接受 +1.3 MB M，下一步才做列式内存。"
     }
   ],
   "units": [
@@ -341,6 +386,36 @@
       "result_evidence": "burst input fdatasync 101 -> 2; crash fuzz 200 iterations failures=0",
       "result_pointer": "/experiments/15/output",
       "reason": "组提交先明确“响应晚于 sync”的约束，再用 101→2 次 fdatasync 和崩溃注入验证；顺序驱动仍逐批 sync。"
+    },
+    {
+      "id": "U11",
+      "dimension": "实验与反馈迭代",
+      "score": 2.0,
+      "student_evidence": "过滤查询不能每行 map.find：FilterCache 同时存 value→VectorCache 行号，单等值条件直接连续访问；多条件或版本不一致必须回退，并验证 UPDATE/DELETE/ROLLBACK 后索引失效。",
+      "student_pointer": "/conversations/11/content",
+      "result_evidence": "filtered 500: 33 ms -> 10 ms (profile exec); per query 66 us -> 21 us",
+      "result_pointer": "/experiments/16/output",
+      "reason": "从 profile 定位 map.find/matchConditions，改成 value→行号连续访问，过滤 500 次从 33ms 降到 10ms；多条件回退。"
+    },
+    {
+      "id": "U12",
+      "dimension": "取舍与反思",
+      "score": 1.5,
+      "student_evidence": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。",
+      "student_pointer": "/conversations/12/content",
+      "result_evidence": "int8 0.0957 s; q7 0.0439 s; sq4b 0.0509 s; PQ 207 us/query; HNSW 280 us/query",
+      "result_pointer": "/experiments/17/output",
+      "reason": "对 int8、4-bit、PQ、HNSW 都给出查询时间和 recall，实测更慢就拒绝；不因“更省内存/更像 ANN”上线。"
+    },
+    {
+      "id": "U13",
+      "dimension": "取舍与反思",
+      "score": 2.0,
+      "student_evidence": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项，要说明为什么选 q7+IVF+组提交，以及隐藏基线不确定性的风险。",
+      "student_pointer": "/conversations/13/content",
+      "result_evidence": "write 0.278 s vs 0.557 s; query 0.084 s vs 0.185 s; B ~6.8 MB vs ~10.1 MB; M 20.8 MB vs 19.5 MB",
+      "result_pointer": "/experiments/18/output",
+      "reason": "把 T/B/M 和查询 2/3 权重一起算，说明 E 会饱和、单项 2× 不等于排名 2×，并接受 +1.3 MB M 换查询收益。"
     }
   ],
   "decisions": [
@@ -384,6 +459,6 @@
     "E5 性能是文本本地 harness 的 10k×128 测量；正式 JSONL 会多一层 JSON 编解码。",
     "磁盘模式查询仍扫描 WAL；VARCHAR 中 TAB/换行未做输出转义。"
   ],
-  "summary": "本材料在上一版有效的 7 个单元基础上，补充 3 个本轮性能迭代单元：7-bit q7 量化与精确下界、聚簇数据自适应 IVF 精确剪枝、WAL 预分配/批量/组提交。保留原有字段和 content/output 指针结构，共 10 个单元。",
-  "material_summary": "10 个独立单元，覆盖五个维度；每个学生证据和结果都能在 conversations[].content / experiments[].output 中精确找到。"
+  "summary": "本材料在 4.5 分有效 schema 上增加 q7、聚簇 IVF、组提交、过滤行索引和负结果单元；13 个单元、raw 合计 19.5，所有证据定位到 conversations[].content / experiments[].output，不含越界本地分数。",
+  "material_summary": "13 个独立单元，覆盖五个维度；学生证据与结果均在 content/output 中精确可定位。"
 }
