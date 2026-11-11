@@ -1345,14 +1345,36 @@ Status Executor::writeRowRecord(WalType type, const Table& table, int64_t pk,
   return Status::Ok();
 }
 
-Status Executor::readRowAt(const Table& table, uint64_t offset, Row& row,
-                           std::string& err) const {
+Status Executor::readRowAt(const Table& table, uint64_t offset, int64_t pk,
+                           Row& row, std::string& err) const {
   WalRecord rec;
   uint64_t next = 0;
   auto r = db_.wal().readRecord(offset, rec, next, err);
   if (r != Wal::ReadResult::Ok) {
     if (err.empty()) err = "record not found";
     return Status::Error(Err::kIo, "read row failed: " + err);
+  }
+  if (rec.type == static_cast<uint8_t>(WalType::InsertBatch)) {
+    bool found = false;
+    std::string derr;
+    bool ok = decodeInsertBatch(
+        table.schema, rec.payload.data(), rec.payload.size(),
+        [&](int64_t row_pk, Row& candidate) {
+          if (row_pk != pk) return true;
+          row = std::move(candidate);
+          found = true;
+          return false;
+        },
+        derr);
+    if (!ok) {
+      err = derr;
+      return Status::Error(Err::kIo, "decode row failed: " + err);
+    }
+    if (!found) {
+      err = "row not found in batch";
+      return Status::Error(Err::kIo, "read row failed: " + err);
+    }
+    return Status::Ok();
   }
   if (rec.type != static_cast<uint8_t>(WalType::Insert) &&
       rec.type != static_cast<uint8_t>(WalType::Update)) {
@@ -1371,7 +1393,7 @@ Status Executor::findRow(Table& table, int64_t pk, Row& row, bool& found) {
     auto it = table.locations.find(pk);
     if (it == table.locations.end()) return Status::Ok();
     std::string err;
-    Status st = readRowAt(table, it->second, row, err);
+    Status st = readRowAt(table, it->second, pk, row, err);
     if (!st.ok()) return st;
     found = true;
     return Status::Ok();
@@ -1401,53 +1423,6 @@ Status Executor::applyInsert(Table& table, int64_t pk, Row row) {
   table.locations[pk] = offset;
   if (!table.disk_mode) {
     table.rows[pk] = std::move(row);
-  }
-  spillIfNeeded(table);
-  ++table.row_version;
-  Undo u;
-  u.table_id = table.schema.table_id;
-  u.pk = pk;
-  u.had_row = false;
-  u.had_location = false;
-  undo_.push_back(std::move(u));
-  return Status::Ok();
-}
-
-Status Executor::applyInsertBatched(Table& table, int64_t pk, Row row,
-                                    std::string& batch, uint64_t* out_offset) {
-  if (table.locations.count(pk)) {
-    return Status::Error(Err::kDuplicateKey,
-                         "duplicate primary key: " + std::to_string(pk));
-  }
-  WalRecord rec;
-  rec.type = static_cast<uint8_t>(WalType::Insert);
-  rec.lsn = db_.newLsn();
-  rec.txn = txn_id_;
-  rec.table = table.schema.table_id;
-  rec.pk = static_cast<uint64_t>(pk);
-  const size_t rec_start = batch.size();
-  batch.resize(rec_start + 44);
-  const size_t payload_start = batch.size();
-  encodeRowInto(table.schema, row, batch);
-  const uint32_t payload_len =
-      static_cast<uint32_t>(batch.size() - payload_start);
-  const uint32_t crc =
-      crc32c(batch.data() + payload_start, payload_len);
-  db_.wal().encodeHeader(rec, payload_len, crc,
-                         batch.data() + rec_start);
-  *out_offset = db_.wal().size() + rec_start;
-  if (first_lsn_ == 0) first_lsn_ = rec.lsn;
-  last_lsn_ = rec.lsn;
-  ++op_count_;
-  table.locations[pk] = *out_offset;
-  if (!table.disk_mode) {
-    // Benchmark inserts are increasing; emplace_hint(end) avoids a full
-    // O(log n) search per row while preserving std::map order.
-    auto hint = table.rows.end();
-    if (!table.rows.empty() && pk <= table.rows.rbegin()->first) {
-      hint = table.rows.lower_bound(pk);
-    }
-    table.rows.emplace_hint(hint, pk, std::move(row));
   }
   spillIfNeeded(table);
   ++table.row_version;
@@ -1536,28 +1511,37 @@ Status Executor::collectMatchingPks(Table& table,
     return Status::Ok();
   }
   Status row_status = Status::Ok();
+  bool stopped = false;
   Status scan = db_.wal().forEachRecord([&](const WalRecordView& v) {
     if (v.type != static_cast<uint8_t>(WalType::Insert) &&
-        v.type != static_cast<uint8_t>(WalType::Update)) {
+        v.type != static_cast<uint8_t>(WalType::Update) &&
+        v.type != static_cast<uint8_t>(WalType::InsertBatch)) {
       return true;
     }
     if (v.table != table.schema.table_id) return true;
-    auto it = table.locations.find(static_cast<int64_t>(v.pk));
-    if (it == table.locations.end() || it->second != v.offset) return true;
-    Row row;
     std::string err;
-    if (!decodeRow(table.schema, v.payload, v.payload_size, row, err)) {
+    bool ok = forEachRowInRecord(
+        table.schema, v,
+        [&](int64_t pk, Row& row) {
+          auto it = table.locations.find(pk);
+          if (it == table.locations.end() || it->second != v.offset) return true;
+          Status m;
+          if (matchConditions(row, conds, m)) {
+            pks.push_back(pk);
+          } else if (!m.ok()) {
+            row_status = m;
+            stopped = true;
+            return false;
+          }
+          return true;
+        },
+        err);
+    if (!ok) {
       row_status = Status::Error(Err::kIo, "corrupt row in WAL: " + err);
+      stopped = true;
       return false;
     }
-    Status m;
-    if (matchConditions(row, conds, m)) {
-      pks.push_back(static_cast<int64_t>(v.pk));
-    } else if (!m.ok()) {
-      row_status = m;
-      return false;
-    }
-    return true;
+    return !stopped;
   }, nullptr, false);
   if (!scan.ok()) return scan;
   return row_status;
@@ -1596,8 +1580,10 @@ Status Executor::executeInsert(const InsertStmt& stmt) {
     }
   }
 
-  std::string batch;
-  batch.reserve(stmt.rows.size() * 640);
+  std::vector<Row> rows;
+  rows.reserve(stmt.rows.size());
+  std::unordered_set<int64_t> batch_pks;
+  batch_pks.reserve(stmt.rows.size() * 2 + 1);
   for (const auto& raw : stmt.rows) {
     if (raw.size() != col_map.size()) {
       return Status::Error(Err::kColumnCount,
@@ -1614,14 +1600,71 @@ Status Executor::executeInsert(const InsertStmt& stmt) {
       if (!st.ok()) return st;
       row.values[col_map[i]] = std::move(converted);
     }
-    int64_t pk = row.values[schema.pk_index].i;
-    uint64_t offset = 0;
-    Status st = applyInsertBatched(*table, pk, std::move(row), batch, &offset);
-    if (!st.ok()) return st;
+    const int64_t pk = row.values[static_cast<size_t>(schema.pk_index)].i;
+    if (table->locations.count(pk) || !batch_pks.insert(pk).second) {
+      return Status::Error(Err::kDuplicateKey,
+                           "duplicate primary key: " + std::to_string(pk));
+    }
+    rows.push_back(std::move(row));
   }
-  Status appended = db_.wal().appendBatch(batch);
-  if (!appended.ok()) return appended;
+  if (rows.empty()) return Status::Ok();
+
+  WalRecord rec;
+  rec.type = static_cast<uint8_t>(WalType::InsertBatch);
+  rec.lsn = db_.newLsn();
+  rec.txn = txn_id_;
+  rec.table = table->schema.table_id;
+  rec.pk = 0;
+
+  std::string batch;
+  batch.resize(44);  // WAL header, patched after the payload is encoded
+  size_t estimate = 48;
+  for (const Column& col : schema.columns) {
+    if (col.type == ColumnType::Vector) {
+      estimate += static_cast<size_t>(col.length) * 4;
+    } else if (col.type == ColumnType::Varchar) {
+      estimate += 16;
+    } else {
+      estimate += 8;
+    }
+  }
+  batch.reserve(44 + rows.size() * estimate);
+  std::string encode_err;
+  if (!encodeInsertBatch(schema, rows, batch, encode_err)) {
+    return Status::Error(Err::kInvalidValue,
+                         "cannot encode insert batch: " + encode_err);
+  }
+  const uint32_t payload_len = static_cast<uint32_t>(batch.size() - 44);
+  const uint32_t crc = crc32c(batch.data() + 44, payload_len);
+  db_.wal().encodeHeader(rec, payload_len, crc, batch.data());
+
+  uint64_t offset = 0;
+  Status st = db_.wal().appendBatch(batch, &offset);
+  if (!st.ok()) return st;
   maybeCrash("after_wal_write");
+  if (first_lsn_ == 0) first_lsn_ = rec.lsn;
+  last_lsn_ = rec.lsn;
+  op_count_ += static_cast<uint32_t>(rows.size());
+
+  for (Row& row : rows) {
+    const int64_t pk = row.values[static_cast<size_t>(schema.pk_index)].i;
+    table->locations[pk] = offset;
+    if (!table->disk_mode) {
+      auto hint = table->rows.end();
+      if (!table->rows.empty() && pk <= table->rows.rbegin()->first) {
+        hint = table->rows.lower_bound(pk);
+      }
+      table->rows.emplace_hint(hint, pk, std::move(row));
+    }
+    Undo u;
+    u.table_id = table->schema.table_id;
+    u.pk = pk;
+    u.had_row = false;
+    u.had_location = false;
+    undo_.push_back(std::move(u));
+  }
+  spillIfNeeded(*table);
+  ++table->row_version;
   return Status::Ok();
 }
 
@@ -2397,26 +2440,35 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     if (!cache_scanned) {
       if (table->disk_mode) {
         Status row_status = Status::Ok();
+        bool stopped = false;
         Status scan = db_.wal().forEachRecord([&](const WalRecordView& v) {
           if (v.type != static_cast<uint8_t>(WalType::Insert) &&
-              v.type != static_cast<uint8_t>(WalType::Update)) {
+              v.type != static_cast<uint8_t>(WalType::Update) &&
+              v.type != static_cast<uint8_t>(WalType::InsertBatch)) {
             return true;
           }
           if (v.table != table->schema.table_id) return true;
-          auto it = table->locations.find(static_cast<int64_t>(v.pk));
-          if (it == table->locations.end() || it->second != v.offset) return true;
-          Row row;
           std::string err;
-          if (!decodeRow(schema, v.payload, v.payload_size, row, err)) {
+          bool ok = forEachRowInRecord(
+              schema, v,
+              [&](int64_t pk, Row& row) {
+                auto it = table->locations.find(pk);
+                if (it == table->locations.end() || it->second != v.offset) return true;
+                Status s = process(pk, row);
+                if (!s.ok()) {
+                  row_status = s;
+                  stopped = true;
+                  return false;
+                }
+                return !stop_scan;
+              },
+              err);
+          if (!ok) {
             row_status = Status::Error(Err::kIo, "corrupt row in WAL: " + err);
+            stopped = true;
             return false;
           }
-          Status s = process(static_cast<int64_t>(v.pk), row);
-          if (!s.ok()) {
-            row_status = s;
-            return false;
-          }
-          return !stop_scan;
+          return !stopped && !stop_scan;
         }, nullptr, false);
         if (!scan.ok()) return scan;
         if (!row_status.ok()) return row_status;

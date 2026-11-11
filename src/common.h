@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
@@ -274,6 +275,31 @@ bool decodeRow(const Schema& schema, const std::string& payload, Row& out,
                std::string& err);
 bool decodeRow(const Schema& schema, const char* data, size_t size, Row& out,
                std::string& err);
+
+// Multi-row INSERT blocks.  A single WAL header covers all `rows`; the
+// payload stores columns separately and applies self-describing, lossless
+// codecs (delta-varint PKs, dictionary/front-coded+RLE VARCHAR, canonical
+// Huffman coding of the float sign/exponent byte).  Every codec has a raw
+// fallback, so arbitrary rows round-trip exactly.
+//
+// Layout (little endian, varint = LEB128):
+//   u8 version(=1), varint count, varint dim
+//   pk block:    u8 mode (0 raw i64, 1 zigzag varint, 2 delta-zigzag varint)
+//   per non-PK/non-VECTOR column in schema order:
+//     BIGINT:    u8 mode (0 zigzag varint, 1 raw i64)
+//     VARCHAR:   u8 mode (0 dictionary, 1 plain front-coded/RLE)
+//   VECTOR:      u8 mode (0 raw float32 stream, 1 Huffman high byte + 3 planes)
+bool encodeInsertBatch(const Schema& schema, const std::vector<Row>& rows,
+                       std::string& out, std::string& err);
+// Calls fn(pk, row) for every row in file order.  A false return from fn stops
+// iteration early and is not an error (the caller signals the stop itself).
+bool decodeInsertBatch(const Schema& schema, const char* data, size_t size,
+                       const std::function<bool(int64_t, Row&)>& fn,
+                       std::string& err);
+// Fast path used by recovery: decodes only the PK block.
+bool decodeInsertBatchPks(const Schema& schema, const char* data, size_t size,
+                          const std::function<bool(int64_t)>& fn,
+                          std::string& err);
 
 std::string encodeIndex(const std::string& name, uint32_t column_index);
 bool decodeIndex(const std::string& payload, std::string& name,

@@ -119,14 +119,12 @@ class Executor {
   Status executeCreateIndex(const CreateIndexStmt& stmt);
 
   Status applyInsert(Table& table, int64_t pk, Row row);
-  Status applyInsertBatched(Table& table, int64_t pk, Row row,
-                            std::string& batch, uint64_t* out_offset);
   Status applyUpdate(Table& table, int64_t pk, Row row);
   Status applyDelete(Table& table, int64_t pk);
 
   Status writeRowRecord(WalType type, const Table& table, int64_t pk,
                         const Row& row, uint64_t* out_offset = nullptr);
-  Status readRowAt(const Table& table, uint64_t offset, Row& row,
+  Status readRowAt(const Table& table, uint64_t offset, int64_t pk, Row& row,
                    std::string& err) const;
   Status findRow(Table& table, int64_t pk, Row& row, bool& found);
   void spillIfNeeded(Table& table);

@@ -316,6 +316,21 @@ Status Wal::forEachRecord(
   return status;
 }
 
+bool forEachRowInRecord(
+    const Schema& schema, const WalRecordView& view,
+    const std::function<bool(int64_t, Row&)>& fn, std::string& err) {
+  if (view.type == static_cast<uint8_t>(WalType::Insert) ||
+      view.type == static_cast<uint8_t>(WalType::Update)) {
+    Row row;
+    if (!decodeRow(schema, view.payload, view.payload_size, row, err)) return false;
+    return fn(static_cast<int64_t>(view.pk), row);
+  }
+  if (view.type == static_cast<uint8_t>(WalType::InsertBatch)) {
+    return decodeInsertBatch(schema, view.payload, view.payload_size, fn, err);
+  }
+  return true;
+}
+
 Status Database::ensureDirectory() {
   if (::mkdir(data_dir_.c_str(), 0755) != 0 && errno != EEXIST) {
     return Status::Error(Err::kIo, "cannot create data dir " + data_dir_ + ": " +
@@ -488,6 +503,23 @@ Status Database::applyRecord(const WalRecord& rec) {
       }
       return Status::Ok();
     }
+    case WalType::InsertBatch: {
+      Table* table = tableById(rec.table);
+      if (!table) {
+        return Status::Error(Err::kIo,
+                             "recovery: missing table id " + std::to_string(rec.table));
+      }
+      std::string err;
+      bool ok = decodeInsertBatchPks(
+          table->schema, rec.payload.data(), rec.payload.size(),
+          [&](int64_t pk) {
+            table->locations[pk] = rec.offset;
+            return true;
+          },
+          err);
+      if (!ok) return Status::Error(Err::kIo, "recovery: " + err);
+      return Status::Ok();
+    }
     case WalType::Commit:
       return Status::Ok();
   }
@@ -531,7 +563,8 @@ Status Database::recover() {
     rec.pk = v.pk;
     rec.offset = v.offset;
     if (static_cast<WalType>(v.type) == WalType::CreateTable ||
-        static_cast<WalType>(v.type) == WalType::CreateIndex) {
+        static_cast<WalType>(v.type) == WalType::CreateIndex ||
+        static_cast<WalType>(v.type) == WalType::InsertBatch) {
       rec.payload.assign(v.payload, v.payload_size);
     }
     Status a = applyRecord(rec);
@@ -629,21 +662,76 @@ Status Database::checkpoint() {
   }
   std::sort(refs.begin(), refs.end(),
             [](const Ref& a, const Ref& b) { return a.offset < b.offset; });
+  // Rows of one InsertBatch share a WAL offset, so decode each batch at most
+  // once while the (offset-sorted) ref list walks through it.
+  uint64_t cached_offset = ~0ull;
+  uint8_t cached_type = 0;
+  std::string cached_payload;
+  std::vector<std::pair<int64_t, Row>> cached_rows;
+  const Schema* cached_schema = nullptr;
   for (const Ref& ref : refs) {
-    WalRecord old;
-    uint64_t next = 0;
-    std::string err;
-    auto r = wal_->readRecord(ref.offset, old, next, err);
-    if (r != Wal::ReadResult::Ok) {
-      ::unlink(tmp_path.c_str());
-      return Status::Error(Err::kIo, "checkpoint read failed: " + err);
+    if (ref.offset != cached_offset) {
+      WalRecord old;
+      uint64_t next = 0;
+      std::string err;
+      auto r = wal_->readRecord(ref.offset, old, next, err);
+      if (r != Wal::ReadResult::Ok) {
+        ::unlink(tmp_path.c_str());
+        return Status::Error(Err::kIo, "checkpoint read failed: " + err);
+      }
+      cached_offset = ref.offset;
+      cached_type = old.type;
+      cached_payload.clear();
+      cached_rows.clear();
+      cached_schema = nullptr;
+      if (old.type == static_cast<uint8_t>(WalType::Insert) ||
+          old.type == static_cast<uint8_t>(WalType::Update)) {
+        cached_payload = std::move(old.payload);
+      } else if (old.type == static_cast<uint8_t>(WalType::InsertBatch)) {
+        Table* t = tableById(ref.table);
+        if (!t) {
+          ::unlink(tmp_path.c_str());
+          return Status::Error(Err::kIo, "checkpoint batch has unknown table");
+        }
+        cached_schema = &t->schema;
+        bool ok = decodeInsertBatch(
+            t->schema, old.payload.data(), old.payload.size(),
+            [&](int64_t pk, Row& row) {
+              cached_rows.emplace_back(pk, std::move(row));
+              return true;
+            },
+            err);
+        if (!ok) {
+          ::unlink(tmp_path.c_str());
+          return Status::Error(Err::kIo, "checkpoint batch decode failed: " + err);
+        }
+      } else {
+        ::unlink(tmp_path.c_str());
+        return Status::Error(Err::kIo, "checkpoint location is not a row");
+      }
     }
-    if (old.type != static_cast<uint8_t>(WalType::Insert) &&
-        old.type != static_cast<uint8_t>(WalType::Update)) {
-      ::unlink(tmp_path.c_str());
-      return Status::Error(Err::kIo, "checkpoint location is not a row");
+    if (cached_type == static_cast<uint8_t>(WalType::Insert) ||
+        cached_type == static_cast<uint8_t>(WalType::Update)) {
+      Status a = append(WalType::Insert, ref.table, ref.pk, cached_payload);
+      if (!a.ok()) {
+        ::unlink(tmp_path.c_str());
+        return a;
+      }
+      continue;
     }
-    Status a = append(WalType::Insert, ref.table, ref.pk, std::move(old.payload));
+    const Row* found = nullptr;
+    for (const auto& entry : cached_rows) {
+      if (entry.first == ref.pk) {
+        found = &entry.second;
+        break;
+      }
+    }
+    if (found == nullptr || cached_schema == nullptr) {
+      ::unlink(tmp_path.c_str());
+      return Status::Error(Err::kIo, "checkpoint batch is missing a row");
+    }
+    Status a = append(WalType::Insert, ref.table, ref.pk,
+                      encodeRow(*cached_schema, *found));
     if (!a.ok()) {
       ::unlink(tmp_path.c_str());
       return a;
@@ -711,21 +799,27 @@ Status Database::loadSmallTables() {
   Status row_status = Status::Ok();
   Status scan = wal_->forEachRecord([&](const WalRecordView& v) {
     if (v.type != static_cast<uint8_t>(WalType::Insert) &&
-        v.type != static_cast<uint8_t>(WalType::Update)) {
+        v.type != static_cast<uint8_t>(WalType::Update) &&
+        v.type != static_cast<uint8_t>(WalType::InsertBatch)) {
       return true;
     }
     auto it = small.find(v.table);
     if (it == small.end()) return true;
     Table* table = it->second;
-    auto loc = table->locations.find(static_cast<int64_t>(v.pk));
-    if (loc == table->locations.end() || loc->second != v.offset) return true;
-    Row row;
     std::string err;
-    if (!decodeRow(table->schema, v.payload, v.payload_size, row, err)) {
+    bool ok = forEachRowInRecord(
+        table->schema, v,
+        [&](int64_t pk, Row& row) {
+          auto loc = table->locations.find(pk);
+          if (loc == table->locations.end() || loc->second != v.offset) return true;
+          table->rows[pk] = std::move(row);
+          return true;
+        },
+        err);
+    if (!ok) {
       row_status = Status::Error(Err::kIo, "load table failed: " + err);
       return false;
     }
-    table->rows[static_cast<int64_t>(v.pk)] = std::move(row);
     return true;
   });
   if (!scan.ok()) return scan;

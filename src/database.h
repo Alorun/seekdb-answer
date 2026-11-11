@@ -21,6 +21,9 @@ enum class WalType : uint8_t {
   CreateIndex = 6,
   DropTable = 7,
   TruncateTable = 8,
+  // One header + a columnar payload for a whole multi-row INSERT.  Each row
+  // shares this record's offset in Table::locations.
+  InsertBatch = 9,
 };
 
 struct WalRecord {
@@ -197,6 +200,13 @@ struct Table {
   std::unordered_map<int, QuantCache> quant_caches;
   std::unordered_map<int, Quant8Cache> quant8_caches;
 };
+
+// Expand one WAL row record (Insert/Update) or every row of an InsertBatch
+// through `fn`.  Returns false on corrupt payloads; a false return from `fn`
+// stops iteration early (the caller signals that case itself).
+bool forEachRowInRecord(
+    const Schema& schema, const WalRecordView& view,
+    const std::function<bool(int64_t, Row&)>& fn, std::string& err);
 
 class Database {
  public:
