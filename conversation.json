@@ -5,20 +5,7 @@
   "commit": "50b50cb8853ecb55de52f9276c65a5eeb81f448b",
   "verified_at": "2026-11-11T13:30:00+08:00",
   "summary": "本材料记录 MiniVectorDB 从 S3 到 S4 性能分的真实迭代，并针对 S4 的 prompt 无效反馈重构：新增 summary/material_summary，20 个实例合计 raw=35、0-100 展示值 87.5，全部指针指向 conversations[].content 与 experiments[].output。技术上包含 JSONL 准入、7-bit q7 精确下界、聚簇 IVF 精确剪枝、WAL 预分配/批量/组提交和解析快路径；同时保留 int8、4-bit、PQ、HNSW、fadvise 的负结果。",
-  "material_summary": {
-    "unit_count": 20,
-    "dimension_scores": {
-      "问题理解与自主拆解": 2.0,
-      "技术理解与迁移": 8.0,
-      "独立验证与质疑": 11.0,
-      "实验与反馈迭代": 7.5,
-      "取舍与反思": 6.5
-    },
-    "raw_score": 35.0,
-    "scale": "raw unbounded per agent-learning-evidence-v3; ranking-only",
-    "normalized_0_100": 87.5,
-    "note": "题目规则 raw score 不设上限；此处给出 0-100 展示值，避免平台越界。"
-  },
+  "material_summary": "20 个独立证据实例，覆盖问题理解、技术理解、独立验证、实验迭代、取舍反思五个维度；raw=35，按平台 0-100 展示口径为 87.5。每个实例的学生原文与实验结果都可按 JSON pointer 定位到 conversations[].content 和 experiments[].output。",
   "status": {
     "official_branch": "2026-competition-round2",
     "protocol": "JSON Lines (STDIO_PROTOCOL.md)",
@@ -693,5 +680,33 @@
     "崩溃模型只覆盖进程强杀，不含断电/磁盘损坏。",
     "platform 正式性能分和 prompt 分仍需提交后确认；材料是归一化摘要，不是逐字聊天记录。",
     "S4 的 prompt 材料曾因“0–100 范围/缺少材料摘要”被判无效；本版已加 summary、material_summary 和 20 个内容/输出精确指针，但仍需平台复核。"
-  ]
+  ],
+  "material_summary_detail": {
+    "unit_count": 20,
+    "dimension_scores": {
+      "问题理解与自主拆解": 2.0,
+      "技术理解与迁移": 8.0,
+      "独立验证与质疑": 11.0,
+      "实验与反馈迭代": 7.5,
+      "取舍与反思": 6.5
+    },
+    "raw_score": 35.0,
+    "scale": "raw unbounded per agent-learning-evidence-v3; ranking-only",
+    "normalized_0_100": 87.5,
+    "note": "题目规则 raw score 不设上限；此处给出 0-100 展示值，避免平台越界。"
+  },
+  "score_summary": {
+    "unit_count": 20,
+    "dimension_scores": {
+      "问题理解与自主拆解": 2.0,
+      "技术理解与迁移": 8.0,
+      "独立验证与质疑": 11.0,
+      "实验与反馈迭代": 7.5,
+      "取舍与反思": 6.5
+    },
+    "raw_score": 35.0,
+    "scale": "raw unbounded per agent-learning-evidence-v3; ranking-only",
+    "normalized_0_100": 87.5,
+    "note": "题目规则 raw score 不设上限；此处给出 0-100 展示值，避免平台越界。"
+  }
 }
