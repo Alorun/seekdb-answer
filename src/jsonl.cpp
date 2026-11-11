@@ -69,6 +69,22 @@ struct Parser {
   bool string(std::string& out) {
     if (p >= s.size() || s[p] != '"') return fail("expected string");
     ++p;
+    // Fast path for the common case (SQL text with no JSON escapes): scan for
+    // the closing quote and append one contiguous slice instead of pushing
+    // back every byte.  Multi-row INSERT requests are ~160 KB each.
+    {
+      size_t scan = p;
+      while (scan < s.size()) {
+        unsigned char c = static_cast<unsigned char>(s[scan]);
+        if (c == '"') {
+          out.append(s.data() + p, scan - p);
+          p = scan + 1;
+          return true;
+        }
+        if (c == '\\' || c < 0x20) break;
+        ++scan;
+      }
+    }
     while (p < s.size()) {
       unsigned char c = static_cast<unsigned char>(s[p++]);
       if (c == '"') return true;

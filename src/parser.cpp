@@ -73,37 +73,76 @@ class Lexer {
         t.kind = Token::Kind::String;
         t.start = i;
         ++i;
-        std::string value;
-        bool closed = false;
-        while (i < n) {
-          char ch = input_[i];
-          if (ch == '\'') {
-            if (i + 1 < n && input_[i + 1] == '\'') {
-              value.push_back('\'');
-              i += 2;
-              continue;
-            }
-            ++i;
-            closed = true;
-            break;
-          }
-          if (ch == '\\' && i + 1 < n) {
-            char e = input_[i + 1];
-            i += 2;
-            switch (e) {
-              case 'n': value.push_back('\n'); break;
-              case 't': value.push_back('\t'); break;
-              case 'r': value.push_back('\r'); break;
-              case '0': value.push_back('\0'); break;
-              case '\\': value.push_back('\\'); break;
-              case '\'': value.push_back('\''); break;
-              case '"': value.push_back('"'); break;
-              default: value.push_back(e); break;
-            }
+        const size_t begin = i;
+        // Fast path: the benchmark's vector/string literals contain no
+        // escapes, so find the closing quote and assign one substring instead
+        // of pushing back every byte (13 MB of vector text in the write
+        // benchmark).  Any backslash or doubled quote takes the slow path.
+        size_t scan = i;
+        bool escaped = false;
+        while (scan < n) {
+          char ch = input_[scan];
+          if (ch == '\\') {
+            escaped = true;
+            scan += 2;
             continue;
           }
-          value.push_back(ch);
-          ++i;
+          if (ch == '\'') {
+            if (scan + 1 < n && input_[scan + 1] == '\'') {
+              escaped = true;
+              scan += 2;
+              continue;
+            }
+            break;
+          }
+          ++scan;
+        }
+        std::string value;
+        bool closed = false;
+        if (scan >= n) {
+          t.kind = Token::Kind::Invalid;
+          t.need_more = true;
+          t.text = "unterminated string";
+          t.end = n;
+          out.push_back(std::move(t));
+          return out;
+        }
+        if (!escaped) {
+          value.assign(input_, begin, scan - begin);
+          i = scan + 1;
+          closed = true;
+        } else {
+          i = begin;
+          while (i < n) {
+            char ch = input_[i];
+            if (ch == '\'') {
+              if (i + 1 < n && input_[i + 1] == '\'') {
+                value.push_back('\'');
+                i += 2;
+                continue;
+              }
+              ++i;
+              closed = true;
+              break;
+            }
+            if (ch == '\\' && i + 1 < n) {
+              char e = input_[i + 1];
+              i += 2;
+              switch (e) {
+                case 'n': value.push_back('\n'); break;
+                case 't': value.push_back('\t'); break;
+                case 'r': value.push_back('\r'); break;
+                case '0': value.push_back('\0'); break;
+                case '\\': value.push_back('\\'); break;
+                case '\'': value.push_back('\''); break;
+                case '"': value.push_back('"'); break;
+                default: value.push_back(e); break;
+              }
+              continue;
+            }
+            value.push_back(ch);
+            ++i;
+          }
         }
         if (!closed) {
           t.kind = Token::Kind::Invalid;
@@ -306,8 +345,8 @@ class Parser {
     if (idx >= tokens_.size()) return tokens_.back();
     return tokens_[idx];
   }
-  const Token& next() {
-    const Token& t = peek();
+  Token& next() {
+    Token& t = const_cast<Token&>(peek());
     if (t.kind != Token::Kind::End) ++pos_;
     last_end_ = t.end;
     return t;
@@ -400,7 +439,8 @@ class Parser {
       return Value::MakeInt(v);
     }
     if (peek().kind == Token::Kind::String) {
-      return Value::MakeStr(next().text);
+      Token& tok = next();
+      return Value::MakeStr(std::move(tok.text));
     }
     fail(Err::kSyntax, "expected literal value");
     return Value{};

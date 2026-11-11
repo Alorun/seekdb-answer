@@ -1482,3 +1482,67 @@ admission_pass, local_E_write, local_E_query, recall, notes
 - 不可变段文件/manifest；当前磁盘模式查询仍扫描 WAL。
 - line mode 仅支持一行一条；多行 continuation 仍不支持（默认 semicolon 模式完整支持）。
 - 官方驱动未验证：ready/DML ack/错误文本/发送分片仍待平台预检与正式反馈。
+
+---
+
+## 13. v4.0 性能与材料更新（2026-11-11）
+
+本节记录 v0.4 之后的一次完整性能迭代。所有数字均为本机 Release 构建、
+`taskset -c 0,2`（两个物理核，避开 SMT 兄弟核）、`tools/bench.py` 的
+10k×128、100 批写入、1000 次 TopK（500 过滤 + 500 无过滤）测量；与
+`057126c01d0f1e`（S3，正式性能分 2469 对应的代码提交）的本地构建对跑。
+
+| 指标 | 057126c 基线 | v4.0 | 变化 |
+| --- | ---: | ---: | ---: |
+| 10k 写入 wall | 0.63 s | 0.306 s | 2.06× |
+| 1000 次查询 wall | 0.223 s | 0.112 s | 1.99× |
+| 10k 写入设备字节（`/proc/diskstats`） | ~10.1 MB | ~6.8 MB | 1.5× 更少 |
+| 查询 DB 侧（预热后，profile） | — | ~40 ms/1000 | — |
+| 峰值 RSS | 19.5 MB | 20.8 MB | +1.3 MB（q7 cache） |
+
+### 13.1 查询路径
+
+1. **7-bit 标量量化 + AVX2 `maddubs`**：`scale=max|v|/63`，code∈[-63,63]；
+   `abs(a-b)` 后 `maddubs` 直接平方求和，避免 int8→int16 扩宽和 int16
+   直接差的额外指令。10k×128 单线程 `10k×1000` 扫描从 float 的 ~100 ms
+   降到 ~44 ms。
+2. **精确模式的下界剪枝**：三角形不等式
+   `| ||v-q|| - scale·||code(v)-code(q)|| | <= err(v)+err(q)`；用当前精确
+   k-th 距离作阈值，只对可能进入 TopK 的约 20 个候选跑 float32 内核。
+   剪枝有 1e-6 相对余量，极大/极小 float32 也保持精确。
+3. **过滤路径的向量索引**：FilterCache 同时保存 `value -> 行号`；单等值
+   条件直接按行号访问连续 VectorCache，过滤查询从 ~66 µs 降到 ~21 µs。
+4. **单线程扫描**：本机 0/1 是 SMT 兄弟核，双线程反而更慢；即使在
+   0/2 两个物理核上，10k×128 的 q7 扫描是内存/指令受限，单线程也更快。
+   保留 `MVDB_TWO_THREADS=1` 作为大表/计算受限工作负载的可选项。
+
+### 13.2 写入路径
+
+1. **WAL 预分配**：`fallocate(FALLOC_FL_KEEP_SIZE, 0, 32 MiB)`，避免每次
+   `fdatasync` 同时为下一段 extent 记日志；本机 fdatasync 从 ~1.5 ms 降到
+   ~0.9 ms（文件系统状态不同会有波动）。
+2. **批量 WAL**：一条多行 INSERT 的所有记录编码进一个 buffer，一次
+   `write` 落盘；100 行从 100 次 `writev` 降到 1 次。
+3. **组提交**：JSONL 输入循环一次读取可用字节；连续到达的 autocommit
+   DML 先只追加 commit marker，等输入暂空或遇到非 DML 时统一
+   `fdatasync`，然后按请求顺序释放全部响应。响应只在 sync 成功后发出，
+   保持“确认提交不丢”的语义。
+4. **解析热路径**：字符串 lexer/JSON 字符串走无转义快路径（一次
+   `assign` 代替逐字节 push_back）；向量分量用 `from_chars(float)` 代替
+   `strtod`；100 条多行 INSERT 的 CPU 时间从 ~300 ms 降到 ~70 ms。
+
+### 13.3 被否定的方案（保留为材料证据）
+
+- int8 扩宽 int16 的 `cvtepi8_epi16` 核：95.7 ms/1000，比 q7 44 ms 慢。
+- 4-bit packed + `maddubs`：50.9–64.6 ms/1000，解包开销抵消带宽收益。
+- PQ 32×256 + AVX2 gather：构建 0.41 s，查询 207 µs/次（recall 0.995），
+  比 q7 慢。
+- HNSW M=16/ef=256：recall 0.981，p50 280 µs/次，比 q7 慢。
+- 提交后 `posix_fadvise(DONTNEED)`：设备写字节反而上升，已回退。
+
+### 13.4 正确性证据
+
+- 官方公开用例 20/20；SQL 边界 158×2 模式 0 失败；崩溃/随机 SIGKILL
+  200 次 0 失败；`tests/run_recall.py` 的 100 条 exact 查询与 NumPy
+  暴力真值 id/顺序/距离一致，ann recall@10=1.0000；缓存失效、事务回滚、
+  距离并列按主键均通过。

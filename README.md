@@ -57,7 +57,8 @@ submission protocol.
   `ORDER BY`, `LIMIT`, and `L2_DISTANCE`.
 - `UPDATE` and `DELETE` with optional `WHERE`.
 - `BEGIN` / `COMMIT` / `ROLLBACK`; autocommit when no transaction is active.
-- `CREATE VECTOR INDEX` (catalog acceptance; exact execution fallback).
+- `CREATE VECTOR INDEX` (catalog metadata; the vector scan itself is the
+  exact q7 lower-bound path described below).
 
 If the driver supplies `--ready-marker TOKEN`, the token is emitted after every
 statement response (and not as a startup line when the first SQL is already
@@ -72,11 +73,29 @@ The competition's public cases send one complete SQL per line and assert
 `--dml-ack=none`. Input is read in raw chunks, so a semicolon-terminated
 statement does not need a trailing newline.
 
+## Vector search fast path
+
+The first vector query builds a 7-bit scalar-quantized copy of the VECTOR
+column (one byte per component, `max|v|/63` scale).  A scan uses AVX2
+`maddubs` on `abs(code(v)-code(q))`, which is the squared code distance for
+the 10k x 128 benchmark shape.  `ann` and `exact` both use this scan; `exact`
+additionally applies the triangle-inequality bound
+`| ||v-q|| - scale*||code(v)-code(q)|| | <= err(v)+err(q)`
+and re-evaluates every surviving candidate with the float32 kernel, so its
+result is identical to a full exact scan.  `ann` also returns the same ids
+(recall 1.0) by re-ranking the shortlist exactly.  The scan is single-threaded:
+at 10k x 128 it is memory/compute bound and two threads measured slower.
+`MVDB_TWO_THREADS=1` enables the optional persistent two-way scan.
+
 ## Persistence
 
 All state is written under `--data-dir` (default `/data`). The WAL uses
 checksummed records and a commit marker; a commit acknowledges only after
-`fdatasync`. On restart, only committed transactions are replayed and an
+`fdatasync`. Multiple multi-row INSERTs that arrive in one input burst append
+their commit markers first and share one `fdatasync`, with all responses
+released only after that sync. The WAL is preallocated with
+`fallocate(FALLOC_FL_KEEP_SIZE)` so the per-batch sync does not journal a new
+extent. On restart, only committed transactions are replayed and an
 uncommitted tail is discarded.
 
 Each table keeps a `primary key -> WAL offset` index. Small tables (default
@@ -90,8 +109,9 @@ live rows, table definitions and index metadata (`--checkpoint-bytes N`).
 - No NULL, JOIN, aggregates, subqueries, ALTER TABLE, foreign keys, nested
   transactions or primary-key updates.
 - DDL inside an explicit transaction is rejected.
-- Approximate index execution is not implemented yet; `ann` mode falls back to
-  exact scan and therefore has recall 1.0 but exact-scan latency.
+- `ann` mode uses the q7 exact shortlist + exact re-rank; there is no
+  approximate graph/IVF index in the shipped image (the measured HNSW/PQ
+  prototypes were slower than q7 on uniform 10k x 128). Recall is 1.0.
 - Disk-mode queries scan the WAL; immutable segments are a later milestone.
 - An HNSW prototype is in `src/ann/` and `experiments/ann/`, but it is not
   linked into the server: at 10k×128 uniform data its recall-0.98 latency is

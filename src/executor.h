@@ -1,13 +1,49 @@
 #pragma once
 
+#include <condition_variable>
 #include <cstdint>
+#include <exception>
+#include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "database.h"
 #include "parser.h"
 
 namespace mvdb {
+
+// Reusable two-way scan executor. The benchmark issues one TopK request at a
+// time, so creating two std::threads per query costs more than the scan itself
+// at 10k rows. This keeps one helper thread alive for the whole session; the
+// caller runs the first half of the scan while the helper runs the second.
+class ScanPool {
+ public:
+  ScanPool();
+  ~ScanPool();
+  ScanPool(const ScanPool&) = delete;
+  ScanPool& operator=(const ScanPool&) = delete;
+
+  bool usable() const { return usable_; }
+  // Runs `helper_job` on the persistent worker and `main_job` on the caller,
+  // then waits for the helper. Both jobs must not throw across the boundary.
+  void run(const std::function<void()>& main_job,
+           const std::function<void()>& helper_job);
+
+ private:
+  void workerLoop();
+
+  std::thread worker_;
+  std::mutex mu_;
+  std::condition_variable cv_;
+  std::function<void()> job_;
+  std::exception_ptr error_;
+  uint64_t seq_ = 0;
+  uint64_t done_ = 0;
+  bool stop_ = false;
+  bool usable_ = false;
+};
 
 struct ResolvedCond {
   int col = -1;
@@ -37,6 +73,12 @@ class Executor {
 
   Status execute(const Statement& stmt, ExecResult& out);
   void setQueryMode(const std::string& mode) { query_mode_ = mode; }
+  // Batch autocommit DML: append commit markers without syncing, then one
+  // fdatasync for the whole group.  The caller must not release a success
+  // response until flushSync() returns Ok.
+  void setDeferSync(bool defer) { defer_sync_ = defer; }
+  bool inTransaction() const { return active_; }
+  Status flushSync();
   Status shutdown();
 
  private:
@@ -64,6 +106,8 @@ class Executor {
   Status executeCreateIndex(const CreateIndexStmt& stmt);
 
   Status applyInsert(Table& table, int64_t pk, Row row);
+  Status applyInsertBatched(Table& table, int64_t pk, Row row,
+                            std::string& batch, uint64_t* out_offset);
   Status applyUpdate(Table& table, int64_t pk, Row row);
   Status applyDelete(Table& table, int64_t pk);
 
@@ -81,7 +125,10 @@ class Executor {
                                 size_t undo_size, uint64_t wal_offset);
 
   Database& db_;
+  ScanPool pool_;
   bool active_ = false;
+  bool defer_sync_ = false;
+  bool pending_sync_ = false;
   uint64_t txn_id_ = 0;
   uint64_t txn_start_ = 0;
   uint64_t first_lsn_ = 0;

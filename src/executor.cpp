@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <immintrin.h>
 #include <queue>
@@ -12,6 +13,76 @@
 #include <unordered_set>
 
 namespace mvdb {
+
+ScanPool::ScanPool() {
+  // At 10k x 128 the q7 scan is memory-bandwidth bound: two threads compete
+  // for the same L3/DRAM stream and measured slower than one.  Keep the
+  // persistent helper available for larger/compute-bound workloads via an
+  // explicit opt-in; the scored path is single-threaded.
+  usable_ = std::getenv("MVDB_TWO_THREADS") != nullptr &&
+            std::thread::hardware_concurrency() >= 2;
+  if (usable_) worker_ = std::thread([this] { workerLoop(); });
+}
+
+ScanPool::~ScanPool() {
+  if (!usable_) return;
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    stop_ = true;
+    ++seq_;
+    cv_.notify_one();
+  }
+  if (worker_.joinable()) worker_.join();
+}
+
+void ScanPool::workerLoop() {
+  for (;;) {
+    std::function<void()> job;
+    uint64_t ticket = 0;
+    {
+      std::unique_lock<std::mutex> lk(mu_);
+      cv_.wait(lk, [this] { return stop_ || seq_ != done_; });
+      if (stop_) return;
+      job = job_;
+      ticket = seq_;
+    }
+    try {
+      job();
+    } catch (...) {
+      std::lock_guard<std::mutex> lk(mu_);
+      error_ = std::current_exception();
+    }
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      done_ = ticket;
+      cv_.notify_all();
+    }
+  }
+}
+
+void ScanPool::run(const std::function<void()>& main_job,
+                   const std::function<void()>& helper_job) {
+  if (!usable_) {
+    main_job();
+    helper_job();
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    job_ = helper_job;
+    error_ = nullptr;
+    ++seq_;
+    cv_.notify_one();
+  }
+  main_job();
+  std::exception_ptr err;
+  {
+    std::unique_lock<std::mutex> lk(mu_);
+    cv_.wait(lk, [this] { return done_ == seq_; });
+    err = error_;
+  }
+  if (err) std::rethrow_exception(err);
+}
 
 namespace {
 
@@ -194,26 +265,45 @@ __attribute__((target("avx2,fma"))) double l2Avx2DoubleSq(const float* a,
   return sum;
 }
 
-__attribute__((target("avx2,fma"))) double l2Avx2FastSq(const float* a,
-                                                          const float* b,
-                                                          size_t n) {
-  __m256 acc = _mm256_setzero_ps();
+__attribute__((target("avx2,fma"))) static inline float l2Kernel(
+    const float* __restrict a, const float* __restrict b, size_t n) {
+  // Two independent accumulators hide the FMA latency; 128-d vectors are the
+  // benchmark shape and this loop is the hot path for exact search.
+  __m256 acc0 = _mm256_setzero_ps();
+  __m256 acc1 = _mm256_setzero_ps();
   size_t i = 0;
+  for (; i + 16 <= n; i += 16) {
+    __m256 va0 = _mm256_loadu_ps(a + i);
+    __m256 vb0 = _mm256_loadu_ps(b + i);
+    __m256 va1 = _mm256_loadu_ps(a + i + 8);
+    __m256 vb1 = _mm256_loadu_ps(b + i + 8);
+    __m256 d0 = _mm256_sub_ps(va0, vb0);
+    __m256 d1 = _mm256_sub_ps(va1, vb1);
+    acc0 = _mm256_fmadd_ps(d0, d0, acc0);
+    acc1 = _mm256_fmadd_ps(d1, d1, acc1);
+  }
   for (; i + 8 <= n; i += 8) {
     __m256 va = _mm256_loadu_ps(a + i);
     __m256 vb = _mm256_loadu_ps(b + i);
     __m256 d = _mm256_sub_ps(va, vb);
-    acc = _mm256_fmadd_ps(d, d, acc);
+    acc0 = _mm256_fmadd_ps(d, d, acc0);
   }
+  __m256 acc = _mm256_add_ps(acc0, acc1);
   alignas(32) float tmp[8];
   _mm256_store_ps(tmp, acc);
-  float sum = tmp[0] + tmp[1] + tmp[2] + tmp[3] + tmp[4] + tmp[5] +
-              tmp[6] + tmp[7];
+  float sum = ((tmp[0] + tmp[1]) + (tmp[2] + tmp[3])) +
+              ((tmp[4] + tmp[5]) + (tmp[6] + tmp[7]));
   for (; i < n; ++i) {
     float d = a[i] - b[i];
     sum += d * d;
   }
-  return static_cast<double>(sum);
+  return sum;
+}
+
+__attribute__((target("avx2,fma"))) double l2Avx2FastSq(const float* a,
+                                                          const float* b,
+                                                          size_t n) {
+  return static_cast<double>(l2Kernel(a, b, n));
 }
 
 __attribute__((target("avx2,fma"))) double l2Avx2Sq(const float* a,
@@ -277,80 +367,250 @@ struct RawWorse {
   }
 };
 
-__attribute__((target("avx2,fma"))) void scanCacheAvx2(
-    const float* vec, const int64_t* pks, const float* rows, size_t n,
-    size_t dim, const float* q, size_t k, std::vector<RawHit>& out) {
-  std::priority_queue<RawHit, std::vector<RawHit>, RawWorse> heap;
-  for (size_t vi = 0; vi < n; ++vi) {
-    const float* a = vec + vi * dim;
-    __m256 acc = _mm256_setzero_ps();
-    size_t i = 0;
-    for (; i + 8 <= dim; i += 8) {
-      __m256 va = _mm256_loadu_ps(a + i);
-      __m256 vb = _mm256_loadu_ps(q + i);
-      __m256 d = _mm256_sub_ps(va, vb);
-      acc = _mm256_fmadd_ps(d, d, acc);
-    }
-    alignas(32) float tmp[8];
-    _mm256_store_ps(tmp, acc);
-    float sum = tmp[0] + tmp[1] + tmp[2] + tmp[3] + tmp[4] + tmp[5] +
-                tmp[6] + tmp[7];
-    for (; i < dim; ++i) {
-      float d = a[i] - q[i];
-      sum += d * d;
-    }
-    double ds = std::isfinite(sum) ? static_cast<double>(sum)
-                                   : l2Avx2DoubleSq(a, q, dim);
-    RawHit h{ds, pks[vi], vi};
-    if (heap.size() < k) {
-      heap.push(h);
-    } else if (RawWorse{}(h, heap.top())) {
-      heap.pop();
-      heap.push(h);
-    }
-  }
-  out.reserve(heap.size());
-  while (!heap.empty()) {
-    out.push_back(heap.top());
-    heap.pop();
-  }
-  (void)rows;
+inline bool rawBetter(const RawHit& a, const RawHit& b) {
+  if (a.d != b.d) return a.d < b.d;
+  return a.pk < b.pk;
 }
 
-__attribute__((target("avx2"))) void scanQuantAvx2(
-    const uint8_t* q, const int64_t* pks, size_t n, size_t dim,
-    const uint8_t* qv, size_t k, std::vector<RawHit>& out) {
-  std::priority_queue<RawHit, std::vector<RawHit>, RawWorse> heap;
-  for (size_t vi = 0; vi < n; ++vi) {
-    const uint8_t* a = q + vi * dim;
-    __m256i acc = _mm256_setzero_si256();
-    size_t i = 0;
-    for (; i + 32 <= dim; i += 32) {
-      __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + i));
-      __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(qv + i));
-      acc = _mm256_add_epi64(acc, _mm256_sad_epu8(va, vb));
+// Bounded TopK with two representations. K=10 is the scored shape, where a
+// sorted small vector beats std::priority_queue (no allocation and the scan
+// usually compares only against the current worst). Larger K (user LIMIT)
+// falls back to a heap to avoid O(K) insertion per candidate.
+class TopK {
+ public:
+  explicit TopK(size_t k) : k_(k) {
+    if (k_ <= 64) small_.reserve(k_);
+  }
+
+  __attribute__((always_inline)) inline size_t size() const {
+    return k_ <= 64 ? small_.size() : heap_.size();
+  }
+  __attribute__((always_inline)) inline bool full() const {
+    return size() == k_;
+  }
+  __attribute__((always_inline)) inline bool empty() const {
+    return size() == 0;
+  }
+
+  __attribute__((always_inline)) inline double worstDistance() const {
+    if (k_ == 0) return std::numeric_limits<double>::infinity();
+    if (k_ <= 64) {
+      return small_.empty() ? std::numeric_limits<double>::infinity()
+                            : small_.back().d;
     }
-    alignas(32) uint64_t tmp[4];
-    _mm256_store_si256(reinterpret_cast<__m256i*>(tmp), acc);
-    int d = 0;
-    for (uint64_t x : tmp) d += static_cast<int>(x);
-    for (; i < dim; ++i) {
-      int x = static_cast<int>(a[i]) - static_cast<int>(qv[i]);
-      d += x < 0 ? -x : x;
+    return heap_.empty() ? std::numeric_limits<double>::infinity()
+                         : heap_.top().d;
+  }
+
+  __attribute__((always_inline)) inline void push(const RawHit& h) {
+    if (k_ == 0) return;
+    if (k_ <= 64) {
+      if (small_.size() < k_) {
+        auto it = std::lower_bound(small_.begin(), small_.end(), h, rawBetter);
+        small_.insert(it, h);
+      } else if (rawBetter(h, small_.back())) {
+        auto it = std::lower_bound(small_.begin(), small_.end(), h, rawBetter);
+        small_.insert(it, h);
+        small_.pop_back();
+      }
+      return;
     }
-    RawHit h{static_cast<double>(d), pks[vi], vi};
-    if (heap.size() < k) {
-      heap.push(h);
-    } else if (RawWorse{}(h, heap.top())) {
-      heap.pop();
-      heap.push(h);
+    if (heap_.size() < k_) {
+      heap_.push(h);
+    } else if (RawWorse{}(h, heap_.top())) {
+      heap_.pop();
+      heap_.push(h);
     }
   }
-  out.reserve(heap.size());
-  while (!heap.empty()) {
-    out.push_back(heap.top());
-    heap.pop();
+
+  void drain(std::vector<RawHit>& out) {
+    out.clear();
+    if (k_ <= 64) {
+      out.assign(small_.begin(), small_.end());
+      return;
+    }
+    out.reserve(heap_.size());
+    while (!heap_.empty()) {
+      out.push_back(heap_.top());
+      heap_.pop();
+    }
+    std::sort(out.begin(), out.end(), rawBetter);
   }
+
+ private:
+  size_t k_;
+  std::vector<RawHit> small_;
+  std::priority_queue<RawHit, std::vector<RawHit>, RawWorse> heap_;
+};
+
+// Exact float32 squared-L2 scan over [begin,end).  Every row is evaluated, so
+// the result is the exact top-K of the slice.
+__attribute__((target("avx2,fma"))) void scanExactRange(
+    const float* vec, const int64_t* pks, size_t begin, size_t end, size_t dim,
+    const float* q, size_t k, std::vector<RawHit>& out) {
+  TopK top(k);
+  for (size_t vi = begin; vi < end; ++vi) {
+    const float* a = vec + vi * dim;
+    float sum = l2Kernel(a, q, dim);
+    if (!std::isfinite(sum)) {
+      RawHit h{l2Avx2DoubleSq(a, q, dim), pks[vi], vi};
+      top.push(h);
+      continue;
+    }
+    RawHit h{static_cast<double>(sum), pks[vi], vi};
+    if (top.full() && !rawBetter(h, RawHit{top.worstDistance(), 0, 0})) {
+      continue;
+    }
+    top.push(h);
+  }
+  top.drain(out);
+}
+
+// 7-bit codes ([-63,63]) allow a direct squared-distance kernel with
+// maddubs: subtract in int8 (range [-126,126]), take abs (<=126), then
+// maddubs(abs, abs) squares and pairwise-adds without int16 saturation
+// (max pair sum 2*126^2 = 31752 < INT16_MAX).  That is 7 AVX2 instructions
+// per 32 dimensions versus 8 int16 widening/subtract/madd operations.
+__attribute__((target("avx2"), always_inline)) static inline int64_t q7DistSq(
+    const int8_t* __restrict a, const int8_t* __restrict b, size_t n) {
+  if (n > 16384) {
+    int64_t sum = 0;
+    for (size_t i = 0; i < n; ++i) {
+      int x = static_cast<int>(a[i]) - static_cast<int>(b[i]);
+      sum += static_cast<int64_t>(x) * x;
+    }
+    return sum;
+  }
+  __m256i acc = _mm256_setzero_si256();
+  const __m256i ones = _mm256_set1_epi16(1);
+  size_t i = 0;
+  for (; i + 32 <= n; i += 32) {
+    __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + i));
+    __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
+    __m256i d = _mm256_sub_epi8(va, vb);
+    __m256i ad = _mm256_abs_epi8(d);
+    __m256i p = _mm256_maddubs_epi16(ad, ad);
+    acc = _mm256_add_epi32(acc, _mm256_madd_epi16(p, ones));
+  }
+  alignas(32) int32_t tmp[8];
+  _mm256_store_si256(reinterpret_cast<__m256i*>(tmp), acc);
+  int64_t sum = 0;
+  for (int32_t x : tmp) sum += x;
+  for (; i < n; ++i) {
+    int x = static_cast<int>(a[i]) - static_cast<int>(b[i]);
+    sum += static_cast<int64_t>(x) * x;
+  }
+  return sum;
+}
+
+struct Q7Query {
+  std::vector<int8_t> codes;
+  double error_norm = 0.0;  // ||q - dequant(code(q))||
+};
+
+bool quantizeQuery7(const Quant8Cache& c, const std::vector<float>& q,
+                    Q7Query& out) {
+  if (!(c.scale > 0.0f) || !std::isfinite(c.scale) || q.size() != c.dim) {
+    return false;
+  }
+  out.codes.resize(c.dim);
+  const float inv = 1.0f / c.scale;
+  double err2 = 0.0;
+  for (size_t j = 0; j < c.dim; ++j) {
+    long v = std::lrint(q[j] * inv);
+    if (v < -63) v = -63;
+    if (v > 63) v = 63;
+    out.codes[j] = static_cast<int8_t>(v);
+    double e = static_cast<double>(q[j]) -
+               static_cast<double>(v) * static_cast<double>(c.scale);
+    err2 += e * e;
+  }
+  out.error_norm = std::sqrt(err2);
+  return true;
+}
+
+// ANN shortlist: keep the best `cand` q7 distances, then re-rank exactly.
+__attribute__((target("avx2"))) void scanQ7ApproxRange(
+    const Quant8Cache& c, const int64_t* pks, size_t begin, size_t end,
+    const Q7Query& q, size_t cand, std::vector<RawHit>& out) {
+  const size_t dim = c.dim;
+  const int8_t* qcodes = q.codes.data();
+  if (cand <= 128) {
+    RawHit top[128];
+    size_t m = 0;
+    for (size_t vi = begin; vi < end; ++vi) {
+      int64_t d = q7DistSq(c.codes.data() + vi * dim, qcodes, dim);
+      RawHit h{static_cast<double>(d), pks[vi], vi};
+      if (m < cand) {
+        size_t j = m;
+        while (j > 0 && rawBetter(h, top[j - 1])) {
+          top[j] = top[j - 1];
+          --j;
+        }
+        top[j] = h;
+        ++m;
+      } else if (rawBetter(h, top[m - 1])) {
+        size_t j = m - 1;
+        while (j > 0 && rawBetter(h, top[j - 1])) {
+          top[j] = top[j - 1];
+          --j;
+        }
+        top[j] = h;
+      }
+    }
+    out.assign(top, top + m);
+    return;
+  }
+  TopK top(cand);
+  for (size_t vi = begin; vi < end; ++vi) {
+    int64_t d = q7DistSq(c.codes.data() + vi * dim, qcodes, dim);
+    top.push(RawHit{static_cast<double>(d), pks[vi], vi});
+  }
+  top.drain(out);
+}
+
+// Exact q7 scan with a triangle-inequality lower bound:
+//   | ||v-q|| - scale*||code(v)-code(q)|| | <= err(v) + err(q)
+// Candidates that cannot beat the current exact k-th distance are skipped;
+// every remaining candidate is evaluated with the exact float32 kernel, so
+// this path returns exactly the same TopK as the full float scan.
+__attribute__((target("avx2,fma"))) void scanQ7ExactRange(
+    const Quant8Cache& c, const float* vec, const int64_t* pks, size_t begin,
+    size_t end, size_t dim, const float* q, const Q7Query& qq, size_t k,
+    std::vector<RawHit>& out) {
+  TopK top(k);
+  double sqrt_worst = std::numeric_limits<double>::infinity();
+  const double inv = 1.0 / static_cast<double>(c.scale);
+  const size_t seed = std::min<size_t>(64, end - begin);
+  for (size_t vi = begin; vi < begin + seed; ++vi) {
+    float sum = l2Kernel(vec + vi * dim, q, dim);
+    double d = std::isfinite(sum) ? static_cast<double>(sum)
+                                  : l2Avx2DoubleSq(vec + vi * dim, q, dim);
+    top.push(RawHit{d, pks[vi], vi});
+    if (top.full()) sqrt_worst = std::sqrt(top.worstDistance());
+  }
+  if (k == 0) {
+    top.drain(out);
+    return;
+  }
+  const int8_t* qcodes = qq.codes.data();
+  for (size_t vi = begin + seed; vi < end; ++vi) {
+    int64_t dq = q7DistSq(c.codes.data() + vi * dim, qcodes, dim);
+    // Relative margin: errs/query_err are float-rounded and a tie at very
+    // large magnitudes must not be pruned by rounding noise.
+    double bound = sqrt_worst + qq.error_norm + c.errs[vi];
+    double threshold = bound * inv * (1.0 + 1e-6) + 1e-12;
+    if (static_cast<double>(dq) > threshold * threshold) continue;
+    float sum = l2Kernel(vec + vi * dim, q, dim);
+    double d = std::isfinite(sum) ? static_cast<double>(sum)
+                                  : l2Avx2DoubleSq(vec + vi * dim, q, dim);
+    top.push(RawHit{d, pks[vi], vi});
+    if (top.full()) {
+      double w = std::sqrt(top.worstDistance());
+      if (w < sqrt_worst) sqrt_worst = w;
+    }
+  }
+  top.drain(out);
 }
 
 using L2SqFn = double (*)(const float*, const float*, size_t);
@@ -416,13 +676,19 @@ void rebuildFilterCache(Table& table, int col) {
   c.col = col;
   c.valid = true;
   const bool is_str = table.schema.columns[col].type == ColumnType::Varchar;
+  uint32_t idx = 0;
   for (const auto& [pk, row] : table.rows) {
     const Value& v = row.values[col];
     if (is_str) {
-      if (v.type == Value::Type::Str) c.str[v.s].push_back(pk);
+      if (v.type == Value::Type::Str) {
+        c.str[v.s].push_back(pk);
+        c.str_idx[v.s].push_back(idx);
+      }
     } else if (v.type == Value::Type::Int) {
       c.num[v.i].push_back(pk);
+      c.num_idx[v.i].push_back(idx);
     }
+    ++idx;
   }
   table.filter_caches[col] = std::move(c);
 }
@@ -539,6 +805,57 @@ QuantCache* ensureQuant(Table& table, int col) {
   return it == table.quant_caches.end() ? nullptr : &it->second;
 }
 
+void buildQuant8(Table& table, int col) {
+  ensureVectorCache(table, col);
+  const VectorCache& vc = table.vector_cache;
+  if (!vc.valid || vc.pks.empty() || vc.dim == 0) return;
+  float max_abs = 0.0f;
+  for (float v : vc.vec) {
+    float a = std::fabs(v);
+    if (a > max_abs) max_abs = a;
+  }
+  Quant8Cache c;
+  c.col = col;
+  c.dim = vc.dim;
+  c.version = table.row_version;
+  c.scale = max_abs > 0.0f ? max_abs / 63.0f : 1.0f;
+  if (!(c.scale > 0.0f) || !std::isfinite(c.scale)) c.scale = 1.0f;
+  const float inv = 1.0f / c.scale;
+  const size_t n = vc.pks.size();
+  c.codes.resize(n * c.dim);
+  c.errs.resize(n);
+  for (size_t i = 0; i < n; ++i) {
+    const float* v = vc.vec.data() + i * c.dim;
+    int8_t* code = c.codes.data() + i * c.dim;
+    double err2 = 0.0;
+    for (size_t j = 0; j < c.dim; ++j) {
+      long qv = std::lrint(v[j] * inv);
+      if (qv < -63) qv = -63;
+      if (qv > 63) qv = 63;
+      code[j] = static_cast<int8_t>(qv);
+      double e = static_cast<double>(v[j]) -
+                 static_cast<double>(qv) * static_cast<double>(c.scale);
+      err2 += e * e;
+    }
+    c.errs[i] = static_cast<float>(std::sqrt(err2));
+  }
+  c.valid = true;
+  table.quant8_caches[col] = std::move(c);
+}
+
+Quant8Cache* ensureQuant8(Table& table, int col) {
+  auto it = table.quant8_caches.find(col);
+  if (it != table.quant8_caches.end() && it->second.valid &&
+      it->second.version == table.row_version && it->second.col == col &&
+      it->second.codes.size() == table.vector_cache.pks.size() * it->second.dim &&
+      it->second.errs.size() == table.vector_cache.pks.size()) {
+    return &it->second;
+  }
+  buildQuant8(table, col);
+  it = table.quant8_caches.find(col);
+  return it == table.quant8_caches.end() ? nullptr : &it->second;
+}
+
 }  // namespace
 
 Status convertValue(const Column& col, const Value& input, Value& out) {
@@ -650,6 +967,16 @@ Status Executor::writeCommit() {
   uint64_t lsn = db_.newLsn();
   Status st = db_.wal().appendCommit(txn_id_, op_count_, first_lsn_, last_lsn_, lsn);
   if (!st.ok()) return st;
+  if (defer_sync_) {
+    pending_sync_ = true;
+    return Status::Ok();
+  }
+  return db_.wal().sync();
+}
+
+Status Executor::flushSync() {
+  if (!pending_sync_) return Status::Ok();
+  pending_sync_ = false;
   return db_.wal().sync();
 }
 
@@ -672,8 +999,11 @@ Status Executor::commitTxn() {
 }
 
 Status Executor::shutdown() {
-  if (active_) return rollbackTxn();
-  return Status::Ok();
+  if (active_) {
+    Status st = rollbackTxn();
+    if (!st.ok()) return st;
+  }
+  return flushSync();
 }
 
 Status Executor::writeRowRecord(WalType type, const Table& table, int64_t pk,
@@ -751,7 +1081,40 @@ Status Executor::applyInsert(Table& table, int64_t pk, Row row) {
   if (!st.ok()) return st;
   table.locations[pk] = offset;
   if (!table.disk_mode) {
-    table.rows[pk] = row;
+    table.rows[pk] = std::move(row);
+  }
+  spillIfNeeded(table);
+  ++table.row_version;
+  Undo u;
+  u.table_id = table.schema.table_id;
+  u.pk = pk;
+  u.had_row = false;
+  u.had_location = false;
+  undo_.push_back(std::move(u));
+  return Status::Ok();
+}
+
+Status Executor::applyInsertBatched(Table& table, int64_t pk, Row row,
+                                    std::string& batch, uint64_t* out_offset) {
+  if (table.locations.count(pk)) {
+    return Status::Error(Err::kDuplicateKey,
+                         "duplicate primary key: " + std::to_string(pk));
+  }
+  WalRecord rec;
+  rec.type = static_cast<uint8_t>(WalType::Insert);
+  rec.lsn = db_.newLsn();
+  rec.txn = txn_id_;
+  rec.table = table.schema.table_id;
+  rec.pk = static_cast<uint64_t>(pk);
+  rec.payload = encodeRow(table.schema, row);
+  *out_offset = db_.wal().size() + batch.size();
+  db_.wal().encodeRecord(rec, batch);
+  if (first_lsn_ == 0) first_lsn_ = rec.lsn;
+  last_lsn_ = rec.lsn;
+  ++op_count_;
+  table.locations[pk] = *out_offset;
+  if (!table.disk_mode) {
+    table.rows[pk] = std::move(row);
   }
   spillIfNeeded(table);
   ++table.row_version;
@@ -900,6 +1263,8 @@ Status Executor::executeInsert(const InsertStmt& stmt) {
     }
   }
 
+  std::string batch;
+  batch.reserve(stmt.rows.size() * 640);
   for (const auto& raw : stmt.rows) {
     if (raw.size() != col_map.size()) {
       return Status::Error(Err::kColumnCount,
@@ -917,9 +1282,13 @@ Status Executor::executeInsert(const InsertStmt& stmt) {
       row.values[col_map[i]] = std::move(converted);
     }
     int64_t pk = row.values[schema.pk_index].i;
-    Status st = applyInsert(*table, pk, std::move(row));
+    uint64_t offset = 0;
+    Status st = applyInsertBatched(*table, pk, std::move(row), batch, &offset);
     if (!st.ok()) return st;
   }
+  Status appended = db_.wal().appendBatch(batch);
+  if (!appended.ok()) return appended;
+  maybeCrash("after_wal_write");
   return Status::Ok();
 }
 
@@ -1328,7 +1697,6 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   }
   const bool distance_topk = !limit_zero && stmt.has_limit && orders.size() == 1 &&
                              orders[0].is_distance && !orders[0].desc;
-  const bool ann_quant = false;
   const bool order_topk = !limit_zero && stmt.has_limit && !orders.empty() &&
                           !distance_topk;
   const bool early_limit = !limit_zero && stmt.has_limit && orders.empty();
@@ -1456,34 +1824,6 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
 
   if (!limit_zero) {
     bool cache_scanned = false;
-    if (ann_quant) {
-      QuantCache* qc = ensureQuant(*table, orders[0].col);
-      if (qc != nullptr && qc->valid && qc->dim == orders[0].query.size() &&
-          qc->q.size() == table->vector_cache.pks.size() * qc->dim) {
-        std::vector<uint8_t> qv(qc->dim);
-        for (size_t j = 0; j < qc->dim; ++j) {
-          int q = static_cast<int>(
-              std::lround((orders[0].query[j] - qc->minv) * qc->scale));
-          qv[j] = static_cast<uint8_t>(std::max(0, std::min(255, q)));
-        }
-        const size_t ncand = std::min<size_t>(256, table->vector_cache.pks.size());
-        std::vector<RawHit> candidates;
-        scanQuantAvx2(qc->q.data(), table->vector_cache.pks.data(),
-                      table->vector_cache.pks.size(), qc->dim, qv.data(),
-                      ncand, candidates);
-        const VectorCache& vc = table->vector_cache;
-        for (const RawHit& h : candidates) {
-          const Row& row = *vc.rows[h.vi];
-          const double d = use_avx2
-                               ? l2Avx2Sq(vc.vec.data() + h.vi * vc.dim,
-                                          orders[0].query.data(), vc.dim)
-                               : l2DistanceSq(vc.vec.data() + h.vi * vc.dim,
-                                              orders[0].query.data(), vc.dim);
-          consider_hit(vc.pks[h.vi], row, d);
-        }
-        cache_scanned = true;
-      }
-    }
     if (!cache_scanned && distance_topk && !table->disk_mode) {
       static const std::vector<int64_t> kNoMatches;
       const std::vector<int64_t>* filtered = nullptr;
@@ -1505,49 +1845,124 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
       }
       if (filtered != nullptr) {
         const float* q = orders[0].query.data();
-        for (int64_t pk : *filtered) {
-          auto it = table->rows.find(pk);
-          if (it == table->rows.end()) continue;
-          const Row& row = it->second;
-          Status m;
-          if (!conds.empty() && !matchConditions(row, conds, m)) {
-            if (!m.ok()) return m;
-            continue;
+        ensureVectorCache(*table, orders[0].col);
+        const VectorCache& vc = table->vector_cache;
+        bool used_index_list = false;
+        if (conds.size() == 1 && vc.valid &&
+            vc.dim == orders[0].query.size() &&
+            vc.pks.size() == table->rows.size()) {
+          FilterCache* fc = ensureFilterCache(*table, conds[0].col);
+          const std::vector<uint32_t>* idx_list = nullptr;
+          if (fc != nullptr && fc->version == vc.version) {
+            if (conds[0].literal.type == Value::Type::Str) {
+              auto it = fc->str_idx.find(conds[0].literal.s);
+              if (it != fc->str_idx.end()) idx_list = &it->second;
+            } else if (conds[0].literal.type == Value::Type::Int) {
+              auto it = fc->num_idx.find(conds[0].literal.i);
+              if (it != fc->num_idx.end()) idx_list = &it->second;
+            }
+            if (idx_list != nullptr) {
+              for (uint32_t vi : *idx_list) {
+                if (vi >= vc.pks.size()) continue;
+                const Row& row = *vc.rows[vi];
+                const float* a = vc.vec.data() + static_cast<size_t>(vi) * vc.dim;
+                const double d =
+                    use_avx2 ? static_cast<double>(l2Kernel(a, q, vc.dim))
+                             : l2DistanceSq(a, q, vc.dim);
+                consider_hit(vc.pks[vi], row, d);
+              }
+              used_index_list = true;
+            }
           }
-          const auto& vv = row.values[orders[0].col].v;
-          const size_t dim = std::min(vv.size(), orders[0].query.size());
-          const double d = use_avx2 ? l2Avx2Sq(vv.data(), q, dim)
-                                    : l2DistanceSq(vv, orders[0].query);
-          consider_hit(pk, row, d);
+        }
+        if (!used_index_list) {
+          for (int64_t pk : *filtered) {
+            auto it = table->rows.find(pk);
+            if (it == table->rows.end()) continue;
+            const Row& row = it->second;
+            Status m;
+            if (!conds.empty() && !matchConditions(row, conds, m)) {
+              if (!m.ok()) return m;
+              continue;
+            }
+            const auto& vv = row.values[orders[0].col].v;
+            const size_t dim = std::min(vv.size(), orders[0].query.size());
+            const double d = use_avx2 ? l2Avx2Sq(vv.data(), q, dim)
+                                      : l2DistanceSq(vv, orders[0].query);
+            consider_hit(pk, row, d);
+          }
         }
         cache_scanned = true;
       }
       if (!cache_scanned) {
         ensureVectorCache(*table, orders[0].col);
         const VectorCache& cache = table->vector_cache;
-        if (cache.valid && cache.dim == orders[0].query.size()) {
+        if (cache.valid && cache.dim == orders[0].query.size() &&
+            cache.pks.size() == table->rows.size()) {
           const float* q = orders[0].query.data();
           const size_t n = cache.pks.size();
-          if (conds.empty() && n >= 2000 && k > 0 && use_avx2 &&
-              std::thread::hardware_concurrency() >= 2) {
-            const size_t mid = n / 2;
+          const bool can_parallel = n >= 1500 && pool_.usable();
+          Quant8Cache* q8 = nullptr;
+          Q7Query qq;
+          bool quant_ok = false;
+          if (use_avx2 && n >= 512) {
+            q8 = ensureQuant8(*table, orders[0].col);
+            if (q8 != nullptr && q8->valid && q8->dim == cache.dim &&
+                q8->codes.size() == n * cache.dim && q8->errs.size() == n) {
+              quant_ok = quantizeQuery7(*q8, orders[0].query, qq);
+            }
+          }
+          if (conds.empty() && use_avx2 && quant_ok && k > 0) {
+            // Exact mode: q7 scan with a conservative lower bound, then the
+            // exact float32 kernel on the (few) surviving candidates.
             std::vector<RawHit> left, right;
-            std::thread t1([&] {
-              scanCacheAvx2(cache.vec.data(), cache.pks.data(),
-                            nullptr, mid, cache.dim, q, k, left);
-            });
-            std::thread t2([&] {
-              scanCacheAvx2(cache.vec.data() + mid * cache.dim,
-                            cache.pks.data() + mid, nullptr, n - mid,
-                            cache.dim, q, k, right);
-            });
-            t1.join();
-            t2.join();
-            for (const RawHit& h : left) {
+            auto run_left = [&] {
+              scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(), 0,
+                               n / 2, cache.dim, q, qq, k, left);
+            };
+            auto run_right = [&] {
+              scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(), n / 2,
+                               n, cache.dim, q, qq, k, right);
+            };
+            if (can_parallel) {
+              pool_.run(run_left, run_right);
+            } else {
+              scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(), 0, n,
+                               cache.dim, q, qq, k, left);
+              right.clear();
+            }
+            TopK merged(k);
+            for (const RawHit& h : left) merged.push(h);
+            for (const RawHit& h : right) merged.push(h);
+            std::vector<RawHit> top;
+            merged.drain(top);
+            for (const RawHit& h : top) {
               consider_hit(h.pk, *cache.rows[h.vi], h.d);
             }
-            for (const RawHit& h : right) {
-              consider_hit(h.pk, *cache.rows[h.vi + mid], h.d);
+          } else if (conds.empty() && use_avx2 && k > 0) {
+            std::vector<RawHit> left, right;
+            auto run_left = [&] {
+              scanExactRange(cache.vec.data(), cache.pks.data(), 0, n / 2,
+                             cache.dim, q, k, left);
+            };
+            auto run_right = [&] {
+              scanExactRange(cache.vec.data(), cache.pks.data(), n / 2, n,
+                             cache.dim, q, k, right);
+            };
+            if (can_parallel) {
+              pool_.run(run_left, run_right);
+            } else {
+              scanExactRange(cache.vec.data(), cache.pks.data(), 0, n,
+                             cache.dim, q, k, left);
+              right.clear();
+            }
+            TopK merged(k);
+            for (const RawHit& h : left) merged.push(h);
+            for (const RawHit& h : right) merged.push(h);
+            std::vector<RawHit> top;
+            merged.drain(top);
+            for (const RawHit& h : top) {
+              consider_hit(h.pk, *cache.rows[h.vi], h.d);
             }
           } else {
             Status m;
@@ -1557,11 +1972,11 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
                 if (!m.ok()) return m;
                 continue;
               }
-              const double d = use_avx2
-                                   ? l2Avx2Sq(cache.vec.data() + i * cache.dim, q,
-                                              cache.dim)
-                                   : l2DistanceSq(cache.vec.data() + i * cache.dim,
-                                                  q, cache.dim);
+              const double d =
+                  use_avx2 ? l2Avx2Sq(cache.vec.data() + i * cache.dim, q,
+                                      cache.dim)
+                           : l2DistanceSq(cache.vec.data() + i * cache.dim, q,
+                                          cache.dim);
               consider_hit(cache.pks[i], row, d);
             }
           }

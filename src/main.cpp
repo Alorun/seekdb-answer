@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <poll.h>
+#include <chrono>
 #include <string>
 #include <unistd.h>
 
@@ -477,72 +478,123 @@ std::string jsonField(const std::string& text, const mvdb::ResultColumn& kind) {
 }
 
 int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
+  const bool profile = std::getenv("MVDB_PROFILE") != nullptr;
+  double t_parse = 0, t_exec = 0, t_format = 0, t_json = 0, t_sql = 0;
+  size_t nreq = 0;
+  auto clockNow = [] { return std::chrono::steady_clock::now(); };
   writeOut("{\"type\":\"ready\"}\n");
-  std::string line;
-  while (!g_stop && std::getline(std::cin, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line.empty()) continue;
+
+  std::string inbuf;
+  std::vector<std::string> buffered;
+  bool group = false;
+
+  auto flushGroup = [&]() -> bool {
+    if (!group) return true;
+    mvdb::Status st = exec.flushSync();
+    group = false;
+    exec.setDeferSync(false);
+    if (!st.ok()) {
+      std::cerr << "group sync failed: " << st.message << "\n";
+      return false;
+    }
+    for (const auto& r : buffered) writeOut(r);
+    buffered.clear();
+    return true;
+  };
+  auto emit = [&](std::string out) {
+    if (group) {
+      buffered.push_back(std::move(out));
+    } else {
+      writeOut(out);
+    }
+  };
+
+  // Returns 0 = continue, 1 = shutdown, 2 = fatal.
+  auto process = [&](const std::string& line) -> int {
+    if (line.empty()) return 0;
+    auto tp0 = clockNow();
     mvdb::jsonl::Value req;
     std::string err;
     if (!mvdb::jsonl::parse(line, req, err)) {
-      writeOut("{\"id\":null,\"ok\":false,\"error\":{\"code\":\"invalid_json\",\"message\":" +
-               mvdb::jsonl::quote(err) + "}}\n");
-      continue;
+      emit("{\"id\":null,\"ok\":false,\"error\":{\"code\":\"invalid_json\",\"message\":" +
+           mvdb::jsonl::quote(err) + "}}\n");
+      return 0;
     }
+    auto tj = clockNow();
+    t_json += std::chrono::duration<double>(tj - tp0).count();
     const auto* id = req.get("id");
     const auto* op = req.get("op");
     std::string idtxt = id ? jsonId(*id) : "null";
     if (!op || op->type != mvdb::jsonl::Value::Type::String) {
-      writeOut("{\"id\":" + idtxt +
-               ",\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"missing op\"}}\n");
-      continue;
+      emit("{\"id\":" + idtxt +
+           ",\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"missing op\"}}\n");
+      return 0;
     }
     if (op->s == "shutdown") {
+      if (!flushGroup()) return 2;
       exec.shutdown();
       mvdb::Status cp = db.checkpointIfNeeded(opt.checkpoint_bytes);
       if (!cp.ok()) std::cerr << "warning: checkpoint failed: " << cp.message << "\n";
       writeOut("{\"id\":" + idtxt + ",\"ok\":true}\n");
-      return 0;
+      return 1;
     }
     if (op->s != "execute") {
-      writeOut("{\"id\":" + idtxt +
-               ",\"ok\":false,\"error\":{\"code\":\"unsupported_op\",\"message\":\"unsupported op\"}}\n");
-      continue;
+      emit("{\"id\":" + idtxt +
+           ",\"ok\":false,\"error\":{\"code\":\"unsupported_op\",\"message\":\"unsupported op\"}}\n");
+      return 0;
     }
     const auto* sqlv = req.get("sql");
     if (!sqlv || sqlv->type != mvdb::jsonl::Value::Type::String) {
-      writeOut("{\"id\":" + idtxt +
-               ",\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"missing sql\"}}\n");
-      continue;
+      emit("{\"id\":" + idtxt +
+           ",\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"missing sql\"}}\n");
+      return 0;
     }
     mvdb::ParseResult pr = mvdb::parseStatement(sqlv->s);
     if (pr.kind == mvdb::ParseResult::Kind::NeedMore) {
-      writeOut("{\"id\":" + idtxt +
-               ",\"ok\":false,\"error\":{\"code\":\"syntax_error\",\"message\":\"incomplete statement\"}}\n");
-      continue;
+      emit("{\"id\":" + idtxt +
+           ",\"ok\":false,\"error\":{\"code\":\"syntax_error\",\"message\":\"incomplete statement\"}}\n");
+      return 0;
     }
     if (pr.kind == mvdb::ParseResult::Kind::Error) {
-      writeOut("{\"id\":" + idtxt + ",\"ok\":false,\"error\":{\"code\":" +
-               mvdb::jsonl::quote(semanticError(pr.status)) + ",\"message\":" +
-               mvdb::jsonl::quote(pr.status.message) + "}}\n");
-      continue;
+      emit("{\"id\":" + idtxt + ",\"ok\":false,\"error\":{\"code\":" +
+           mvdb::jsonl::quote(semanticError(pr.status)) + ",\"message\":" +
+           mvdb::jsonl::quote(pr.status.message) + "}}\n");
+      return 0;
     }
     if (pr.kind == mvdb::ParseResult::Kind::Empty) {
-      writeOut("{\"id\":" + idtxt + ",\"ok\":true}\n");
-      continue;
+      emit("{\"id\":" + idtxt + ",\"ok\":true}\n");
+      return 0;
     }
     if (const auto* sm = req.get("search_mode");
         sm && sm->type == mvdb::jsonl::Value::Type::String &&
         (sm->s == "exact" || sm->s == "ann")) {
       exec.setQueryMode(sm->s);
     }
+    const bool dml = pr.stmt.kind == mvdb::Statement::Kind::Insert ||
+                     pr.stmt.kind == mvdb::Statement::Kind::Update ||
+                     pr.stmt.kind == mvdb::Statement::Kind::Delete;
+    const bool groupable = dml && !exec.inTransaction();
+    if (!groupable && group) {
+      if (!flushGroup()) return 2;
+    }
+    if (groupable) {
+      if (!group) {
+        exec.setDeferSync(true);
+        group = true;
+      }
+    } else {
+      exec.setDeferSync(false);
+    }
+    auto tp1 = clockNow();
+    t_sql += std::chrono::duration<double>(tp1 - tj).count();
     mvdb::ExecResult result;
     mvdb::Status st = exec.execute(pr.stmt, result);
+    auto tp2 = clockNow();
     if (!st.ok()) {
-      writeOut("{\"id\":" + idtxt + ",\"ok\":false,\"error\":{\"code\":" +
-               mvdb::jsonl::quote(semanticError(st)) + ",\"message\":" +
-               mvdb::jsonl::quote(st.message) + "}}\n");
-      continue;
+      emit("{\"id\":" + idtxt + ",\"ok\":false,\"error\":{\"code\":" +
+           mvdb::jsonl::quote(semanticError(st)) + ",\"message\":" +
+           mvdb::jsonl::quote(st.message) + "}}\n");
+      return 0;
     }
     std::string out = "{\"id\":" + idtxt + ",\"ok\":true";
     if (result.has_result) {
@@ -565,15 +617,56 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
       }
       out += "]";
     } else {
-      bool count = pr.stmt.kind == mvdb::Statement::Kind::Insert ||
-                   pr.stmt.kind == mvdb::Statement::Kind::Update ||
-                   pr.stmt.kind == mvdb::Statement::Kind::Delete;
-      if (count) {
+      if (dml) {
         out += ",\"affected_rows\":" + std::to_string(result.affected);
       }
     }
     out += "}\n";
-    writeOut(out);
+    emit(std::move(out));
+    auto tp3 = clockNow();
+    t_parse += std::chrono::duration<double>(tp1 - tp0).count();
+    t_exec += std::chrono::duration<double>(tp2 - tp1).count();
+    t_format += std::chrono::duration<double>(tp3 - tp2).count();
+    ++nreq;
+    return 0;
+  };
+
+  while (!g_stop) {
+    size_t nl = inbuf.find('\n');
+    if (nl == std::string::npos) {
+      if (group && !stdinHasData(0)) {
+        if (!flushGroup()) return 1;
+      }
+      char chunk[65536];
+      ssize_t n = ::read(STDIN_FILENO, chunk, sizeof(chunk));
+      if (n < 0) {
+        if (errno == EINTR) continue;
+        break;
+      }
+      if (n == 0) {
+        if (!inbuf.empty()) {
+          int r = process(inbuf);
+          inbuf.clear();
+          if (r == 1) return 0;
+          if (r == 2) return 1;
+        }
+        break;
+      }
+      inbuf.append(chunk, static_cast<size_t>(n));
+      continue;
+    }
+    std::string line = inbuf.substr(0, nl);
+    inbuf.erase(0, nl + 1);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    int r = process(line);
+    if (r == 1) return 0;
+    if (r == 2) return 1;
+  }
+  if (!flushGroup()) return 1;
+  if (profile) {
+    std::cerr << "profile: requests=" << nreq << " parse=" << t_parse
+              << " json=" << t_json << " sql=" << t_sql
+              << " exec=" << t_exec << " format=" << t_format << "\n";
   }
   exec.shutdown();
   mvdb::Status cp = db.checkpointIfNeeded(opt.checkpoint_bytes);

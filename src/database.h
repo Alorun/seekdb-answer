@@ -53,6 +53,10 @@ class Wal {
 
   Status open(const std::string& path);
   Status append(const WalRecord& rec, uint64_t* out_offset = nullptr);
+  // Encode one record (header + payload) into `out`; the caller can append a
+  // whole multi-row INSERT as one write syscall via appendBatch.
+  void encodeRecord(const WalRecord& rec, std::string& out) const;
+  Status appendBatch(const std::string& bytes, uint64_t* out_offset = nullptr);
   Status appendCommit(uint64_t txn, uint32_t op_count, uint64_t first_lsn,
                       uint64_t last_lsn, uint64_t lsn);
   Status sync();
@@ -119,12 +123,31 @@ struct QuantCache {
   bool valid = false;
 };
 
+// 7-bit symmetric scalar quantization of the VECTOR column for the fast
+// scan. `scale` is chosen from the table-wide max |component|; `codes` holds
+// n*dim values in [-63,63] and `errs[i]` is ||v_i - dequant(code_i)||, the
+// triangle-inequality error budget used by the exact-mode lower bound.
+struct Quant8Cache {
+  uint64_t version = 0;
+  int col = -1;
+  size_t dim = 0;
+  float scale = 1.0f;
+  std::vector<int8_t> codes;
+  std::vector<float> errs;
+  bool valid = false;
+};
+
 struct FilterCache {
   uint64_t version = 0;
   int col = -1;
   bool valid = false;
   std::unordered_map<std::string, std::vector<int64_t>> str;
   std::unordered_map<int64_t, std::vector<int64_t>> num;
+  // Same lists as vector-cache row indices (both are built in Table::rows
+  // order).  The filtered TopK fast path uses these to avoid a std::map
+  // lookup and a redundant condition check per candidate.
+  std::unordered_map<std::string, std::vector<uint32_t>> str_idx;
+  std::unordered_map<int64_t, std::vector<uint32_t>> num_idx;
 };
 
 struct IvfCache {
@@ -150,6 +173,7 @@ struct Table {
   std::unordered_map<int, FilterCache> filter_caches;
   std::unordered_map<int, IvfCache> ivf_caches;
   std::unordered_map<int, QuantCache> quant_caches;
+  std::unordered_map<int, Quant8Cache> quant8_caches;
 };
 
 class Database {
