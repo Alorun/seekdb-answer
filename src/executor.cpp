@@ -503,6 +503,57 @@ __attribute__((target("avx2"), always_inline)) static inline int64_t q7DistSq(
   return sum;
 }
 
+// AVX-512BW variant: 64 dimensions per iteration instead of 32.  Runtime
+// dispatched only when the host exposes avx512f/bw/vl, so AVX2 machines keep
+// the exact same path.
+__attribute__((target("avx512f,avx512bw,avx512vl"), always_inline))
+static inline int64_t q7DistSq512(const int8_t* __restrict a,
+                                  const int8_t* __restrict b, size_t n) {
+  if (n > 16384) {
+    int64_t sum = 0;
+    for (size_t i = 0; i < n; ++i) {
+      int x = static_cast<int>(a[i]) - static_cast<int>(b[i]);
+      sum += static_cast<int64_t>(x) * x;
+    }
+    return sum;
+  }
+  __m512i acc = _mm512_setzero_si512();
+  const __m512i ones = _mm512_set1_epi16(1);
+  size_t i = 0;
+  for (; i + 64 <= n; i += 64) {
+    __m512i va = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a + i));
+    __m512i vb = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(b + i));
+    __m512i d = _mm512_sub_epi8(va, vb);
+    __m512i ad = _mm512_abs_epi8(d);
+    __m512i p = _mm512_maddubs_epi16(ad, ad);
+    acc = _mm512_add_epi32(acc, _mm512_madd_epi16(p, ones));
+  }
+  alignas(64) int32_t tmp[16];
+  _mm512_store_si512(reinterpret_cast<__m512i*>(tmp), acc);
+  int64_t sum = 0;
+  for (int32_t x : tmp) sum += x;
+  for (; i < n; ++i) {
+    int x = static_cast<int>(a[i]) - static_cast<int>(b[i]);
+    sum += static_cast<int64_t>(x) * x;
+  }
+  return sum;
+}
+
+__attribute__((target("avx512f,avx512bw,avx512vl,fma"))) bool q7SelfTest512() {
+  int8_t a[128];
+  int8_t b[128];
+  for (int i = 0; i < 128; ++i) {
+    a[i] = static_cast<int8_t>((i * 37) % 127 - 63);
+    b[i] = static_cast<int8_t>((i * 53 + 11) % 127 - 63);
+  }
+  int64_t scalar = 0;
+  for (int i = 0; i < 128; ++i) {
+    int x = static_cast<int>(a[i]) - static_cast<int>(b[i]);
+    scalar += static_cast<int64_t>(x) * x;
+  }
+  return q7DistSq512(a, b, 128) == scalar;
+}
+
 struct Q7Query {
   std::vector<int8_t> codes;
   double error_norm = 0.0;  // ||q - dequant(code(q))||
@@ -573,6 +624,51 @@ __attribute__((target("avx2,fma"))) void scanQ7ExactRange(
   };
   for (size_t vi = begin + seed; vi < end; ++vi) {
     int64_t dq = q7DistSq(c.codes.data() + vi * dim, qcodes, dim);
+    consider(vi, dq);
+  }
+  top.drain(out);
+}
+
+
+__attribute__((target("avx512f,avx512bw,avx512vl,fma"))) void scanQ7ExactRange512(
+    const Quant8Cache& c, const float* vec, const int64_t* pks, size_t begin,
+    size_t end, size_t dim, const float* q, const Q7Query& qq, size_t k,
+    std::vector<RawHit>& out) {
+  TopK top(k);
+  double sqrt_worst = std::numeric_limits<double>::infinity();
+  const double inv = 1.0 / static_cast<double>(c.scale);
+  const size_t seed = std::min<size_t>(64, end - begin);
+  for (size_t vi = begin; vi < begin + seed; ++vi) {
+    const float* a = vec + vi * dim;
+    float sum = l2Kernel(a, q, dim);
+    double d = std::isfinite(sum) ? static_cast<double>(sum)
+                                  : l2Avx2DoubleSq(a, q, dim);
+    top.push(RawHit{d, pks[vi], vi});
+    if (top.full()) sqrt_worst = std::sqrt(top.worstDistance());
+  }
+  if (k == 0) {
+    top.drain(out);
+    return;
+  }
+  const int8_t* qcodes = qq.codes.data();
+  auto consider = [&](size_t vi, int64_t dq) {
+    // Relative margin: errs/query_err are float-rounded and a tie at very
+    // large magnitudes must not be pruned by rounding noise.
+    double bound = sqrt_worst + qq.error_norm + c.errs[vi];
+    double threshold = bound * inv * (1.0 + 1e-6) + 1e-12;
+    if (static_cast<double>(dq) > threshold * threshold) return;
+    const float* a = vec + vi * dim;
+    float sum = l2Kernel(a, q, dim);
+    double d = std::isfinite(sum) ? static_cast<double>(sum)
+                                  : l2Avx2DoubleSq(a, q, dim);
+    top.push(RawHit{d, pks[vi], vi});
+    if (top.full()) {
+      double w = std::sqrt(top.worstDistance());
+      if (w < sqrt_worst) sqrt_worst = w;
+    }
+  };
+  for (size_t vi = begin + seed; vi < end; ++vi) {
+    int64_t dq = q7DistSq512(c.codes.data() + vi * dim, qcodes, dim);
     consider(vi, dq);
   }
   top.drain(out);
@@ -1820,6 +1916,10 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   const bool limit_zero = stmt.has_limit && stmt.limit == 0;
   const bool use_avx2 = __builtin_cpu_supports("avx2") &&
                         __builtin_cpu_supports("fma");
+  static const bool use_avx512 =
+      use_avx2 && __builtin_cpu_supports("avx512f") &&
+      __builtin_cpu_supports("avx512bw") &&
+      __builtin_cpu_supports("avx512vl") && q7SelfTest512();
   const bool pk_order_topk = !limit_zero && stmt.has_limit &&
                              !table->disk_mode && orders.size() == 1 &&
                              !orders[0].is_distance &&
@@ -2084,18 +2184,33 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
             // exact float32 kernel on the (few) surviving candidates.
             std::vector<RawHit> left, right;
             auto run_left = [&] {
-              scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(), 0,
-                               n / 2, cache.dim, q, qq, k, left);
+              if (use_avx512) {
+                scanQ7ExactRange512(*q8, cache.vec.data(), cache.pks.data(), 0,
+                                    n / 2, cache.dim, q, qq, k, left);
+              } else {
+                scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(), 0,
+                                 n / 2, cache.dim, q, qq, k, left);
+              }
             };
             auto run_right = [&] {
-              scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(), n / 2,
-                               n, cache.dim, q, qq, k, right);
+              if (use_avx512) {
+                scanQ7ExactRange512(*q8, cache.vec.data(), cache.pks.data(),
+                                    n / 2, n, cache.dim, q, qq, k, right);
+              } else {
+                scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(),
+                                 n / 2, n, cache.dim, q, qq, k, right);
+              }
             };
             if (can_parallel) {
               pool_.run(run_left, run_right);
             } else {
-              scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(), 0, n,
-                               cache.dim, q, qq, k, left);
+              if (use_avx512) {
+                scanQ7ExactRange512(*q8, cache.vec.data(), cache.pks.data(), 0,
+                                    n, cache.dim, q, qq, k, left);
+              } else {
+                scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(), 0, n,
+                                 cache.dim, q, qq, k, left);
+              }
               right.clear();
             }
             TopK merged(k);
