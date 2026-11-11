@@ -2087,7 +2087,8 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
             cache.pks.size() == table->rows.size()) {
           const float* q = orders[0].query.data();
           const size_t n = cache.pks.size();
-          const bool can_parallel = n >= 1500 && pool_.usable();
+          const bool can_parallel =
+              n >= 1500 && pool_.usable() && parallel_scan_;
           Quant8Cache* q8 = nullptr;
           Q7Query qq;
           bool quant_ok = false;

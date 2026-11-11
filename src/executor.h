@@ -73,6 +73,9 @@ class Executor {
 
   Status execute(const Statement& stmt, ExecResult& out);
   void setQueryMode(const std::string& mode) { query_mode_ = mode; }
+  // True when the driver has already buffered more requests: using the helper
+  // CPU does not steal cycles from a waiting client.
+  void setParallelScan(bool on) { parallel_scan_ = on; }
   // Batch autocommit DML: append commit markers without syncing, then one
   // fdatasync for the whole group.  The caller must not release a success
   // response until flushSync() returns Ok.
@@ -140,6 +143,7 @@ class Executor {
   uint32_t op_count_ = 0;
   std::vector<Undo> undo_;
   std::string query_mode_ = "exact";
+  bool parallel_scan_ = false;
 };
 
 // Helpers shared with tests.
