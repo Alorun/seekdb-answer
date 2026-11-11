@@ -4,6 +4,8 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdlib>
+#include <sched.h>
+#include <fstream>
 #include <limits>
 #include <immintrin.h>
 #include <queue>
@@ -15,48 +17,79 @@
 namespace mvdb {
 
 ScanPool::ScanPool() {
-  // At 10k x 128 the q7 scan is memory-bandwidth bound: two threads compete
-  // for the same L3/DRAM stream and measured slower than one.  Keep the
-  // persistent helper available for larger/compute-bound workloads via an
-  // explicit opt-in; the scored path is single-threaded.
-  usable_ = std::getenv("MVDB_TWO_THREADS") != nullptr &&
-            std::thread::hardware_concurrency() >= 2;
+  bool two = std::getenv("MVDB_TWO_THREADS") != nullptr;
+  if (std::getenv("MVDB_SINGLE_THREAD") != nullptr) two = false;
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  if (::sched_getaffinity(0, sizeof(set), &set) == 0 && CPU_COUNT(&set) >= 2) {
+    int cpus[2] = {-1, -1};
+    int found = 0;
+    for (int c = 0; c < CPU_SETSIZE && found < 2; ++c) {
+      if (CPU_ISSET(c, &set)) cpus[found++] = c;
+    }
+    if (found == 2 && std::getenv("MVDB_TWO_THREADS") == nullptr &&
+        std::getenv("MVDB_SINGLE_THREAD") == nullptr) {
+      auto siblings = [](int cpu) -> std::string {
+        std::ifstream in("/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
+                         "/topology/thread_siblings_list");
+        std::string line;
+        std::getline(in, line);
+        return line;
+      };
+      auto has_cpu = [](const std::string& list, int cpu) {
+        size_t p = 0;
+        while (p < list.size()) {
+          size_t q = list.find_first_of(",-", p);
+          std::string tok = list.substr(p, q == std::string::npos ? q : q - p);
+          try {
+            if (std::stoi(tok) == cpu) return true;
+          } catch (...) {
+          }
+          if (q == std::string::npos) break;
+          if (list[q] == '-') {
+            size_t r = list.find(',', q + 1);
+            try {
+              int lo = std::stoi(list.substr(p, q - p));
+              int hi = std::stoi(list.substr(q + 1, r == std::string::npos
+                                                   ? std::string::npos
+                                                   : r - q - 1));
+              if (cpu >= lo && cpu <= hi) return true;
+            } catch (...) {
+            }
+            if (r == std::string::npos) break;
+            p = r + 1;
+            continue;
+          }
+          p = q + 1;
+        }
+        return false;
+      };
+      std::string a = siblings(cpus[0]);
+      std::string b = siblings(cpus[1]);
+      two = a.empty() || b.empty() || !(has_cpu(a, cpus[1]) || has_cpu(b, cpus[0]));
+    }
+  }
+  usable_ = two && std::thread::hardware_concurrency() >= 2;
   if (usable_) worker_ = std::thread([this] { workerLoop(); });
 }
 
 ScanPool::~ScanPool() {
   if (!usable_) return;
-  {
-    std::lock_guard<std::mutex> lk(mu_);
-    stop_ = true;
-    ++seq_;
-    cv_.notify_one();
-  }
+  stop_.store(true, std::memory_order_release);
+  seq_.fetch_add(1, std::memory_order_release);
+  seq_.notify_one();
   if (worker_.joinable()) worker_.join();
 }
 
 void ScanPool::workerLoop() {
+  uint64_t seen = 0;
   for (;;) {
-    std::function<void()> job;
-    uint64_t ticket = 0;
-    {
-      std::unique_lock<std::mutex> lk(mu_);
-      cv_.wait(lk, [this] { return stop_ || seq_ != done_; });
-      if (stop_) return;
-      job = job_;
-      ticket = seq_;
-    }
-    try {
-      job();
-    } catch (...) {
-      std::lock_guard<std::mutex> lk(mu_);
-      error_ = std::current_exception();
-    }
-    {
-      std::lock_guard<std::mutex> lk(mu_);
-      done_ = ticket;
-      cv_.notify_all();
-    }
+    seq_.wait(seen, std::memory_order_acquire);
+    if (stop_.load(std::memory_order_acquire)) return;
+    seen = seq_.load(std::memory_order_acquire);
+    job_();
+    done_.store(seen, std::memory_order_release);
+    done_.notify_all();
   }
 }
 
@@ -67,21 +100,15 @@ void ScanPool::run(const std::function<void()>& main_job,
     helper_job();
     return;
   }
-  {
-    std::lock_guard<std::mutex> lk(mu_);
-    job_ = helper_job;
-    error_ = nullptr;
-    ++seq_;
-    cv_.notify_one();
-  }
+  job_ = helper_job;
+  const uint64_t ticket = seq_.fetch_add(1, std::memory_order_release) + 1;
+  seq_.notify_one();
   main_job();
-  std::exception_ptr err;
-  {
-    std::unique_lock<std::mutex> lk(mu_);
-    cv_.wait(lk, [this] { return done_ == seq_; });
-    err = error_;
+  uint64_t d = done_.load(std::memory_order_acquire);
+  while (d != ticket) {
+    done_.wait(d, std::memory_order_acquire);
+    d = done_.load(std::memory_order_acquire);
   }
-  if (err) std::rethrow_exception(err);
 }
 
 namespace {
@@ -1849,7 +1876,6 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   const bool limit_zero = stmt.has_limit && stmt.limit == 0;
   const bool use_avx2 = __builtin_cpu_supports("avx2") &&
                         __builtin_cpu_supports("fma");
-  const bool ann_mode = query_mode_ == "ann";
   const bool pk_order_topk = !limit_zero && stmt.has_limit &&
                              !table->disk_mode && orders.size() == 1 &&
                              !orders[0].is_distance &&
@@ -2105,11 +2131,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
                 n >= 2000 ? ensureIvf(*table, orders[0].col) : nullptr;
             if (ivf != nullptr && ivf->clustered) {
               std::vector<RawHit> hits;
-              if (ann_mode) {
-                scanIvfAnn(*ivf, cache, q, k, 8, hits);
-              } else {
-                scanIvfExact(*ivf, cache, q, k, hits);
-              }
+              scanIvfExact(*ivf, cache, q, k, hits);
               for (const RawHit& h : hits) {
                 consider_hit(h.pk, *cache.rows[h.vi], h.d);
               }

@@ -210,32 +210,35 @@ bool parseBigInt(std::string_view text, int64_t& out, std::string& err) {
 bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
                         std::string& err) {
   out.clear();
-  std::string s = trim(text);
+  size_t tb = 0, te = text.size();
+  while (tb < te && std::isspace(static_cast<unsigned char>(text[tb]))) ++tb;
+  while (te > tb && std::isspace(static_cast<unsigned char>(text[te - 1]))) --te;
+  std::string_view s = text.substr(tb, te - tb);
   if (s.size() < 2 || s.front() != '[' || s.back() != ']') {
     err = "vector literal must look like [v1, v2, ...]";
     return false;
   }
-  std::string body = s.substr(1, s.size() - 2);
-  size_t pos = 0;
-  while (pos < body.size()) {
-    while (pos < body.size() &&
-           std::isspace(static_cast<unsigned char>(body[pos]))) {
-      ++pos;
-    }
-    if (pos >= body.size()) break;
-    const char* start = body.c_str() + pos;
+  std::string_view body = s.substr(1, s.size() - 2);
+  const char* const begin = body.data();
+  const char* const end = begin + body.size();
+  // One pass to reserve exactly; avoids ~7 reallocations for a 128-d vector.
+  out.reserve(static_cast<size_t>(
+                  std::count(body.begin(), body.end(), ',')) +
+              1);
+  const char* p = begin;
+  while (p < end) {
+    while (p < end && std::isspace(static_cast<unsigned char>(*p))) ++p;
+    if (p >= end) break;
     // strtod also accepts C99 hex floats (0x10); the task's vector grammar is
     // decimal only, so reject them rather than silently parsing 16.
-    if (start[0] == '0' && (start[1] == 'x' || start[1] == 'X')) {
+    if (p + 1 < end && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
       err = "invalid number in vector literal";
       return false;
     }
-    // from_chars(float) is locale-independent and ~3.5x faster than strtod,
-    // which matters for the 1.28M components in the 10k x 128 write path.
-    const char* cursor = start;
-    if (cursor < body.c_str() + body.size() && *cursor == '+') ++cursor;
+    const char* cursor = p;
+    if (cursor < end && *cursor == '+') ++cursor;
     float f = 0.0f;
-    auto parsed = std::from_chars(cursor, body.c_str() + body.size(), f);
+    auto parsed = std::from_chars(cursor, end, f);
     if (parsed.ec == std::errc::result_out_of_range) {
       err = "vector value overflows float32";
       return false;
@@ -249,24 +252,19 @@ bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
       return false;
     }
     out.push_back(f);
-    pos += static_cast<size_t>(parsed.ptr - start);
-    while (pos < body.size() &&
-           std::isspace(static_cast<unsigned char>(body[pos]))) {
-      ++pos;
-    }
-    if (pos < body.size()) {
-      if (body[pos] != ',') {
+    p = parsed.ptr;
+    while (p < end && std::isspace(static_cast<unsigned char>(*p))) ++p;
+    if (p < end) {
+      if (*p != ',') {
         err = "expected ',' in vector literal";
         return false;
       }
-      ++pos;
-      // Reject trailing comma before ']'.
-      size_t look = pos;
-      while (look < body.size() &&
-             std::isspace(static_cast<unsigned char>(body[look]))) {
+      ++p;
+      const char* look = p;
+      while (look < end && std::isspace(static_cast<unsigned char>(*look))) {
         ++look;
       }
-      if (look >= body.size()) {
+      if (look >= end) {
         err = "trailing ',' in vector literal";
         return false;
       }

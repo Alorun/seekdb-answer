@@ -35,13 +35,10 @@ class ScanPool {
   void workerLoop();
 
   std::thread worker_;
-  std::mutex mu_;
-  std::condition_variable cv_;
   std::function<void()> job_;
-  std::exception_ptr error_;
-  uint64_t seq_ = 0;
-  uint64_t done_ = 0;
-  bool stop_ = false;
+  std::atomic<uint64_t> seq_{0};
+  std::atomic<uint64_t> done_{0};
+  std::atomic<bool> stop_{false};
   bool usable_ = false;
 };
 
