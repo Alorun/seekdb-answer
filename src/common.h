@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unistd.h>
@@ -56,11 +57,39 @@ constexpr int kUnknown = 1105;
 // ---------------------------------------------------------------------------
 // Values / schema
 // ---------------------------------------------------------------------------
-struct Value {
-  enum class Type { Int, Str, Vec } type = Type::Int;
-  int64_t i = 0;
-  std::string s;
-  std::vector<float> v;
+// One cell of a row.  Rows (and the undo snapshots / top-K hits copied from
+// them) own their cells, so copies stay deep and never alias table storage.
+//
+// The representation is 16 bytes instead of the 72 bytes a std::string +
+// std::vector payload costs, which is what a row-heavy workload pays per cell:
+//   * BIGINT          -> `i`
+//   * VARCHAR <= 8 B  -> inline `sbuf` (the benchmark's `catNN` values)
+//   * VARCHAR > 8 B   -> one heap byte block (exactly the bytes, no SSO slack)
+//   * VECTOR          -> one heap float block of `len` elements
+// `type` and `i` keep their original field names so call sites that only read
+// the tag or the integer do not change.
+class Value {
+ public:
+  enum class Type : uint8_t { Int = 0, Str = 1, Vec = 2 };
+
+  Value() = default;
+  Value(const Value& o) { copyFrom(o); }
+  Value(Value&& o) noexcept { moveFrom(o); }
+  Value& operator=(const Value& o) {
+    if (this != &o) {
+      release();
+      copyFrom(o);
+    }
+    return *this;
+  }
+  Value& operator=(Value&& o) noexcept {
+    if (this != &o) {
+      release();
+      moveFrom(o);
+    }
+    return *this;
+  }
+  ~Value() { release(); }
 
   static Value MakeInt(int64_t x) {
     Value out;
@@ -68,19 +97,109 @@ struct Value {
     out.i = x;
     return out;
   }
-  static Value MakeStr(std::string x) {
+  static Value MakeStr(std::string_view x) {
     Value out;
     out.type = Type::Str;
-    out.s = std::move(x);
+    out.assignStr(x);
     return out;
   }
-  static Value MakeVec(std::vector<float> x) {
+  static Value MakeVec(const std::vector<float>& x) {
+    return MakeVec(x.data(), x.size());
+  }
+  static Value MakeVec(std::vector<float>&& x) {
+    return MakeVec(x.data(), x.size());
+  }
+  static Value MakeVec(const float* src, size_t n) {
     Value out;
     out.type = Type::Vec;
-    out.v = std::move(x);
+    out.assignVec(src, n);
     return out;
   }
+
+  // Byte view of a VARCHAR payload; the data is owned by this Value.
+  std::string_view str() const {
+    if (type != Type::Str) return {};
+    return std::string_view(own ? sp : sbuf, len);
+  }
+  // Element view of a VECTOR payload; the data is owned by this Value.
+  std::span<const float> vec() const {
+    if (type != Type::Vec) return {};
+    return std::span<const float>(vp, len);
+  }
+
+  Type type = Type::Int;
+  uint8_t own = 0;     // payload is a heap block owned by this Value
+  uint16_t pad = 0;
+  uint32_t len = 0;    // VARCHAR bytes / VECTOR elements
+  union {
+    int64_t i = 0;
+    char* sp;
+    float* vp;
+    char sbuf[8];
+  };
+
+ private:
+  static constexpr size_t kInline = sizeof(sbuf);
+
+  void release() {
+    if (own) {
+      if (type == Type::Str) delete[] sp;
+      else if (type == Type::Vec) delete[] vp;
+    }
+    type = Type::Int;
+    own = 0;
+    len = 0;
+    i = 0;
+  }
+  void copyFrom(const Value& o) {
+    type = o.type;
+    len = o.len;
+    own = 0;
+    if (!o.own) {
+      std::memcpy(static_cast<void*>(&i), static_cast<const void*>(&o.i),
+                  sizeof(i));
+      return;
+    }
+    own = 1;
+    if (o.type == Type::Str) {
+      sp = new char[o.len ? o.len : 1];
+      if (o.len) std::memcpy(sp, o.sp, o.len);
+    } else {
+      vp = new float[o.len ? o.len : 1];
+      if (o.len) std::memcpy(vp, o.vp, o.len * sizeof(float));
+    }
+  }
+  void moveFrom(Value& o) noexcept {
+    type = o.type;
+    len = o.len;
+    own = o.own;
+    std::memcpy(static_cast<void*>(&i), static_cast<const void*>(&o.i),
+                sizeof(i));
+    o.type = Type::Int;
+    o.own = 0;
+    o.len = 0;
+    o.i = 0;
+  }
+  void assignStr(std::string_view x) {
+    len = static_cast<uint32_t>(x.size());
+    if (x.size() <= kInline) {
+      own = 0;
+      if (!x.empty()) std::memcpy(sbuf, x.data(), x.size());
+      return;
+    }
+    own = 1;
+    sp = new char[x.size()];
+    std::memcpy(sp, x.data(), x.size());
+  }
+  void assignVec(const float* src, size_t n) {
+    len = static_cast<uint32_t>(n);
+    own = 1;
+    vp = n ? new float[n] : nullptr;
+    if (n != 0) std::memcpy(vp, src, n * sizeof(float));
+  }
 };
+
+static_assert(sizeof(Value) == 16, "Value must stay compact");
 
 enum class ColumnType : uint8_t { BigInt = 1, Varchar = 2, Vector = 3 };
 

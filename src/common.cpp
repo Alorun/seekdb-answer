@@ -95,12 +95,12 @@ void encodeRowInto(const Schema& schema, const Row& row, std::string& out) {
         u64(static_cast<uint64_t>(v.i));
         break;
       case ColumnType::Varchar:
-        u32(static_cast<uint32_t>(v.s.size()));
-        out.append(v.s.data(), v.s.size());
+        u32(static_cast<uint32_t>(v.str().size()));
+        out.append(v.str().data(), v.str().size());
         break;
       case ColumnType::Vector:
-        u32(static_cast<uint32_t>(v.v.size()));
-        for (float f : v.v) {
+        u32(static_cast<uint32_t>(v.vec().size()));
+        for (float f : v.vec()) {
           uint32_t bits = 0;
           std::memcpy(&bits, &f, sizeof(bits));
           u32(bits);
@@ -120,11 +120,11 @@ std::string encodeRow(const Schema& schema, const Row& row) {
         w.i64(v.i);
         break;
       case ColumnType::Varchar:
-        w.str(v.s);
+        w.str(v.str());
         break;
       case ColumnType::Vector:
-        w.u32(static_cast<uint32_t>(v.v.size()));
-        for (float f : v.v) w.f32(f);
+        w.u32(static_cast<uint32_t>(v.vec().size()));
+        for (float f : v.vec()) w.f32(f);
         break;
     }
   }
@@ -157,7 +157,7 @@ bool decodeRow(const Schema& schema, const char* data, size_t size, Row& out,
         }
         std::vector<float> v(n);
         for (uint32_t k = 0; k < n; ++k) v[k] = r.f32();
-        out.values[i] = Value::MakeVec(std::move(v));
+        out.values[i] = Value::MakeVec(v);
         break;
       }
     }
@@ -437,9 +437,10 @@ bool encodeStringColumn(const std::vector<Row>& rows, int col, std::string& out)
   dict_index.reserve(count);
 
   uint64_t plain_cost = 1;  // mode byte
-  const std::string* prev = nullptr;
+  std::string prev;
+  bool has_prev = false;
   for (size_t i = 0; i < count; ++i) {
-    const std::string& s = rows[i].values[static_cast<size_t>(col)].s;
+    std::string s(rows[i].values[static_cast<size_t>(col)].str());
     auto it = dict_index.find(s);
     uint32_t idx = 0;
     if (it == dict_index.end()) {
@@ -450,7 +451,7 @@ bool encodeStringColumn(const std::vector<Row>& rows, int col, std::string& out)
       idx = it->second;
     }
     dict_index_of[i] = idx;
-    size_t prefix = prev ? commonPrefix(*prev, s) : 0;
+    size_t prefix = has_prev ? commonPrefix(prev, s) : 0;
     size_t suffix = s.size() - prefix;
     size_t rle = rleCost(s.data() + prefix, suffix);
     uint8_t use_rle = rle < suffix ? 1 : 0;
@@ -459,7 +460,8 @@ bool encodeStringColumn(const std::vector<Row>& rows, int col, std::string& out)
     suffix_rle[i] = use_rle;
     plain_cost += varintSize(prefix) + varintSize(suffix) + 1 +
                   (use_rle ? rle : suffix);
-    prev = &s;
+    prev = std::move(s);
+    has_prev = true;
   }
 
   uint64_t dict_cost = varintSize(dict.size());
@@ -479,7 +481,7 @@ bool encodeStringColumn(const std::vector<Row>& rows, int col, std::string& out)
 
   out.push_back(0);
   for (size_t i = 0; i < count; ++i) {
-    const std::string& s = rows[i].values[static_cast<size_t>(col)].s;
+    std::string s(rows[i].values[static_cast<size_t>(col)].str());
     appendVarint(out, prefixes[i]);
     appendVarint(out, suffix_lens[i]);
     out.push_back(static_cast<char>(suffix_rle[i]));
@@ -586,7 +588,7 @@ bool encodeVectorBlock(const Schema& schema, const std::vector<Row>& rows, int c
   uint32_t hist[256] = {};
   size_t k = 0;
   for (const Row& row : rows) {
-    const std::vector<float>& v = row.values[static_cast<size_t>(col)].v;
+    std::span<const float> v = row.values[static_cast<size_t>(col)].vec();
     if (v.size() != dim) {
       err = "vector dimension mismatch in batch";
       return false;
@@ -678,16 +680,17 @@ bool decodeStringColumn(BatchReader& r, int col, std::vector<Row>& rows,
   }
   const size_t count = rows.size();
   if (mode == 0) {
-    const std::string* prev = nullptr;
+    std::string prev;
+    bool has_prev = false;
     for (size_t i = 0; i < count; ++i) {
       uint64_t prefix = r.varint();
       uint64_t suffix = r.varint();
       uint8_t flags = r.u8();
-      if (!r.ok || (prev == nullptr ? prefix != 0 : prefix > prev->size())) {
+      if (!r.ok || (has_prev ? prefix > prev.size() : prefix != 0)) {
         err = "corrupt batch string block";
         return false;
       }
-      std::string s = prev ? prev->substr(0, static_cast<size_t>(prefix)) : std::string();
+      std::string s = has_prev ? prev.substr(0, static_cast<size_t>(prefix)) : std::string();
       if (flags == 0) {
         if (!r.need(static_cast<size_t>(suffix))) {
           err = "truncated batch string";
@@ -712,7 +715,8 @@ bool decodeStringColumn(BatchReader& r, int col, std::vector<Row>& rows,
         return false;
       }
       rows[i].values[static_cast<size_t>(col)] = Value::MakeStr(std::move(s));
-      prev = &rows[i].values[static_cast<size_t>(col)].s;
+      prev.assign(rows[i].values[static_cast<size_t>(col)].str());
+      has_prev = true;
     }
     return true;
   }

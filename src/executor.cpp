@@ -143,12 +143,13 @@ std::string formatValue(const Value& v) {
     case Value::Type::Int:
       return std::to_string(v.i);
     case Value::Type::Str:
-      return v.s;
+      return std::string(v.str());
     case Value::Type::Vec: {
+      const std::span<const float> vals = v.vec();
       std::string out = "[";
-      for (size_t i = 0; i < v.v.size(); ++i) {
+      for (size_t i = 0; i < vals.size(); ++i) {
         if (i) out += ",";
-        out += formatDouble(v.v[i]);
+        out += formatDouble(vals[i]);
       }
       out += "]";
       return out;
@@ -165,7 +166,7 @@ std::vector<std::string> formatProjection(const Row& row,
     if (col.kind == OutCol::Kind::Value) {
       out.push_back(formatValue(row.values[col.col]));
     } else {
-      out.push_back(formatDouble(l2Distance(row.values[col.col].v, col.query)));
+      out.push_back(formatDouble(l2Distance(row.values[col.col].vec(), col.query)));
     }
   }
   return out;
@@ -217,7 +218,7 @@ bool matchConditions(const Row& row, const std::vector<ResolvedCond>& conds,
         err = Status::Error(Err::kInvalidValue, "literal type mismatch");
         return false;
       }
-      cmp = v.s.compare(c.literal.s);
+      cmp = v.str().compare(c.literal.str());
     } else {
       err = Status::Error(Err::kUnsupported, "comparison on VECTOR column is not supported");
       return false;
@@ -794,11 +795,11 @@ double l2DistanceSq(const float* a, const float* b, size_t n) {
   return fn(a, b, n);
 }
 
-double l2DistanceSq(const std::vector<float>& a, const std::vector<float>& b) {
+double l2DistanceSq(std::span<const float> a, std::span<const float> b) {
   return l2DistanceSq(a.data(), b.data(), std::min(a.size(), b.size()));
 }
 
-double l2Distance(const std::vector<float>& a, const std::vector<float>& b) {
+double l2Distance(std::span<const float> a, std::span<const float> b) {
   return std::sqrt(l2DistanceSq(a, b));
 }
 
@@ -817,7 +818,7 @@ void rebuildVectorCache(Table& table, int vec_col) {
   c.rows.reserve(n);
   c.vecp.reserve(n);
   for (const auto& [pk, row] : table.rows) {
-    const std::vector<float>& v = row.values[vec_col].v;
+    const std::span<const float> v = row.values[vec_col].vec();
     if (v.size() != c.dim) return;
     c.pks.push_back(pk);
     c.rows.push_back(&row);
@@ -847,8 +848,9 @@ void rebuildFilterCache(Table& table, int col) {
     const Value& v = row.values[col];
     if (is_str) {
       if (v.type == Value::Type::Str) {
-        c.str[v.s].push_back(pk);
-        c.str_idx[v.s].push_back(idx);
+        const std::string key(v.str());
+        c.str[key].push_back(pk);
+        c.str_idx[key].push_back(idx);
       }
     } else if (v.type == Value::Type::Int) {
       c.num[v.i].push_back(pk);
@@ -1170,7 +1172,7 @@ Status convertValue(const Column& col, const Value& input, Value& out) {
       if (input.type != Value::Type::Str) {
         return Status::Error(Err::kInvalidValue, "expected VARCHAR value for column " + col.name);
       }
-      if (utf8Length(input.s) > col.length) {
+      if (utf8Length(input.str()) > col.length) {
         return Status::Error(Err::kDataTooLong,
                              "value too long for VARCHAR(" + std::to_string(col.length) +
                                  ") column " + col.name);
@@ -1184,7 +1186,7 @@ Status convertValue(const Column& col, const Value& input, Value& out) {
       }
       std::vector<float> v;
       std::string err;
-      if (!parseVectorLiteral(input.s, v, err)) {
+      if (!parseVectorLiteral(input.str(), v, err)) {
         return Status::Error(Err::kInvalidValue, err);
       }
       if (v.size() != col.length) {
@@ -2176,7 +2178,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
       return Status::Ok();
     }
     if (distance_topk) {
-      const auto& vv = row.values[orders[0].col].v;
+      const std::span<const float> vv = row.values[orders[0].col].vec();
       const double d = use_avx2
                            ? l2Avx2Sq(vv.data(), orders[0].query.data(),
                                       std::min(vv.size(), orders[0].query.size()))
@@ -2190,7 +2192,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
       KeyValue kv;
       if (o.is_distance) {
         kv.kind = KeyValue::Kind::Double;
-        kv.d = l2DistanceSq(row.values[o.col].v, o.query);
+        kv.d = l2DistanceSq(row.values[o.col].vec(), o.query);
       } else {
         const Value& v = row.values[o.col];
         if (v.type == Value::Type::Int) {
@@ -2198,7 +2200,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
           kv.i = v.i;
         } else if (v.type == Value::Type::Str) {
           kv.kind = KeyValue::Kind::Str;
-          kv.str = v.s;
+          kv.str = std::string(v.str());
         } else {
           return Status::Error(Err::kUnsupported,
                                "ORDER BY on VECTOR column is not supported");
@@ -2233,7 +2235,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
         FilterCache* fc = ensureFilterCache(*table, cond.col);
         const std::vector<int64_t>* list = nullptr;
         if (cond.literal.type == Value::Type::Str) {
-          auto it = fc->str.find(cond.literal.s);
+          auto it = fc->str.find(std::string(cond.literal.str()));
           if (it != fc->str.end()) list = &it->second;
         } else if (cond.literal.type == Value::Type::Int) {
           auto it = fc->num.find(cond.literal.i);
@@ -2256,7 +2258,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
           const std::vector<uint32_t>* idx_list = nullptr;
           if (fc != nullptr && fc->version == vc.version) {
             if (conds[0].literal.type == Value::Type::Str) {
-              auto it = fc->str_idx.find(conds[0].literal.s);
+              auto it = fc->str_idx.find(std::string(conds[0].literal.str()));
               if (it != fc->str_idx.end()) idx_list = &it->second;
             } else if (conds[0].literal.type == Value::Type::Int) {
               auto it = fc->num_idx.find(conds[0].literal.i);
@@ -2306,7 +2308,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
               if (!m.ok()) return m;
               continue;
             }
-            const auto& vv = row.values[orders[0].col].v;
+            const std::span<const float> vv = row.values[orders[0].col].vec();
             const size_t dim = std::min(vv.size(), orders[0].query.size());
             const double d = use_avx2 ? l2Avx2Sq(vv.data(), q, dim)
                                       : l2DistanceSq(vv, orders[0].query);
