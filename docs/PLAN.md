@@ -1494,8 +1494,8 @@ admission_pass, local_E_write, local_E_query, recall, notes
 
 | 指标 | 057126c 基线 | v4.0 | 变化 |
 | --- | ---: | ---: | ---: |
-| 10k 写入 wall | 0.63 s | 0.306 s | 2.06× |
-| 1000 次查询 wall | 0.223 s | 0.112 s | 1.99× |
+| 10k 写入 wall | 0.583 s | 0.286 s | 2.04× |
+| 1000 次查询 wall | 0.201 s | 0.099 s | 2.03× |
 | 10k 写入设备字节（`/proc/diskstats`） | ~10.1 MB | ~6.8 MB | 1.5× 更少 |
 | 查询 DB 侧（预热后，profile） | — | ~40 ms/1000 | — |
 | 峰值 RSS | 19.5 MB | 20.8 MB | +1.3 MB（q7 cache） |
