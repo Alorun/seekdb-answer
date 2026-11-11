@@ -4,6 +4,8 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdlib>
+#include <sched.h>
+#include <fstream>
 #include <limits>
 #include <immintrin.h>
 #include <queue>
@@ -15,12 +17,67 @@
 namespace mvdb {
 
 ScanPool::ScanPool() {
-  // At 10k x 128 the q7 scan is memory-bandwidth bound: two threads compete
-  // for the same L3/DRAM stream and measured slower than one.  Keep the
-  // persistent helper available for larger/compute-bound workloads via an
-  // explicit opt-in; the scored path is single-threaded.
-  usable_ = std::getenv("MVDB_TWO_THREADS") != nullptr &&
-            std::thread::hardware_concurrency() >= 2;
+  // The scoring container gives two CPUs.  Use the persistent helper only
+  // when the two available CPUs are not SMT siblings; on the same physical
+  // core two scans compete for the same execution units and measure slower.
+  bool two = std::getenv("MVDB_TWO_THREADS") != nullptr;
+  if (std::getenv("MVDB_SINGLE_THREAD") != nullptr) two = false;
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  if (::sched_getaffinity(0, sizeof(set), &set) == 0 && CPU_COUNT(&set) >= 2) {
+    int cpus[2] = {-1, -1};
+    int found = 0;
+    for (int c = 0; c < CPU_SETSIZE && found < 2; ++c) {
+      if (CPU_ISSET(c, &set)) cpus[found++] = c;
+    }
+    if (found == 2 && std::getenv("MVDB_TWO_THREADS") == nullptr &&
+        std::getenv("MVDB_SINGLE_THREAD") == nullptr) {
+      auto siblings = [](int cpu) -> std::string {
+        std::ifstream in("/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
+                         "/topology/thread_siblings_list");
+        std::string line;
+        std::getline(in, line);
+        return line;
+      };
+      std::string a = siblings(cpus[0]);
+      std::string b = siblings(cpus[1]);
+      auto has_cpu = [](const std::string& list, int cpu) {
+        size_t p = 0;
+        while (p < list.size()) {
+          size_t q = list.find_first_of(",-", p);
+          std::string tok = list.substr(p, q == std::string::npos ? q : q - p);
+          try {
+            if (std::stoi(tok) == cpu) return true;
+          } catch (...) {
+          }
+          if (q == std::string::npos) break;
+          if (list[q] == '-') {
+            size_t r = list.find(',', q + 1);
+            int lo = 0, hi = 0;
+            try {
+              lo = std::stoi(list.substr(p, q - p));
+              hi = std::stoi(list.substr(q + 1, r == std::string::npos
+                                                   ? std::string::npos
+                                                   : r - q - 1));
+              if (cpu >= lo && cpu <= hi) return true;
+            } catch (...) {
+            }
+            if (r == std::string::npos) break;
+            p = r + 1;
+            continue;
+          }
+          p = q + 1;
+        }
+        return false;
+      };
+      if (!a.empty() && !b.empty()) {
+        two = !(has_cpu(a, cpus[1]) || has_cpu(b, cpus[0]));
+      } else {
+        two = true;
+      }
+    }
+  }
+  usable_ = two && std::thread::hardware_concurrency() >= 2;
   if (usable_) worker_ = std::thread([this] { workerLoop(); });
 }
 
