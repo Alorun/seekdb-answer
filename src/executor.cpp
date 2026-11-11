@@ -538,6 +538,70 @@ __attribute__((target("avx2"), always_inline)) static inline int32_t q7Dot(
   return dot;
 }
 
+__attribute__((target("avx2"), always_inline)) static inline int32_t hsum256(
+    __m256i acc) {
+  __m128i lo = _mm256_castsi256_si128(acc);
+  __m128i hi = _mm256_extracti128_si256(acc, 1);
+  __m128i sum = _mm_add_epi32(lo, hi);
+  sum = _mm_hadd_epi32(sum, sum);
+  sum = _mm_hadd_epi32(sum, sum);
+  return _mm_cvtsi128_si32(sum);
+}
+
+// Four rows share the query-code loads.  The scan is uop-bound, so this cuts
+// the query-side load/loop overhead per row without changing exactness.
+__attribute__((target("avx2"), always_inline)) static inline void q7Dot4(
+    const uint8_t* __restrict a0, const uint8_t* __restrict a1,
+    const uint8_t* __restrict a2, const uint8_t* __restrict a3,
+    const int8_t* __restrict b, size_t n, int32_t out[4]) {
+  const __m256i ones = _mm256_set1_epi16(1);
+  __m256i p00 = _mm256_setzero_si256(), p01 = _mm256_setzero_si256();
+  __m256i p10 = _mm256_setzero_si256(), p11 = _mm256_setzero_si256();
+  __m256i p20 = _mm256_setzero_si256(), p21 = _mm256_setzero_si256();
+  __m256i p30 = _mm256_setzero_si256(), p31 = _mm256_setzero_si256();
+  size_t i = 0;
+  for (; i + 64 <= n; i += 64) {
+    __m256i b0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
+    __m256i b1 =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i + 32));
+    __m256i r0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a0 + i));
+    __m256i r1 =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a0 + i + 32));
+    p00 = _mm256_add_epi32(
+        p00, _mm256_madd_epi16(_mm256_maddubs_epi16(r0, b0), ones));
+    p01 = _mm256_add_epi32(
+        p01, _mm256_madd_epi16(_mm256_maddubs_epi16(r1, b1), ones));
+    r0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a1 + i));
+    r1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a1 + i + 32));
+    p10 = _mm256_add_epi32(
+        p10, _mm256_madd_epi16(_mm256_maddubs_epi16(r0, b0), ones));
+    p11 = _mm256_add_epi32(
+        p11, _mm256_madd_epi16(_mm256_maddubs_epi16(r1, b1), ones));
+    r0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a2 + i));
+    r1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a2 + i + 32));
+    p20 = _mm256_add_epi32(
+        p20, _mm256_madd_epi16(_mm256_maddubs_epi16(r0, b0), ones));
+    p21 = _mm256_add_epi32(
+        p21, _mm256_madd_epi16(_mm256_maddubs_epi16(r1, b1), ones));
+    r0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a3 + i));
+    r1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a3 + i + 32));
+    p30 = _mm256_add_epi32(
+        p30, _mm256_madd_epi16(_mm256_maddubs_epi16(r0, b0), ones));
+    p31 = _mm256_add_epi32(
+        p31, _mm256_madd_epi16(_mm256_maddubs_epi16(r1, b1), ones));
+  }
+  out[0] = hsum256(_mm256_add_epi32(p00, p01));
+  out[1] = hsum256(_mm256_add_epi32(p10, p11));
+  out[2] = hsum256(_mm256_add_epi32(p20, p21));
+  out[3] = hsum256(_mm256_add_epi32(p30, p31));
+  for (; i < n; ++i) {
+    out[0] += static_cast<int32_t>(a0[i]) * static_cast<int32_t>(b[i]);
+    out[1] += static_cast<int32_t>(a1[i]) * static_cast<int32_t>(b[i]);
+    out[2] += static_cast<int32_t>(a2[i]) * static_cast<int32_t>(b[i]);
+    out[3] += static_cast<int32_t>(a3[i]) * static_cast<int32_t>(b[i]);
+  }
+}
+
 struct Q7Query {
   std::vector<int8_t> codes;  // signed query codes in [-63,63]
   int32_t cq = 0;             // sum(s^2) + 126*sum(s)
@@ -618,10 +682,8 @@ __attribute__((target("avx2,fma"))) void scanQ7ExactRange(
   const uint8_t* codes = c.codes.data();
   const int32_t* pv = c.pv.data();
   const int32_t cq = qq.cq;
-  for (size_t vi = begin + seed; vi < end; ++vi) {
-    const int32_t dq =
-        pv[vi] + cq - 2 * q7Dot(codes + vi * dim, qcodes, dim);
-    if (dq > thr2) continue;
+  auto consider_q7 = [&](size_t vi, int32_t dq) {
+    if (dq > thr2) return;
     const float* a = vecp[vi];
     float sum = l2Kernel(a, q, dim);
     double d = std::isfinite(sum) ? static_cast<double>(sum)
@@ -634,6 +696,19 @@ __attribute__((target("avx2,fma"))) void scanQ7ExactRange(
         thr2 = threshold2();
       }
     }
+  };
+  size_t vi = begin + seed;
+  for (; vi + 4 <= end; vi += 4) {
+    int32_t dots[4];
+    q7Dot4(codes + vi * dim, codes + (vi + 1) * dim,
+           codes + (vi + 2) * dim, codes + (vi + 3) * dim, qcodes, dim, dots);
+    consider_q7(vi, pv[vi] + cq - 2 * dots[0]);
+    consider_q7(vi + 1, pv[vi + 1] + cq - 2 * dots[1]);
+    consider_q7(vi + 2, pv[vi + 2] + cq - 2 * dots[2]);
+    consider_q7(vi + 3, pv[vi + 3] + cq - 2 * dots[3]);
+  }
+  for (; vi < end; ++vi) {
+    consider_q7(vi, pv[vi] + cq - 2 * q7Dot(codes + vi * dim, qcodes, dim));
   }
   top.drain(out);
 }
