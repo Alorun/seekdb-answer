@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "synthetic": false,
-  "commit": "6d3c322126698bad24e276b4076c4c5d7fd39d4a",
+  "commit": "46150c520d2a9a9c24e83b75fac7b11a4f0289a5",
   "verified_at": "2026-11-11T13:00:00+08:00",
   "status": {
     "official_branch": "2026-competition-round2",
@@ -14,7 +14,7 @@
     "device_b": "~6.8 MB vs ~10.1 MB (057126c)",
     "formal_admission": "S3 04960665b passed; performance E=2432.687188; prompt raw=4.00000"
   },
-  "material_notes": "真实协作与命令输出的归一化记录：用户请求是任务摘要，不是逐字原文；所有 student_evidence 都在对应 content 中，result_evidence 都在 experiments.output 中。数字为本机 Release/本地数据，平台隐藏种子和 cgroup 指标可能不同。",
+  "material_notes": "真实协作与命令输出的归一化记录：用户请求是任务摘要，不是逐字原文。student_evidence/result_evidence 是对应 content/output 的子串，并单独保存为 evidence 字符串字段，供 JSON pointer 精确定位；数字为本机 Release/本地数据，平台隐藏种子和 cgroup 指标可能不同。",
   "user_prompts": [
     {
       "id": "P1",
