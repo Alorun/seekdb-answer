@@ -79,6 +79,36 @@ bool decodeSchema(const std::string& payload, Schema& out, std::string& err) {
   return true;
 }
 
+void encodeRowInto(const Schema& schema, const Row& row, std::string& out) {
+  auto u32 = [&](uint32_t v) {
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
+  };
+  auto u64 = [&](uint64_t v) {
+    for (int i = 0; i < 8; ++i) out.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
+  };
+  for (size_t i = 0; i < schema.columns.size(); ++i) {
+    const Column& col = schema.columns[i];
+    const Value& v = row.values[i];
+    switch (col.type) {
+      case ColumnType::BigInt:
+        u64(static_cast<uint64_t>(v.i));
+        break;
+      case ColumnType::Varchar:
+        u32(static_cast<uint32_t>(v.s.size()));
+        out.append(v.s.data(), v.s.size());
+        break;
+      case ColumnType::Vector:
+        u32(static_cast<uint32_t>(v.v.size()));
+        for (float f : v.v) {
+          uint32_t bits = 0;
+          std::memcpy(&bits, &f, sizeof(bits));
+          u32(bits);
+        }
+        break;
+    }
+  }
+}
+
 std::string encodeRow(const Schema& schema, const Row& row) {
   Writer w;
   for (size_t i = 0; i < schema.columns.size(); ++i) {

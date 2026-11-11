@@ -56,6 +56,8 @@ class Wal {
   // Encode one record (header + payload) into `out`; the caller can append a
   // whole multi-row INSERT as one write syscall via appendBatch.
   void encodeRecord(const WalRecord& rec, std::string& out) const;
+  void encodeHeader(const WalRecord& rec, uint32_t payload_len, uint32_t crc,
+                    char* out) const;
   Status appendBatch(const std::string& bytes, uint64_t* out_offset = nullptr);
   Status appendCommit(uint64_t txn, uint32_t op_count, uint64_t first_lsn,
                       uint64_t last_lsn, uint64_t lsn);
@@ -158,6 +160,9 @@ struct IvfCache {
   size_t nprobe = 0;
   std::vector<std::vector<float>> centroids;
   std::vector<std::vector<size_t>> lists;  // indices into Table::vector_cache
+  std::vector<float> radii;                 // max member distance per list
+  bool clustered = false;
+  bool attempted = false;
   bool valid = false;
 };
 
@@ -196,6 +201,7 @@ class Database {
   uint64_t newLsn() { return next_lsn_++; }
   const std::string& dataDir() const { return data_dir_; }
   size_t memoryRows() const { return memory_rows_; }
+  const std::vector<std::unique_ptr<Table>>& tables() const { return tables_; }
   Status loadSmallTables();
   Status checkpointIfNeeded(uint64_t threshold_bytes);
   Status checkpoint();

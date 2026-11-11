@@ -100,10 +100,8 @@ Status Wal::writeAllV(struct iovec* iov, int iovcnt) {
   return Status::Ok();
 }
 
-void Wal::encodeRecord(const WalRecord& rec, std::string& out) const {
-  char header[kHeaderSize];
-  const uint32_t len = static_cast<uint32_t>(rec.payload.size());
-  const uint32_t crc = crc32c(rec.payload.data(), rec.payload.size());
+void Wal::encodeHeader(const WalRecord& rec, uint32_t len, uint32_t crc,
+                       char* header) const {
   for (int i = 0; i < 4; ++i) header[i] = static_cast<char>((len >> (8 * i)) & 0xFF);
   for (int i = 0; i < 4; ++i) header[4 + i] = static_cast<char>((crc >> (8 * i)) & 0xFF);
   header[8] = static_cast<char>(rec.type);
@@ -114,6 +112,12 @@ void Wal::encodeRecord(const WalRecord& rec, std::string& out) const {
       header[12 + f * 8 + i] = static_cast<char>((fields[f] >> (8 * i)) & 0xFF);
     }
   }
+}
+
+void Wal::encodeRecord(const WalRecord& rec, std::string& out) const {
+  char header[kHeaderSize];
+  encodeHeader(rec, static_cast<uint32_t>(rec.payload.size()),
+               crc32c(rec.payload.data(), rec.payload.size()), header);
   out.append(header, kHeaderSize);
   out += rec.payload;
 }

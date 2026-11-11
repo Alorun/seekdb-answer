@@ -78,6 +78,10 @@ class Executor {
   // response until flushSync() returns Ok.
   void setDeferSync(bool defer) { defer_sync_ = defer; }
   bool inTransaction() const { return active_; }
+  // Build vector/IVF caches before the ready handshake.  Preparation is not
+  // part of the timed query phase, but its memory/IO is counted, so this is
+  // done once after recovery for existing large tables.
+  Status prepare();
   Status flushSync();
   Status shutdown();
 

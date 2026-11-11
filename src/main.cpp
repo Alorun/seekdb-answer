@@ -726,6 +726,7 @@ int main(int argc, char** argv) {
   }
   mvdb::Executor exec(db);
   exec.setQueryMode(opt.query_mode);
+  exec.prepare();
 
   std::cerr << "minivectordb: data_dir=" << opt.data_dir
             << " protocol=" << opt.protocol << " query_mode=" << opt.query_mode

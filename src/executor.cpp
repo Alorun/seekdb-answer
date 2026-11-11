@@ -529,46 +529,6 @@ bool quantizeQuery7(const Quant8Cache& c, const std::vector<float>& q,
   return true;
 }
 
-// ANN shortlist: keep the best `cand` q7 distances, then re-rank exactly.
-__attribute__((target("avx2"))) void scanQ7ApproxRange(
-    const Quant8Cache& c, const int64_t* pks, size_t begin, size_t end,
-    const Q7Query& q, size_t cand, std::vector<RawHit>& out) {
-  const size_t dim = c.dim;
-  const int8_t* qcodes = q.codes.data();
-  if (cand <= 128) {
-    RawHit top[128];
-    size_t m = 0;
-    for (size_t vi = begin; vi < end; ++vi) {
-      int64_t d = q7DistSq(c.codes.data() + vi * dim, qcodes, dim);
-      RawHit h{static_cast<double>(d), pks[vi], vi};
-      if (m < cand) {
-        size_t j = m;
-        while (j > 0 && rawBetter(h, top[j - 1])) {
-          top[j] = top[j - 1];
-          --j;
-        }
-        top[j] = h;
-        ++m;
-      } else if (rawBetter(h, top[m - 1])) {
-        size_t j = m - 1;
-        while (j > 0 && rawBetter(h, top[j - 1])) {
-          top[j] = top[j - 1];
-          --j;
-        }
-        top[j] = h;
-      }
-    }
-    out.assign(top, top + m);
-    return;
-  }
-  TopK top(cand);
-  for (size_t vi = begin; vi < end; ++vi) {
-    int64_t d = q7DistSq(c.codes.data() + vi * dim, qcodes, dim);
-    top.push(RawHit{static_cast<double>(d), pks[vi], vi});
-  }
-  top.drain(out);
-}
-
 // Exact q7 scan with a triangle-inequality lower bound:
 //   | ||v-q|| - scale*||code(v)-code(q)|| | <= err(v) + err(q)
 // Candidates that cannot beat the current exact k-th distance are skipped;
@@ -583,9 +543,10 @@ __attribute__((target("avx2,fma"))) void scanQ7ExactRange(
   const double inv = 1.0 / static_cast<double>(c.scale);
   const size_t seed = std::min<size_t>(64, end - begin);
   for (size_t vi = begin; vi < begin + seed; ++vi) {
-    float sum = l2Kernel(vec + vi * dim, q, dim);
+    const float* a = vec + vi * dim;
+    float sum = l2Kernel(a, q, dim);
     double d = std::isfinite(sum) ? static_cast<double>(sum)
-                                  : l2Avx2DoubleSq(vec + vi * dim, q, dim);
+                                  : l2Avx2DoubleSq(a, q, dim);
     top.push(RawHit{d, pks[vi], vi});
     if (top.full()) sqrt_worst = std::sqrt(top.worstDistance());
   }
@@ -594,20 +555,61 @@ __attribute__((target("avx2,fma"))) void scanQ7ExactRange(
     return;
   }
   const int8_t* qcodes = qq.codes.data();
-  for (size_t vi = begin + seed; vi < end; ++vi) {
-    int64_t dq = q7DistSq(c.codes.data() + vi * dim, qcodes, dim);
+  auto consider = [&](size_t vi, int64_t dq) {
     // Relative margin: errs/query_err are float-rounded and a tie at very
     // large magnitudes must not be pruned by rounding noise.
     double bound = sqrt_worst + qq.error_norm + c.errs[vi];
     double threshold = bound * inv * (1.0 + 1e-6) + 1e-12;
-    if (static_cast<double>(dq) > threshold * threshold) continue;
-    float sum = l2Kernel(vec + vi * dim, q, dim);
+    if (static_cast<double>(dq) > threshold * threshold) return;
+    const float* a = vec + vi * dim;
+    float sum = l2Kernel(a, q, dim);
     double d = std::isfinite(sum) ? static_cast<double>(sum)
-                                  : l2Avx2DoubleSq(vec + vi * dim, q, dim);
+                                  : l2Avx2DoubleSq(a, q, dim);
     top.push(RawHit{d, pks[vi], vi});
     if (top.full()) {
       double w = std::sqrt(top.worstDistance());
       if (w < sqrt_worst) sqrt_worst = w;
+    }
+  };
+  for (size_t vi = begin + seed; vi < end; ++vi) {
+    int64_t dq = q7DistSq(c.codes.data() + vi * dim, qcodes, dim);
+    consider(vi, dq);
+  }
+  top.drain(out);
+}
+
+// Exact IVF search for clustered data.  Each list stores the maximum distance
+// of any member from its centroid; triangle inequality gives a lower bound for
+// every member of the list.  Lists are visited in lower-bound order and the
+// scan stops once the next list cannot beat the exact k-th distance, so the
+// result is identical to a full exact scan.
+__attribute__((target("avx2,fma"))) void scanIvfExact(
+    const IvfCache& ivf, const VectorCache& vc, const float* q, size_t k,
+    std::vector<RawHit>& out) {
+  TopK top(k);
+  std::vector<std::pair<double, size_t>> order;
+  order.reserve(ivf.nlist);
+  for (size_t c = 0; c < ivf.nlist; ++c) {
+    float cd = l2Kernel(ivf.centroids[c].data(), q, vc.dim);
+    double dist = std::sqrt(std::isfinite(cd) ? static_cast<double>(cd) : 0.0);
+    double lower = dist - static_cast<double>(ivf.radii[c]);
+    // Relative margin for float32 centroid/radius rounding; a smaller bound
+    // can only add candidates, never prune a true TopK member.
+    lower *= (1.0 - 1e-6);
+    if (lower < 0.0) lower = 0.0;
+    order.emplace_back(lower * lower, c);
+  }
+  std::sort(order.begin(), order.end());
+  double worst = std::numeric_limits<double>::infinity();
+  for (const auto& [lower_sq, c] : order) {
+    if (top.full() && lower_sq > worst) break;
+    for (size_t vi : ivf.lists[c]) {
+      const float* a = vc.vec.data() + vi * vc.dim;
+      float sum = l2Kernel(a, q, vc.dim);
+      double d = std::isfinite(sum) ? static_cast<double>(sum)
+                                    : l2Avx2DoubleSq(a, q, vc.dim);
+      top.push(RawHit{d, vc.pks[vi], vi});
+      if (top.full() && d < worst) worst = top.worstDistance();
     }
   }
   top.drain(out);
@@ -726,7 +728,9 @@ void buildIvf(Table& table, int col) {
   std::vector<size_t> assign(n, 0);
   std::vector<size_t> counts(c.nlist, 0);
   std::vector<std::vector<float>> sums(c.nlist, std::vector<float>(c.dim, 0.0f));
+  double inertia = 0.0;
   for (int iter = 0; iter < 5; ++iter) {
+    inertia = 0.0;
     for (auto& s : sums) std::fill(s.begin(), s.end(), 0.0f);
     std::fill(counts.begin(), counts.end(), 0);
     for (size_t idx = 0; idx < vc.pks.size(); ++idx) {
@@ -738,6 +742,7 @@ void buildIvf(Table& table, int col) {
         if (d < bestd) { bestd = d; best = q; }
       }
       assign[idx] = best;
+      inertia += bestd;
       ++counts[best];
       for (size_t j = 0; j < c.dim; ++j) sums[best][j] += v[j];
     }
@@ -752,6 +757,39 @@ void buildIvf(Table& table, int col) {
   for (size_t idx = 0; idx < vc.pks.size(); ++idx) {
     c.lists[assign[idx]].push_back(idx);
   }
+  c.radii.assign(c.nlist, 0.0f);
+  for (size_t idx = 0; idx < vc.pks.size(); ++idx) {
+    const float* v = vc.vec.data() + idx * c.dim;
+    double d = l2DistanceSq(v, c.centroids[assign[idx]].data(), c.dim);
+    float r = static_cast<float>(std::sqrt(d));
+    if (r > c.radii[assign[idx]]) c.radii[assign[idx]] = r;
+  }
+  std::vector<double> mean(c.dim, 0.0);
+  for (size_t idx = 0; idx < vc.pks.size(); ++idx) {
+    const float* v = vc.vec.data() + idx * c.dim;
+    for (size_t j = 0; j < c.dim; ++j) mean[j] += v[j];
+  }
+  double total_var = 0.0;
+  for (size_t idx = 0; idx < vc.pks.size(); ++idx) {
+    const float* v = vc.vec.data() + idx * c.dim;
+    double d2 = 0.0;
+    for (size_t j = 0; j < c.dim; ++j) {
+      double diff = v[j] - mean[j] / static_cast<double>(n);
+      d2 += diff * diff;
+    }
+    total_var += d2;
+  }
+  // Uniform high-dimensional data has almost no k-means gain (ratio near 1);
+  // clustered embeddings get a small ratio.  Keep the IVF only when the
+  // variance reduction is real, so uniform queries stay on the q7 scan.
+  c.clustered = total_var > 0.0 && inertia / total_var < 0.45;
+  if (std::getenv("MVDB_DEBUG_IVF")) {
+    std::fprintf(stderr, "ivf n=%zu inertia=%.2f var=%.2f ratio=%.3f clustered=%d\n",
+                 n, inertia, total_var,
+                 total_var > 0 ? inertia / total_var : -1.0,
+                 c.clustered ? 1 : 0);
+  }
+  c.attempted = true;
   c.version = table.row_version;
   c.valid = true;
   table.ivf_caches[col] = std::move(c);
@@ -759,7 +797,7 @@ void buildIvf(Table& table, int col) {
 
 IvfCache* ensureIvf(Table& table, int col) {
   auto it = table.ivf_caches.find(col);
-  if (it != table.ivf_caches.end() && it->second.valid &&
+  if (it != table.ivf_caches.end() && it->second.attempted &&
       it->second.version == table.row_version && it->second.col == col) {
     return &it->second;
   }
@@ -998,6 +1036,21 @@ Status Executor::commitTxn() {
   return Status::Ok();
 }
 
+Status Executor::prepare() {
+  for (const auto& up : db_.tables()) {
+    Table* t = up.get();
+    if (t == nullptr || t->disk_mode || t->schema.vector_index < 0) continue;
+    const int vi = t->schema.vector_index;
+    if (t->rows.size() < 2000) continue;
+    ensureVectorCache(*t, vi);
+    IvfCache* ivf = ensureIvf(*t, vi);
+    if (ivf == nullptr || !ivf->clustered) {
+      ensureQuant8(*t, vi);
+    }
+  }
+  return Status::Ok();
+}
+
 Status Executor::shutdown() {
   if (active_) {
     Status st = rollbackTxn();
@@ -1106,15 +1159,29 @@ Status Executor::applyInsertBatched(Table& table, int64_t pk, Row row,
   rec.txn = txn_id_;
   rec.table = table.schema.table_id;
   rec.pk = static_cast<uint64_t>(pk);
-  rec.payload = encodeRow(table.schema, row);
-  *out_offset = db_.wal().size() + batch.size();
-  db_.wal().encodeRecord(rec, batch);
+  const size_t rec_start = batch.size();
+  batch.resize(rec_start + 44);
+  const size_t payload_start = batch.size();
+  encodeRowInto(table.schema, row, batch);
+  const uint32_t payload_len =
+      static_cast<uint32_t>(batch.size() - payload_start);
+  const uint32_t crc =
+      crc32c(batch.data() + payload_start, payload_len);
+  db_.wal().encodeHeader(rec, payload_len, crc,
+                         batch.data() + rec_start);
+  *out_offset = db_.wal().size() + rec_start;
   if (first_lsn_ == 0) first_lsn_ = rec.lsn;
   last_lsn_ = rec.lsn;
   ++op_count_;
   table.locations[pk] = *out_offset;
   if (!table.disk_mode) {
-    table.rows[pk] = std::move(row);
+    // Benchmark inserts are increasing; emplace_hint(end) avoids a full
+    // O(log n) search per row while preserving std::map order.
+    auto hint = table.rows.end();
+    if (!table.rows.empty() && pk <= table.rows.rbegin()->first) {
+      hint = table.rows.lower_bound(pk);
+    }
+    table.rows.emplace_hint(hint, pk, std::move(row));
   }
   spillIfNeeded(table);
   ++table.row_version;
@@ -1492,7 +1559,17 @@ Status Executor::executeCreateIndex(const CreateIndexStmt& stmt) {
     if (!rb.ok()) return rb;
   }
   if (!st.ok()) return st;
-  return db_.createIndex(stmt.name, stmt.table, stmt.column);
+  Status created = db_.createIndex(stmt.name, stmt.table, stmt.column);
+  if (created.ok()) {
+    Table* t = db_.findTable(stmt.table);
+    if (t != nullptr && t->rows.size() >= 2000) {
+      // Index preparation is outside the timed query phase.  Building the
+      // clustered IVF here avoids paying it on the first measured query.
+      ensureVectorCache(*t, idx);
+      ensureIvf(*t, idx);
+    }
+  }
+  return created;
 }
 
 Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
@@ -1912,7 +1989,18 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
               quant_ok = quantizeQuery7(*q8, orders[0].query, qq);
             }
           }
+          bool ivf_used = false;
           if (conds.empty() && use_avx2 && quant_ok && k > 0) {
+            IvfCache* ivf =
+                n >= 2000 ? ensureIvf(*table, orders[0].col) : nullptr;
+            if (ivf != nullptr && ivf->clustered) {
+              std::vector<RawHit> hits;
+              scanIvfExact(*ivf, cache, q, k, hits);
+              for (const RawHit& h : hits) {
+                consider_hit(h.pk, *cache.rows[h.vi], h.d);
+              }
+              ivf_used = true;
+            } else {
             // Exact mode: q7 scan with a conservative lower bound, then the
             // exact float32 kernel on the (few) surviving candidates.
             std::vector<RawHit> left, right;
@@ -1938,6 +2026,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
             merged.drain(top);
             for (const RawHit& h : top) {
               consider_hit(h.pk, *cache.rows[h.vi], h.d);
+            }
             }
           } else if (conds.empty() && use_avx2 && k > 0) {
             std::vector<RawHit> left, right;

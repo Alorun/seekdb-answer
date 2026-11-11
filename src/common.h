@@ -260,6 +260,8 @@ std::string encodeSchema(const Schema& schema);
 bool decodeSchema(const std::string& payload, Schema& out, std::string& err);
 
 std::string encodeRow(const Schema& schema, const Row& row);
+// Appends the same payload as encodeRow directly to an existing buffer.
+void encodeRowInto(const Schema& schema, const Row& row, std::string& out);
 bool decodeRow(const Schema& schema, const std::string& payload, Row& out,
                std::string& err);
 bool decodeRow(const Schema& schema, const char* data, size_t size, Row& out,

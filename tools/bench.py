@@ -14,10 +14,17 @@ also inside T), so compare runs on the same machine/host, not absolute values.
 """
 import argparse, json, os, random, shutil, subprocess, sys, time
 
-def gen(outdir, rows=10000, dim=128, batch=100, queries=1000, cats=50, seed=12345):
+def gen(outdir, rows=10000, dim=128, batch=100, queries=1000, cats=50, seed=12345,
+        clustered=False):
     os.makedirs(outdir, exist_ok=True)
     rng = random.Random(seed)
     cn = [f"cat{i:02d}" for i in range(cats)]
+    centers = [[rng.uniform(-1.0, 1.0) for _ in range(dim)] for _ in range(20)]
+    def vec(c=None):
+        if c is None:
+            return [rng.uniform(-1.0, 1.0) for _ in range(dim)]
+        return [max(-1.0, min(1.0, c[j] + rng.uniform(-0.35, 0.35)))
+                for j in range(dim)]
     schema = f"CREATE TABLE docs (id BIGINT PRIMARY KEY, category VARCHAR(32), content VARCHAR(1024), embedding VECTOR({dim}));"
     batches = []
     row = 0
@@ -26,14 +33,16 @@ def gen(outdir, rows=10000, dim=128, batch=100, queries=1000, cats=50, seed=1234
         tup = []
         for k in range(n):
             i = row + k + 1
-            v = "[" + ",".join(f"{rng.uniform(-1,1):.6f}" for _ in range(dim)) + "]"
+            vv = vec(centers[i % len(centers)] if clustered else None)
+            v = "[" + ",".join(f"{x:.6f}" for x in vv) + "]"
             tup.append(f"({i},'{cn[i%cats]}','document-{i:06d}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx','{v}')")
         batches.append("INSERT INTO docs VALUES " + ",".join(tup) + ";")
         row += n
     qs = []
     half = queries // 2
     for q in range(queries):
-        v = "[" + ",".join(f"{rng.uniform(-1,1):.6f}" for _ in range(dim)) + "]"
+        qv = vec(centers[rng.randrange(len(centers))] if clustered else None)
+        v = "[" + ",".join(f"{x:.6f}" for x in qv) + "]"
         if q < half:
             c = cn[rng.randrange(cats)]
             qs.append(f"SELECT id, L2_DISTANCE(embedding, '{v}') AS dist FROM docs WHERE category = '{c}' ORDER BY dist LIMIT 10;")
@@ -102,10 +111,12 @@ def main():
     ap.add_argument("--mode", default="exact")
     ap.add_argument("--taskset", default="")
     ap.add_argument("--args", default="")
+    ap.add_argument("--clustered", action="store_true")
     ap.add_argument("--reuse", action="store_true")
     ap.add_argument("--repeat", type=int, default=1)
     args = ap.parse_args()
-    schema, batches, qs = gen(args.dir, rows=args.rows, dim=args.dim, queries=args.queries)
+    schema, batches, qs = gen(args.dir, rows=args.rows, dim=args.dim,
+                              queries=args.queries, clustered=args.clustered)
     bin_path = os.path.abspath(args.bin)
     extra = args.args.split() if args.args else []
     for rep in range(args.repeat):
@@ -130,8 +141,11 @@ def main():
         db.sample_rss()
         io1 = io_bytes(db.p.pid)
         t0 = time.perf_counter()
-        for _ in range(args.warmup):
-            db.req(qs[_ % len(qs)], args.mode)
+        # Sample both filtered and unfiltered queries for warmup; the first
+        # 50 entries of the generated list are all filtered.
+        for wi in range(args.warmup):
+            idx = (wi * len(qs)) // max(1, args.warmup)
+            db.req(qs[idx], args.mode)
         twarm = time.perf_counter() - t0
         db.sample_rss()
         t0 = time.perf_counter()

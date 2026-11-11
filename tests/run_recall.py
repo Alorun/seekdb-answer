@@ -96,10 +96,18 @@ def main():
     ap.add_argument("--dim", type=int, default=128)
     ap.add_argument("--queries", type=int, default=100)
     ap.add_argument("--seed", type=int, default=20261111)
+    ap.add_argument("--clustered", action="store_true")
     args = ap.parse_args()
 
     rng = np.random.default_rng(args.seed)
-    vectors = rng.uniform(-1.0, 1.0, (args.rows, args.dim)).astype(np.float32)
+    if args.clustered:
+        centers = rng.uniform(-1.0, 1.0, (20, args.dim)).astype(np.float32)
+        which = rng.integers(0, len(centers), args.rows)
+        vectors = centers[which] + rng.uniform(
+            -0.35, 0.35, (args.rows, args.dim)).astype(np.float32)
+        vectors = np.clip(vectors, -1.0, 1.0).astype(np.float32)
+    else:
+        vectors = rng.uniform(-1.0, 1.0, (args.rows, args.dim)).astype(np.float32)
     cats = np.array([f"cat{i:02d}" for i in range(50)])
     labels = np.array([cats[i % len(cats)] for i in range(args.rows)])
 
@@ -126,7 +134,12 @@ def main():
         ann_hits = 0
         total = 0
         for qi in range(args.queries):
-            q = rng.uniform(-1.0, 1.0, args.dim).astype(np.float32)
+            if args.clustered:
+                q = centers[rng.integers(0, len(centers))] + rng.uniform(
+                    -0.35, 0.35, args.dim).astype(np.float32)
+                q = np.clip(q, -1.0, 1.0).astype(np.float32)
+            else:
+                q = rng.uniform(-1.0, 1.0, args.dim).astype(np.float32)
             filtered = qi % 2 == 0
             if filtered:
                 cat = cats[rng.integers(0, len(cats))]
