@@ -130,6 +130,41 @@
       "content": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项，要说明为什么选 q7+IVF+组提交，以及隐藏基线不确定性的风险。",
       "prompt_ref": "P2",
       "note": "最终取舍"
+    },
+    {
+      "id": "C15",
+      "role": "student",
+      "content": "服务端写入 0.10 s，但客户端逐条等待时 wall 0.28 s；说明 T 的测量方式决定优化重点，不能只看本地 wall。",
+      "prompt_ref": "P2",
+      "note": "服务端写入拆分"
+    },
+    {
+      "id": "C16",
+      "role": "student",
+      "content": "pipelined 输入才用第二 CPU：缓冲里还有请求时双线程 0.11 s，逐条等待时单线程 0.10 s，避免抢客户端 CPU。",
+      "prompt_ref": "P2",
+      "note": "并行扫描取舍"
+    },
+    {
+      "id": "C17",
+      "role": "student",
+      "content": "IVF nprobe=8 在聚簇 10k 上平均扫 775 行，recall@10=0.9985；exact 模式仍用半径下界，ann 才用 nprobe。",
+      "prompt_ref": "P2",
+      "note": "ANN nprobe 验证"
+    },
+    {
+      "id": "C18",
+      "role": "student",
+      "content": "AVX-512 q7 内核带自检和 AVX2 回退，但提交后性能分未升反降，说明目标机可能不支持或降频；先回退，不能只看理论峰值。",
+      "prompt_ref": "P2",
+      "note": "AVX-512 负结果"
+    },
+    {
+      "id": "C19",
+      "role": "student",
+      "content": "当前 M≈20.8 MB、B≈6.8 MB；下一步必须做列式/紧凑行存储和 WAL 批次头压缩，继续抠 q7 微秒无法到第一。",
+      "prompt_ref": "P2",
+      "note": "M/B 下一步"
     }
   ],
   "experiments": [
@@ -286,6 +321,46 @@
       "command": "tools/bench.py --repeat 3; /proc/diskstats",
       "output": "write 0.278 s vs 0.557 s; query 0.084 s vs 0.185 s; B ~6.8 MB vs ~10.1 MB; M 20.8 MB vs 19.5 MB",
       "analysis": "写入 2.0×、查询 2.2×、B 1.5×、M 略差；选 q7+聚簇 IVF+组提交，接受 +1.3 MB M，下一步才做列式内存。"
+    },
+    {
+      "id": "E20",
+      "name": "证据 20",
+      "hypothesis": "",
+      "command": "",
+      "output": "服务端写入 0.10 s vs 基线 0.53 s；逐条客户端 wall 0.28 s vs 0.56 s",
+      "analysis": "同一份 10k 输入直接喂服务端，写入 0.10 s；经 Python 逐条等待则 0.28 s，客户端/IO 等待占大头。"
+    },
+    {
+      "id": "E21",
+      "name": "证据 21",
+      "hypothesis": "",
+      "command": "",
+      "output": "pipelined 0.11 s; sequential single 0.10 s",
+      "analysis": "只有输入缓冲还有请求时才启用 helper CPU；逐条等待时保持单线程，避免和客户端抢两个 CPU。"
+    },
+    {
+      "id": "E22",
+      "name": "证据 22",
+      "hypothesis": "",
+      "command": "",
+      "output": "nprobe=8: candidates 775/10000, recall@10=0.9985; exact radius recall=1.0",
+      "analysis": "聚簇数据 ann 用最近 8 个 list，exact 仍用半径下界；ann 召回 0.9985，exact 100%。"
+    },
+    {
+      "id": "E23",
+      "name": "证据 23",
+      "hypothesis": "",
+      "command": "",
+      "output": "AVX-512 code compiled + AVX2 fallback tested locally; no AVX-512 host available; S4 3579 < 3688",
+      "analysis": "本机仅 AVX2，无法执行 512 内核；只验证了编译和回退。平台提交后分数下降，先回退，避免未验证路径。"
+    },
+    {
+      "id": "E24",
+      "name": "证据 24",
+      "hypothesis": "",
+      "command": "",
+      "output": "M 20.8 MB; B 6.8 MB; query 0.10 s; write 0.27 s (client wall)",
+      "analysis": "M/B 仍高于基线；列式行存储目标 14 MB，WAL 批次头目标 5.5 MB，这是下一步大改。"
     }
   ],
   "units": [
@@ -416,6 +491,56 @@
       "result_evidence": "write 0.278 s vs 0.557 s; query 0.084 s vs 0.185 s; B ~6.8 MB vs ~10.1 MB; M 20.8 MB vs 19.5 MB",
       "result_pointer": "/experiments/18/output",
       "reason": "把 T/B/M 和查询 2/3 权重一起算，说明 E 会饱和、单项 2× 不等于排名 2×，并接受 +1.3 MB M 换查询收益。"
+    },
+    {
+      "id": "U14",
+      "dimension": "实验与反馈迭代",
+      "score": 2.0,
+      "student_evidence": "服务端写入 0.10 s，但客户端逐条等待时 wall 0.28 s；说明 T 的测量方式决定优化重点，不能只看本地 wall。",
+      "student_pointer": "/conversations/14/content",
+      "result_evidence": "服务端写入 0.10 s vs 基线 0.53 s；逐条客户端 wall 0.28 s vs 0.56 s",
+      "result_pointer": "/experiments/19/output",
+      "reason": "把服务端计算和客户端等待拆开，发现写入已 5×，剩余 wall 是逐条驱动；据此决定不再优化 fsync。"
+    },
+    {
+      "id": "U15",
+      "dimension": "取舍与反思",
+      "score": 2.0,
+      "student_evidence": "pipelined 输入才用第二 CPU：缓冲里还有请求时双线程 0.11 s，逐条等待时单线程 0.10 s，避免抢客户端 CPU。",
+      "student_pointer": "/conversations/15/content",
+      "result_evidence": "pipelined 0.11 s; sequential single 0.10 s",
+      "result_pointer": "/experiments/20/output",
+      "reason": "双线程只在缓冲还有请求时启用，避免逐条场景抢客户端 CPU；实测两种场景都不退化。"
+    },
+    {
+      "id": "U16",
+      "dimension": "独立验证与质疑",
+      "score": 2.0,
+      "student_evidence": "IVF nprobe=8 在聚簇 10k 上平均扫 775 行，recall@10=0.9985；exact 模式仍用半径下界，ann 才用 nprobe。",
+      "student_pointer": "/conversations/16/content",
+      "result_evidence": "nprobe=8: candidates 775/10000, recall@10=0.9985; exact radius recall=1.0",
+      "result_pointer": "/experiments/21/output",
+      "reason": "先验证 ann 召回再启用 nprobe；exact 保留半径下界，ann 才走近似，两条路径都测。"
+    },
+    {
+      "id": "U17",
+      "dimension": "技术理解与迁移",
+      "score": 2.0,
+      "student_evidence": "AVX-512 q7 内核带自检和 AVX2 回退，但提交后性能分未升反降，说明目标机可能不支持或降频；先回退，不能只看理论峰值。",
+      "student_pointer": "/conversations/17/content",
+      "result_evidence": "AVX-512 code compiled + AVX2 fallback tested locally; no AVX-512 host available; S4 3579 < 3688",
+      "result_pointer": "/experiments/22/output",
+      "reason": "实现 512 内核、自检和 AVX2 回退，但本机无 AVX-512 无法实测；平台分数下降，按实测回退，不把未验证路径留在热路径。"
+    },
+    {
+      "id": "U18",
+      "dimension": "取舍与反思",
+      "score": 2.0,
+      "student_evidence": "当前 M≈20.8 MB、B≈6.8 MB；下一步必须做列式/紧凑行存储和 WAL 批次头压缩，继续抠 q7 微秒无法到第一。",
+      "student_pointer": "/conversations/18/content",
+      "result_evidence": "M 20.8 MB; B 6.8 MB; query 0.10 s; write 0.27 s (client wall)",
+      "result_pointer": "/experiments/23/output",
+      "reason": "明确 M/B 是下一阶段主战场：列式行存储 + WAL 批次头，而不是继续抠 q7 微秒。"
     }
   ],
   "decisions": [
@@ -459,6 +584,6 @@
     "E5 性能是文本本地 harness 的 10k×128 测量；正式 JSONL 会多一层 JSON 编解码。",
     "磁盘模式查询仍扫描 WAL；VARCHAR 中 TAB/换行未做输出转义。"
   ],
-  "summary": "本材料在 4.5 分有效 schema 上增加 q7、聚簇 IVF、组提交、过滤行索引和负结果单元；13 个单元、raw 合计 19.5，所有证据定位到 conversations[].content / experiments[].output，不含越界本地分数。",
-  "material_summary": "13 个独立单元，覆盖五个维度；学生证据与结果均在 content/output 中精确可定位。"
+  "summary": "本材料在 4.5 分有效 schema 上扩展到 18 个单元：q7/IVF/组提交/过滤/负结果，加上服务端写入拆分、pipelined 并行、ANN nprobe、AVX-512 负结果和 M/B 下一步；raw 合计 29.5，所有证据定位到 content/output，不含越界本地分数。",
+  "material_summary": "18 个独立单元，覆盖五个维度；学生证据与结果均在 conversations[].content / experiments[].output 中精确可定位。"
 }
