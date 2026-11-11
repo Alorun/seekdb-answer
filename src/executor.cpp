@@ -716,6 +716,85 @@ void buildIvf(Table& table, int col) {
   ensureVectorCache(table, col);
   const VectorCache& vc = table.vector_cache;
   if (!vc.valid || vc.dim != c.dim) return;
+  // Cheap clusterability screen before the expensive 100x256 k-means: run a
+  // tiny 16-centroid k-means on a 512-row sample.  Uniform high-dimensional
+  // data barely reduces variance (ratio near 1); clustered embeddings reduce
+  // it substantially.  Uniform tables then skip IVF entirely.
+  {
+    const size_t sample = std::min<size_t>(512, vc.pks.size());
+    std::vector<float> samp(sample * c.dim);
+    for (size_t si = 0; si < sample; ++si) {
+      size_t idx = si * vc.pks.size() / sample;
+      std::copy(vc.vec.begin() + idx * c.dim,
+                vc.vec.begin() + (idx + 1) * c.dim,
+                samp.begin() + si * c.dim);
+    }
+    std::vector<double> mean(c.dim, 0.0);
+    for (size_t si = 0; si < sample; ++si) {
+      const float* v = samp.data() + si * c.dim;
+      for (size_t j = 0; j < c.dim; ++j) mean[j] += v[j];
+    }
+    double total = 0.0;
+    for (size_t si = 0; si < sample; ++si) {
+      const float* v = samp.data() + si * c.dim;
+      double d2 = 0.0;
+      for (size_t j = 0; j < c.dim; ++j) {
+        double diff = v[j] - mean[j] / static_cast<double>(sample);
+        d2 += diff * diff;
+      }
+      total += d2;
+    }
+    constexpr size_t kSmall = 16;
+    std::vector<std::vector<float>> sc(kSmall, std::vector<float>(c.dim, 0.0f));
+    for (size_t ci = 0; ci < kSmall; ++ci) {
+      size_t idx = ci * sample / kSmall;
+      std::copy(samp.begin() + idx * c.dim,
+                samp.begin() + (idx + 1) * c.dim, sc[ci].begin());
+    }
+    for (int iter = 0; iter < 3; ++iter) {
+      std::vector<std::vector<double>> sums(kSmall, std::vector<double>(c.dim, 0.0));
+      std::vector<size_t> counts(kSmall, 0);
+      for (size_t si = 0; si < sample; ++si) {
+        const float* v = samp.data() + si * c.dim;
+        size_t best = 0;
+        double bestd = std::numeric_limits<double>::infinity();
+        for (size_t ci = 0; ci < kSmall; ++ci) {
+          double d2 = l2DistanceSq(v, sc[ci].data(), c.dim);
+          if (d2 < bestd) { bestd = d2; best = ci; }
+        }
+        ++counts[best];
+        for (size_t j = 0; j < c.dim; ++j) sums[best][j] += v[j];
+      }
+      for (size_t ci = 0; ci < kSmall; ++ci) {
+        if (counts[ci] == 0) continue;
+        for (size_t j = 0; j < c.dim; ++j) {
+          sc[ci][j] = static_cast<float>(sums[ci][j] / counts[ci]);
+        }
+      }
+    }
+    double inertia = 0.0;
+    for (size_t si = 0; si < sample; ++si) {
+      const float* v = samp.data() + si * c.dim;
+      double best = std::numeric_limits<double>::infinity();
+      for (size_t ci = 0; ci < kSmall; ++ci) {
+        double d2 = l2DistanceSq(v, sc[ci].data(), c.dim);
+        if (d2 < best) best = d2;
+      }
+      inertia += best;
+    }
+    double ratio = total > 0.0 ? inertia / total : 0.0;
+    if (std::getenv("MVDB_DEBUG_IVF")) {
+      std::fprintf(stderr, "ivf-screen sample=%zu ratio=%.3f\n", sample, ratio);
+    }
+    if (ratio > 0.55) {
+      c.attempted = true;
+      c.version = table.row_version;
+      c.valid = true;
+      c.clustered = false;
+      table.ivf_caches[col] = std::move(c);
+      return;
+    }
+  }
   c.centroids.assign(c.nlist, std::vector<float>(c.dim, 0.0f));
   // Deterministic, spread-out initialization from the PK-ordered rows.
   size_t k = 0;
