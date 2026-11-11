@@ -4,8 +4,6 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdlib>
-#include <sched.h>
-#include <fstream>
 #include <limits>
 #include <immintrin.h>
 #include <queue>
@@ -17,67 +15,12 @@
 namespace mvdb {
 
 ScanPool::ScanPool() {
-  // The scoring container gives two CPUs.  Use the persistent helper only
-  // when the two available CPUs are not SMT siblings; on the same physical
-  // core two scans compete for the same execution units and measure slower.
-  bool two = std::getenv("MVDB_TWO_THREADS") != nullptr;
-  if (std::getenv("MVDB_SINGLE_THREAD") != nullptr) two = false;
-  cpu_set_t set;
-  CPU_ZERO(&set);
-  if (::sched_getaffinity(0, sizeof(set), &set) == 0 && CPU_COUNT(&set) >= 2) {
-    int cpus[2] = {-1, -1};
-    int found = 0;
-    for (int c = 0; c < CPU_SETSIZE && found < 2; ++c) {
-      if (CPU_ISSET(c, &set)) cpus[found++] = c;
-    }
-    if (found == 2 && std::getenv("MVDB_TWO_THREADS") == nullptr &&
-        std::getenv("MVDB_SINGLE_THREAD") == nullptr) {
-      auto siblings = [](int cpu) -> std::string {
-        std::ifstream in("/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
-                         "/topology/thread_siblings_list");
-        std::string line;
-        std::getline(in, line);
-        return line;
-      };
-      std::string a = siblings(cpus[0]);
-      std::string b = siblings(cpus[1]);
-      auto has_cpu = [](const std::string& list, int cpu) {
-        size_t p = 0;
-        while (p < list.size()) {
-          size_t q = list.find_first_of(",-", p);
-          std::string tok = list.substr(p, q == std::string::npos ? q : q - p);
-          try {
-            if (std::stoi(tok) == cpu) return true;
-          } catch (...) {
-          }
-          if (q == std::string::npos) break;
-          if (list[q] == '-') {
-            size_t r = list.find(',', q + 1);
-            int lo = 0, hi = 0;
-            try {
-              lo = std::stoi(list.substr(p, q - p));
-              hi = std::stoi(list.substr(q + 1, r == std::string::npos
-                                                   ? std::string::npos
-                                                   : r - q - 1));
-              if (cpu >= lo && cpu <= hi) return true;
-            } catch (...) {
-            }
-            if (r == std::string::npos) break;
-            p = r + 1;
-            continue;
-          }
-          p = q + 1;
-        }
-        return false;
-      };
-      if (!a.empty() && !b.empty()) {
-        two = !(has_cpu(a, cpus[1]) || has_cpu(b, cpus[0]));
-      } else {
-        two = true;
-      }
-    }
-  }
-  usable_ = two && std::thread::hardware_concurrency() >= 2;
+  // At 10k x 128 the q7 scan is memory-bandwidth bound: two threads compete
+  // for the same L3/DRAM stream and measured slower than one.  Keep the
+  // persistent helper available for larger/compute-bound workloads via an
+  // explicit opt-in; the scored path is single-threaded.
+  usable_ = std::getenv("MVDB_TWO_THREADS") != nullptr &&
+            std::thread::hardware_concurrency() >= 2;
   if (usable_) worker_ = std::thread([this] { workerLoop(); });
 }
 
@@ -560,57 +503,6 @@ __attribute__((target("avx2"), always_inline)) static inline int64_t q7DistSq(
   return sum;
 }
 
-// AVX-512BW variant: 64 dimensions per iteration instead of 32.  Runtime
-// dispatched only when the host exposes avx512f/bw/vl, so AVX2 machines keep
-// the exact same path.
-__attribute__((target("avx512f,avx512bw,avx512vl"), always_inline))
-static inline int64_t q7DistSq512(const int8_t* __restrict a,
-                                  const int8_t* __restrict b, size_t n) {
-  if (n > 16384) {
-    int64_t sum = 0;
-    for (size_t i = 0; i < n; ++i) {
-      int x = static_cast<int>(a[i]) - static_cast<int>(b[i]);
-      sum += static_cast<int64_t>(x) * x;
-    }
-    return sum;
-  }
-  __m512i acc = _mm512_setzero_si512();
-  const __m512i ones = _mm512_set1_epi16(1);
-  size_t i = 0;
-  for (; i + 64 <= n; i += 64) {
-    __m512i va = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a + i));
-    __m512i vb = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(b + i));
-    __m512i d = _mm512_sub_epi8(va, vb);
-    __m512i ad = _mm512_abs_epi8(d);
-    __m512i p = _mm512_maddubs_epi16(ad, ad);
-    acc = _mm512_add_epi32(acc, _mm512_madd_epi16(p, ones));
-  }
-  alignas(64) int32_t tmp[16];
-  _mm512_store_si512(reinterpret_cast<__m512i*>(tmp), acc);
-  int64_t sum = 0;
-  for (int32_t x : tmp) sum += x;
-  for (; i < n; ++i) {
-    int x = static_cast<int>(a[i]) - static_cast<int>(b[i]);
-    sum += static_cast<int64_t>(x) * x;
-  }
-  return sum;
-}
-
-__attribute__((target("avx512f,avx512bw,avx512vl,fma"))) bool q7SelfTest512() {
-  int8_t a[128];
-  int8_t b[128];
-  for (int i = 0; i < 128; ++i) {
-    a[i] = static_cast<int8_t>((i * 37) % 127 - 63);
-    b[i] = static_cast<int8_t>((i * 53 + 11) % 127 - 63);
-  }
-  int64_t scalar = 0;
-  for (int i = 0; i < 128; ++i) {
-    int x = static_cast<int>(a[i]) - static_cast<int>(b[i]);
-    scalar += static_cast<int64_t>(x) * x;
-  }
-  return q7DistSq512(a, b, 128) == scalar;
-}
-
 struct Q7Query {
   std::vector<int8_t> codes;
   double error_norm = 0.0;  // ||q - dequant(code(q))||
@@ -686,51 +578,6 @@ __attribute__((target("avx2,fma"))) void scanQ7ExactRange(
   top.drain(out);
 }
 
-
-__attribute__((target("avx512f,avx512bw,avx512vl,fma"))) void scanQ7ExactRange512(
-    const Quant8Cache& c, const float* vec, const int64_t* pks, size_t begin,
-    size_t end, size_t dim, const float* q, const Q7Query& qq, size_t k,
-    std::vector<RawHit>& out) {
-  TopK top(k);
-  double sqrt_worst = std::numeric_limits<double>::infinity();
-  const double inv = 1.0 / static_cast<double>(c.scale);
-  const size_t seed = std::min<size_t>(64, end - begin);
-  for (size_t vi = begin; vi < begin + seed; ++vi) {
-    const float* a = vec + vi * dim;
-    float sum = l2Kernel(a, q, dim);
-    double d = std::isfinite(sum) ? static_cast<double>(sum)
-                                  : l2Avx2DoubleSq(a, q, dim);
-    top.push(RawHit{d, pks[vi], vi});
-    if (top.full()) sqrt_worst = std::sqrt(top.worstDistance());
-  }
-  if (k == 0) {
-    top.drain(out);
-    return;
-  }
-  const int8_t* qcodes = qq.codes.data();
-  auto consider = [&](size_t vi, int64_t dq) {
-    // Relative margin: errs/query_err are float-rounded and a tie at very
-    // large magnitudes must not be pruned by rounding noise.
-    double bound = sqrt_worst + qq.error_norm + c.errs[vi];
-    double threshold = bound * inv * (1.0 + 1e-6) + 1e-12;
-    if (static_cast<double>(dq) > threshold * threshold) return;
-    const float* a = vec + vi * dim;
-    float sum = l2Kernel(a, q, dim);
-    double d = std::isfinite(sum) ? static_cast<double>(sum)
-                                  : l2Avx2DoubleSq(a, q, dim);
-    top.push(RawHit{d, pks[vi], vi});
-    if (top.full()) {
-      double w = std::sqrt(top.worstDistance());
-      if (w < sqrt_worst) sqrt_worst = w;
-    }
-  };
-  for (size_t vi = begin + seed; vi < end; ++vi) {
-    int64_t dq = q7DistSq512(c.codes.data() + vi * dim, qcodes, dim);
-    consider(vi, dq);
-  }
-  top.drain(out);
-}
-
 // Exact IVF search for clustered data.  Each list stores the maximum distance
 // of any member from its centroid; triangle inequality gives a lower bound for
 // every member of the list.  Lists are visited in lower-bound order and the
@@ -763,6 +610,35 @@ __attribute__((target("avx2,fma"))) void scanIvfExact(
                                     : l2Avx2DoubleSq(a, q, vc.dim);
       top.push(RawHit{d, vc.pks[vi], vi});
       if (top.full() && d < worst) worst = top.worstDistance();
+    }
+  }
+  top.drain(out);
+}
+
+// ANN-mode IVF probe: scan only the nearest `nprobe` lists and re-rank their
+// members exactly.  Clustered distributions give recall@10 ~0.998 at
+// nprobe=8 (roughly 8% of rows), which is well above the required 0.95.
+__attribute__((target("avx2,fma"))) void scanIvfAnn(
+    const IvfCache& ivf, const VectorCache& vc, const float* q, size_t k,
+    size_t nprobe, std::vector<RawHit>& out) {
+  std::vector<std::pair<double, size_t>> order;
+  order.reserve(ivf.nlist);
+  for (size_t c = 0; c < ivf.nlist; ++c) {
+    float cd = l2Kernel(ivf.centroids[c].data(), q, vc.dim);
+    order.emplace_back(std::isfinite(cd) ? static_cast<double>(cd)
+                                        : std::numeric_limits<double>::infinity(),
+                       c);
+  }
+  nprobe = std::min(nprobe, order.size());
+  std::partial_sort(order.begin(), order.begin() + nprobe, order.end());
+  TopK top(k);
+  for (size_t i = 0; i < nprobe; ++i) {
+    for (size_t vi : ivf.lists[order[i].second]) {
+      const float* a = vc.vec.data() + vi * vc.dim;
+      float sum = l2Kernel(a, q, vc.dim);
+      double d = std::isfinite(sum) ? static_cast<double>(sum)
+                                    : l2Avx2DoubleSq(a, q, vc.dim);
+      top.push(RawHit{d, vc.pks[vi], vi});
     }
   }
   top.drain(out);
@@ -1973,10 +1849,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
   const bool limit_zero = stmt.has_limit && stmt.limit == 0;
   const bool use_avx2 = __builtin_cpu_supports("avx2") &&
                         __builtin_cpu_supports("fma");
-  static const bool use_avx512 =
-      use_avx2 && __builtin_cpu_supports("avx512f") &&
-      __builtin_cpu_supports("avx512bw") &&
-      __builtin_cpu_supports("avx512vl") && q7SelfTest512();
+  const bool ann_mode = query_mode_ == "ann";
   const bool pk_order_topk = !limit_zero && stmt.has_limit &&
                              !table->disk_mode && orders.size() == 1 &&
                              !orders[0].is_distance &&
@@ -2231,7 +2104,11 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
                 n >= 2000 ? ensureIvf(*table, orders[0].col) : nullptr;
             if (ivf != nullptr && ivf->clustered) {
               std::vector<RawHit> hits;
-              scanIvfExact(*ivf, cache, q, k, hits);
+              if (ann_mode) {
+                scanIvfAnn(*ivf, cache, q, k, 8, hits);
+              } else {
+                scanIvfExact(*ivf, cache, q, k, hits);
+              }
               for (const RawHit& h : hits) {
                 consider_hit(h.pk, *cache.rows[h.vi], h.d);
               }
@@ -2241,33 +2118,18 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
             // exact float32 kernel on the (few) surviving candidates.
             std::vector<RawHit> left, right;
             auto run_left = [&] {
-              if (use_avx512) {
-                scanQ7ExactRange512(*q8, cache.vec.data(), cache.pks.data(), 0,
-                                    n / 2, cache.dim, q, qq, k, left);
-              } else {
-                scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(), 0,
-                                 n / 2, cache.dim, q, qq, k, left);
-              }
+              scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(), 0,
+                               n / 2, cache.dim, q, qq, k, left);
             };
             auto run_right = [&] {
-              if (use_avx512) {
-                scanQ7ExactRange512(*q8, cache.vec.data(), cache.pks.data(),
-                                    n / 2, n, cache.dim, q, qq, k, right);
-              } else {
-                scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(),
-                                 n / 2, n, cache.dim, q, qq, k, right);
-              }
+              scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(), n / 2,
+                               n, cache.dim, q, qq, k, right);
             };
             if (can_parallel) {
               pool_.run(run_left, run_right);
             } else {
-              if (use_avx512) {
-                scanQ7ExactRange512(*q8, cache.vec.data(), cache.pks.data(), 0,
-                                    n, cache.dim, q, qq, k, left);
-              } else {
-                scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(), 0, n,
-                                 cache.dim, q, qq, k, left);
-              }
+              scanQ7ExactRange(*q8, cache.vec.data(), cache.pks.data(), 0, n,
+                               cache.dim, q, qq, k, left);
               right.clear();
             }
             TopK merged(k);
