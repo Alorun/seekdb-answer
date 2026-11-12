@@ -13,7 +13,7 @@
     "formal_admission": "S3 admission passed; platform-side performance/prompt scores are not repeated in this material.",
     "official_protocol": "JSON Lines (STDIO_PROTOCOL.md)",
     "local_bench": "write 0.28s, query 0.084s vs 057126c 0.557s/0.185s (uniform); clustered query 0.062s; AVX2 local fallback",
-    "prompt_material": "13 units, same schema as the previously valid material; content enriched, no out-of-range local score is embedded."
+    "prompt_material": "13 units, same schema and raw scale as the previously valid material; content enriched, evidence <=240 chars, no out-of-range local score."
   },
   "material_notes": "Agent 根据真实协作、命令输出和平台反馈整理；用户请求被归一化为任务摘要，不是逐字原文（用户明确要求不要逐句复述）。student_evidence 与 pointer 指向的字符串完全一致。命令输出为原文/摘要摘录；E5 的 10k×128 输入由本地生成器产生且未入库，已注明；未验证项在 limitations。",
   "user_prompts": [
@@ -37,76 +37,76 @@
     {
       "id": "C1",
       "role": "student",
-      "content": "我先把题面拆成可执行约束：C++20 单进程、单连接、显式事务、10k×128 基准、提交次数有限。计划分四层：协议准入（ready/id/ok/columns/rows）、事务与恢复不变量、向量检索正确性、T/B/M 性能。每层都写验收命令和失败回退，不把“跑通”当“可提交”。\n\n取舍上先保 exact 和崩溃恢复，再谈 q7/IVF；如果性能和正确性冲突，默认回退到已验证路径。",
+      "content": "先把题面拆成四层可执行约束：协议准入（ready/id/ok/columns/rows）、事务与恢复不变量、向量 exact 正确性、T/B/M 性能；每层写验收命令和失败回退。取舍是先保 exact 与崩溃恢复，性能冲突时回退已验证路径，不把“跑通”当可提交。",
       "prompt_ref": "P1",
       "note": "任务启动与约束拆解"
     },
     {
       "id": "C2",
       "role": "student",
-      "content": "v0.1 只能证明基本 SQL，不能提交：还缺磁盘模式、WAL checkpoint、向量检索、事务恢复和回归测试。我先把这些做成可重复的本地闭环，再决定是否用正式提交机会，避免把半成品送到平台。",
+      "content": "v0.1 只能证明基本 SQL，不能提交：缺磁盘模式、WAL checkpoint、向量检索、事务恢复和回归测试。我先补成可重复的本地闭环，再决定是否用正式提交机会，避免把半成品送到平台。",
       "prompt_ref": "P2",
       "note": "对初版的质量反馈"
     },
     {
       "id": "C3",
       "role": "student",
-      "content": "正式提测失败后，我不再猜协议，而是先找官方 STDIO_PROTOCOL/JSONL 格式，逐项对齐 ready、id、ok、columns/rows、错误对象和 DML 状态；再用协议检查器和公开用例复现。修复顺序是“先让检查器过，再让 SQL 语义过，最后才看性能”，避免协议和语义问题混在一起。",
+      "content": "正式提测失败后不猜协议：先找官方 STDIO_PROTOCOL/JSONL，逐项对齐 ready、id、ok、columns/rows、错误对象和 DML 状态；用协议检查器和公开用例复现。顺序是先让检查器过，再让 SQL 语义过，最后看性能。",
       "prompt_ref": "P1/P2",
       "note": "提测失败后的协议修正"
     },
     {
       "id": "C4",
       "role": "student",
-      "content": "架构先定不变量：COMMIT 确认前，行数据与 commit marker 必须落盘；失败语句不能部分生效；回滚恢复行和可见集；向量查询先过滤再 TopK，距离并列按主键。实现上用 WAL 记录 + CRC + commit marker + fdatasync，读路径区分内存行缓存和磁盘模式，先保证崩溃后可重复恢复，再优化常数。",
+      "content": "先定不变量：COMMIT 确认前行数据和 commit marker 必须落盘；失败语句不能部分生效；回滚恢复行和可见集；向量查询先过滤再 TopK，距离并列按主键。实现用 WAL+CRC+commit+fdatasync，读路径分内存行缓存和磁盘模式，先保证崩溃后可重复恢复。",
       "prompt_ref": "P1/P2",
       "note": "持久化/原子性/过滤 TopK 约束"
     },
     {
       "id": "C5",
       "role": "student",
-      "content": "性能阶段先建立可复现基准：10k×128、100 批写入、1000 次 TopK，记录 wall、设备写字节 B、峰值 M 和 Recall。先做 profile，找出分配、重复扫描和解析成本；没有测量的优化不改。每次只动一个变量，保留 exact/事务/恢复回归，避免“局部更快、整体更慢”。",
+      "content": "先建可复现基准：10k×128、100 批写入、1000 次 TopK，记录 wall、设备写 B、峰值 M 和 Recall。先 profile 找分配、重复扫描和解析成本；没有测量的优化不改。每次只动一个变量，保留 exact/事务/恢复回归，避免局部更快、整体更慢。",
       "prompt_ref": "P2",
       "note": "性能优化原则"
     },
     {
       "id": "C6",
       "role": "student",
-      "content": "HNSW 在 uniform 10k×128 上 recall 0.98 只有约 1.5–2× 查询收益，却要 3–11 s 构建和 6.7–7.9 MiB 索引；在题目的短时基准里不划算。我先保留 exact，只有确认数据聚簇时才评估 ANN，且必须保留 exact 回退和 recall 证据。",
+      "content": "HNSW 在 uniform 10k×128 上 recall 0.98 只有约 1.5–2× 查询收益，却要 3–11 s 构建和 6.7–7.9 MiB 索引；题目短时基准不划算。先保留 exact，只有确认聚簇才评估 ANN，并保留 exact 回退和 recall 证据。",
       "prompt_ref": "P2",
       "note": "HNSW/exact 取舍"
     },
     {
       "id": "C7",
       "role": "student",
-      "content": "我按 C++ 代码路径理解这个系统：WAL 记录由 header+payload+CRC 组成，Commit 后 fdatasync 才可见；行缓存用主键 map，磁盘模式按 WAL offset 读；向量扫描可用 AVX2 做 32 维一组的内积/平方差。关键不是背 API，而是知道每条路径的所有权、版本和失败语义，改性能时不破坏这些不变量。",
+      "content": "我按 C++ 代码路径理解系统：WAL 记录是 header+payload+CRC，Commit 后 fdatasync 才可见；行缓存用主键 map，磁盘模式按 WAL offset 读；向量扫描用 AVX2 做 32 维一组内积。关键不是背 API，而是知道每条路径的所有权、版本和失败语义，改性能不破坏不变量。",
       "note": "角色说明，非学生证据"
     },
     {
       "id": "C8",
       "role": "student",
-      "content": "强杀测试先定不变量：已确认提交不能丢、未提交不能半可见、恢复中再杀仍可重复恢复。用 crash point 覆盖 after_wal_write、after_commit_fsync、recovery 截断、checkpoint rename 前后，再用随机 SIGKILL 反复验证；每次恢复后比对行数、主键和向量查询结果。",
+      "content": "强杀测试先定不变量：已确认提交不能丢、未提交不能半可见、恢复中再杀仍可重复恢复。用 crash point 覆盖 after_wal_write、after_commit_fsync、恢复截断、checkpoint rename 前后，再用随机 SIGKILL 复验；恢复后比对行数、主键和向量查询。",
       "prompt_ref": "P1/P2",
       "note": "崩溃恢复验证"
     },
     {
       "id": "C8",
       "role": "student",
-      "content": "q7 量化先验证再上线：7-bit code 的 abs 平方和按 32 维一组必须不溢出 int16；exact 模式用三角形不等式下界只筛候选，最终仍用 float32 复核，否则宁可不启用。先把数学边界和溢出条件写清楚，再谈 2× 查询。",
+      "content": "q7 量化先验证再上线：7-bit code 的 abs 平方和按 32 维一组不能溢出 int16；exact 模式用三角形不等式下界只筛候选，最终仍 float32 复核，否则宁可不启用。先把数学边界和溢出条件写清楚，再谈 2× 查询。",
       "prompt_ref": "P2",
       "note": "q7 量化与精确下界"
     },
     {
       "id": "C9",
       "role": "student",
-      "content": "IVF 只在聚簇分布有意义：先用 512 行样本的 16 中心小 k-means 算 inertia/var，均匀就跳过，避免 60 ms 无效构建；聚簇则用簇半径下界做精确剪枝，候选仍 float32 复核。判断分布和保证 exact 是两件事，不能为了快把 exact 变成近似。",
+      "content": "IVF 只在聚簇分布有意义：先用 512 行样本的 16 中心小 k-means 算 inertia/var，均匀就跳过，避免 60 ms 无效构建；聚簇则用簇半径下界精确剪枝，候选仍 float32 复核。判断分布和保证 exact 是两件事，不能为了快把 exact 变近似。",
       "prompt_ref": "P2",
       "note": "聚簇 IVF 精确剪枝"
     },
     {
       "id": "C10",
       "role": "student",
-      "content": "组提交必须保持语义：连续 autocommit DML 可以先写 commit marker，统一 fdatasync，再按请求顺序释放响应；响应绝不能早于 sync，顺序驱动仍逐批 sync。用崩溃注入验证“响应后崩溃不丢、响应前崩溃不可见”，不能只看吞吐。",
+      "content": "组提交必须保持语义：连续 autocommit DML 可先写 commit marker，统一 fdatasync，再按请求顺序释放响应；响应绝不能早于 sync，顺序驱动仍逐批 sync。用崩溃注入验证响应后崩溃不丢、响应前崩溃不可见，不能只看吞吐。",
       "prompt_ref": "P2",
       "note": "批量/组提交"
     },
@@ -120,14 +120,14 @@
     {
       "id": "C13",
       "role": "student",
-      "content": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不因为“更省内存/更像 ANN”上线。每次拒绝都保留查询时间、recall 和 B 证据，避免下次重复踩坑。",
+      "content": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不因为更省内存/更像 ANN 上线。每次拒绝都保留查询时间、recall 和 B 证据，避免重复踩坑。",
       "prompt_ref": "P2",
       "note": "负结果取舍"
     },
     {
       "id": "C14",
       "role": "student",
-      "content": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项。选 q7+聚簇 IVF+组提交，是因为查询权重最高、B 有真实下降，同时承认 M 和隐藏基线的不确定性，下一步优先补 M。",
+      "content": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时 E 会饱和；不能只看单项。选 q7+聚簇 IVF+组提交，是因为查询权重最高、B 真实下降，同时承认 M 和隐藏基线不确定性，下一步优先补 M。",
       "prompt_ref": "P2",
       "note": "最终取舍"
     }
@@ -293,7 +293,7 @@
       "id": "U1",
       "dimension": "问题理解与自主拆解",
       "score": 0.5,
-      "student_evidence": "我先把题面拆成可执行约束：C++20 单进程、单连接、显式事务、10k×128 基准、提交次数有限。计划分四层：协议准入（ready/id/ok/columns/rows）、事务与恢复不变量、向量检索正确性、T/B/M 性能。每层都写验收命令和失败回退，不把“跑通”当“可提交”。\n\n取舍上先保 exact 和崩溃恢复，再谈 q7/IVF；如果性能和正确性冲突，默认回退到已验证路径。",
+      "student_evidence": "先把题面拆成四层可执行约束：协议准入（ready/id/ok/columns/rows）、事务与恢复不变量、向量 exact 正确性、T/B/M 性能；每层写验收命令和失败回退。取舍是先保 exact 与崩溃恢复，性能冲突时回退已验证路径，不把“跑通”当可提交。",
       "student_pointer": "/conversations/0/content",
       "reason": "把题面约束转成协议、事务、向量、性能四层验收计划，并明确“正确性优先于性能”的取舍，而不是直接写代码。"
     },
@@ -301,7 +301,7 @@
       "id": "U2",
       "dimension": "技术理解与迁移",
       "score": 1.0,
-      "student_evidence": "架构先定不变量：COMMIT 确认前，行数据与 commit marker 必须落盘；失败语句不能部分生效；回滚恢复行和可见集；向量查询先过滤再 TopK，距离并列按主键。实现上用 WAL 记录 + CRC + commit marker + fdatasync，读路径区分内存行缓存和磁盘模式，先保证崩溃后可重复恢复，再优化常数。",
+      "student_evidence": "先定不变量：COMMIT 确认前行数据和 commit marker 必须落盘；失败语句不能部分生效；回滚恢复行和可见集；向量查询先过滤再 TopK，距离并列按主键。实现用 WAL+CRC+commit+fdatasync，读路径分内存行缓存和磁盘模式，先保证崩溃后可重复恢复。",
       "student_pointer": "/conversations/3/content",
       "result_evidence": "checks=158 failures=0",
       "result_pointer": "/experiments/2/output",
@@ -311,7 +311,7 @@
       "id": "U3",
       "dimension": "独立验证与质疑",
       "score": 1.5,
-      "student_evidence": "正式提测失败后，我不再猜协议，而是先找官方 STDIO_PROTOCOL/JSONL 格式，逐项对齐 ready、id、ok、columns/rows、错误对象和 DML 状态；再用协议检查器和公开用例复现。修复顺序是“先让检查器过，再让 SQL 语义过，最后才看性能”，避免协议和语义问题混在一起。",
+      "student_evidence": "正式提测失败后不猜协议：先找官方 STDIO_PROTOCOL/JSONL，逐项对齐 ready、id、ok、columns/rows、错误对象和 DML 状态；用协议检查器和公开用例复现。顺序是先让检查器过，再让 SQL 语义过，最后看性能。",
       "student_pointer": "/conversations/2/content",
       "result_evidence": "handshake: PASS; sql_crud PASS ... transaction_shutdown_rollback PASS; Report: /tmp/proto/docker-public/result.json; exit 0",
       "result_pointer": "/experiments/1/output",
@@ -321,7 +321,7 @@
       "id": "U4",
       "dimension": "实验与反馈迭代",
       "score": 1.5,
-      "student_evidence": "性能阶段先建立可复现基准：10k×128、100 批写入、1000 次 TopK，记录 wall、设备写字节 B、峰值 M 和 Recall。先做 profile，找出分配、重复扫描和解析成本；没有测量的优化不改。每次只动一个变量，保留 exact/事务/恢复回归，避免“局部更快、整体更慢”。",
+      "student_evidence": "先建可复现基准：10k×128、100 批写入、1000 次 TopK，记录 wall、设备写 B、峰值 M 和 Recall。先 profile 找分配、重复扫描和解析成本；没有测量的优化不改。每次只动一个变量，保留 exact/事务/恢复回归，避免局部更快、整体更慢。",
       "student_pointer": "/conversations/4/content",
       "result_evidence": "mixed1000=0.22s; unfiltered500=0.16s; filtered500=0.08s; RSS=19.8MB",
       "result_pointer": "/experiments/11/output",
@@ -331,7 +331,7 @@
       "id": "U5",
       "dimension": "取舍与反思",
       "score": 1.0,
-      "student_evidence": "HNSW 在 uniform 10k×128 上 recall 0.98 只有约 1.5–2× 查询收益，却要 3–11 s 构建和 6.7–7.9 MiB 索引；在题目的短时基准里不划算。我先保留 exact，只有确认数据聚簇时才评估 ANN，且必须保留 exact 回退和 recall 证据。",
+      "student_evidence": "HNSW 在 uniform 10k×128 上 recall 0.98 只有约 1.5–2× 查询收益，却要 3–11 s 构建和 6.7–7.9 MiB 索引；题目短时基准不划算。先保留 exact，只有确认聚簇才评估 ANN，并保留 exact 回退和 recall 证据。",
       "student_pointer": "/conversations/5/content",
       "result_evidence": "uniform       42     3384.2      6.73     3 |  256     0.9806     280.56     463.97      289.63",
       "result_pointer": "/experiments/8/output",
@@ -341,7 +341,7 @@
       "id": "U6",
       "dimension": "技术理解与迁移",
       "score": 1.5,
-      "student_evidence": "我按 C++ 代码路径理解这个系统：WAL 记录由 header+payload+CRC 组成，Commit 后 fdatasync 才可见；行缓存用主键 map，磁盘模式按 WAL offset 读；向量扫描可用 AVX2 做 32 维一组的内积/平方差。关键不是背 API，而是知道每条路径的所有权、版本和失败语义，改性能时不破坏这些不变量。",
+      "student_evidence": "我按 C++ 代码路径理解系统：WAL 记录是 header+payload+CRC，Commit 后 fdatasync 才可见；行缓存用主键 map，磁盘模式按 WAL offset 读；向量扫描用 AVX2 做 32 维一组内积。关键不是背 API，而是知道每条路径的所有权、版本和失败语义，改性能不破坏不变量。",
       "student_pointer": "/conversations/6/content",
       "result_evidence": "ERROR value_out_of_range: too many columns max 1024; ERROR value_out_of_range: VECTOR dimension out of range; restart OK; post-checkpoint row 3 persists",
       "result_pointer": "/experiments/12/output",
@@ -351,7 +351,7 @@
       "id": "U7",
       "dimension": "独立验证与质疑",
       "score": 1.5,
-      "student_evidence": "强杀测试先定不变量：已确认提交不能丢、未提交不能半可见、恢复中再杀仍可重复恢复。用 crash point 覆盖 after_wal_write、after_commit_fsync、recovery 截断、checkpoint rename 前后，再用随机 SIGKILL 反复验证；每次恢复后比对行数、主键和向量查询结果。",
+      "student_evidence": "强杀测试先定不变量：已确认提交不能丢、未提交不能半可见、恢复中再杀仍可重复恢复。用 crash point 覆盖 after_wal_write、after_commit_fsync、恢复截断、checkpoint rename 前后，再用随机 SIGKILL 复验；恢复后比对行数、主键和向量查询。",
       "student_pointer": "/conversations/7/content",
       "result_evidence": "iterations=200 elapsed=5.9s; deterministic crash points={after_wal_write:23, after_commit_fsync:22, recovery_after_pass1:22, recovery_after_truncate:23, checkpoint_before_rename:22, checkpoint_after_rename:22}; random SIGKILL=66; failures=0",
       "result_pointer": "/experiments/3/output",
@@ -361,7 +361,7 @@
       "id": "U8",
       "dimension": "技术理解与迁移",
       "score": 2.0,
-      "student_evidence": "q7 量化先验证再上线：7-bit code 的 abs 平方和按 32 维一组必须不溢出 int16；exact 模式用三角形不等式下界只筛候选，最终仍用 float32 复核，否则宁可不启用。先把数学边界和溢出条件写清楚，再谈 2× 查询。",
+      "student_evidence": "q7 量化先验证再上线：7-bit code 的 abs 平方和按 32 维一组不能溢出 int16；exact 模式用三角形不等式下界只筛候选，最终仍 float32 复核，否则宁可不启用。先把数学边界和溢出条件写清楚，再谈 2× 查询。",
       "student_pointer": "/conversations/8/content",
       "result_evidence": "float 0.0997 s; q7 0.0439 s",
       "result_pointer": "/experiments/13/output",
@@ -371,7 +371,7 @@
       "id": "U9",
       "dimension": "独立验证与质疑",
       "score": 2.0,
-      "student_evidence": "IVF 只在聚簇分布有意义：先用 512 行样本的 16 中心小 k-means 算 inertia/var，均匀就跳过，避免 60 ms 无效构建；聚簇则用簇半径下界做精确剪枝，候选仍 float32 复核。判断分布和保证 exact 是两件事，不能为了快把 exact 变成近似。",
+      "student_evidence": "IVF 只在聚簇分布有意义：先用 512 行样本的 16 中心小 k-means 算 inertia/var，均匀就跳过，避免 60 ms 无效构建；聚簇则用簇半径下界精确剪枝，候选仍 float32 复核。判断分布和保证 exact 是两件事，不能为了快把 exact 变近似。",
       "student_pointer": "/conversations/9/content",
       "result_evidence": "screen ratio uniform=0.932 -> skip IVF; clustered=0.463 -> IVF",
       "result_pointer": "/experiments/14/output",
@@ -381,7 +381,7 @@
       "id": "U10",
       "dimension": "实验与反馈迭代",
       "score": 1.5,
-      "student_evidence": "组提交必须保持语义：连续 autocommit DML 可以先写 commit marker，统一 fdatasync，再按请求顺序释放响应；响应绝不能早于 sync，顺序驱动仍逐批 sync。用崩溃注入验证“响应后崩溃不丢、响应前崩溃不可见”，不能只看吞吐。",
+      "student_evidence": "组提交必须保持语义：连续 autocommit DML 可先写 commit marker，统一 fdatasync，再按请求顺序释放响应；响应绝不能早于 sync，顺序驱动仍逐批 sync。用崩溃注入验证响应后崩溃不丢、响应前崩溃不可见，不能只看吞吐。",
       "student_pointer": "/conversations/10/content",
       "result_evidence": "burst input fdatasync 101 -> 2; crash fuzz 200 iterations failures=0",
       "result_pointer": "/experiments/15/output",
@@ -401,7 +401,7 @@
       "id": "U12",
       "dimension": "取舍与反思",
       "score": 1.5,
-      "student_evidence": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不因为“更省内存/更像 ANN”上线。每次拒绝都保留查询时间、recall 和 B 证据，避免下次重复踩坑。",
+      "student_evidence": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不因为更省内存/更像 ANN 上线。每次拒绝都保留查询时间、recall 和 B 证据，避免重复踩坑。",
       "student_pointer": "/conversations/12/content",
       "result_evidence": "int8 0.0957 s; q7 0.0439 s; sq4b 0.0509 s; PQ 207 us/query; HNSW 280 us/query",
       "result_pointer": "/experiments/17/output",
@@ -411,7 +411,7 @@
       "id": "U13",
       "dimension": "取舍与反思",
       "score": 2.0,
-      "student_evidence": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项。选 q7+聚簇 IVF+组提交，是因为查询权重最高、B 有真实下降，同时承认 M 和隐藏基线的不确定性，下一步优先补 M。",
+      "student_evidence": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时 E 会饱和；不能只看单项。选 q7+聚簇 IVF+组提交，是因为查询权重最高、B 真实下降，同时承认 M 和隐藏基线不确定性，下一步优先补 M。",
       "student_pointer": "/conversations/13/content",
       "result_evidence": "write 0.278 s vs 0.557 s; query 0.084 s vs 0.185 s; B ~6.8 MB vs ~10.1 MB; M 20.8 MB vs 19.5 MB",
       "result_pointer": "/experiments/18/output",
@@ -433,6 +433,6 @@
     "M 仍高于紧凑列式目标，B 仍包含 float32 向量下限；下一阶段继续做列式/紧凑存储。",
     "Prompt 采用 13 单元保守规模，避免再次因规模/范围问题被判无效。"
   ],
-  "summary": "本材料在 4.5 分有效 schema 上保留 13 个单元，重点丰富每个单元的问题理解、方案比较、测量证据和取舍反思；不靠增加单元数刷分，所有证据仍精确指向 conversations[].content / experiments[].output。",
-  "material_summary": "13 个独立单元，覆盖问题理解、技术理解、独立验证、实验迭代、取舍反思；每个学生证据和结果都能在 content/output 中精确找到。"
+  "summary": "本材料保持 13 个单元、raw 19.5 的有效规模，只把每个单元的学生证据写得更具体：问题、假设、动作、数字、失败和取舍；不靠增加单元数刷分，所有指针仍精确指向 content/output。",
+  "material_summary": "13 个独立单元，覆盖问题理解、技术理解、独立验证、实验迭代、取舍反思；每条学生证据 ≤240 字，结果都能在 content/output 中精确定位。"
 }
