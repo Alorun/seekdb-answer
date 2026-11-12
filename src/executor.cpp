@@ -708,7 +708,23 @@ bool q7Prefer512() {
   };
   const double t256 = bench(q7Dot);
   const double t512 = bench(q7Dot512);
-  return t512 * 1.05 < t256;
+  if (!(t512 * 1.05 < t256)) return false;
+  auto bench4 = [&](auto fn) {
+    auto t0 = std::chrono::steady_clock::now();
+    int64_t s = 0;
+    int32_t out[4];
+    for (size_t r = 0; r < R; ++r) {
+      for (size_t i = 0; i + 4 <= N; i += 4) {
+        fn(x.data() + i * D, x.data() + (i + 1) * D,
+           x.data() + (i + 2) * D, x.data() + (i + 3) * D, y.data(), D, out);
+        s += out[0] + out[1] + out[2] + out[3];
+      }
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    sink += s;
+    return std::chrono::duration<double>(t1 - t0).count();
+  };
+  return bench4(q7Dot4_512) * 1.05 < bench4(q7Dot4);
 }
 
 bool q7Runtime512() {
