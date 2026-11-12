@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "synthetic": false,
-  "commit": "8a925e405dcf60b9451299047b689612f7803d1f",
+  "commit": "cf8b1e56eac441ad5ff8e5654b8c584e275c0e3d",
   "verified_at": "2026-11-11T13:50:00+08:00",
   "status": {
     "official_branch": "f4d4e2665",
@@ -12,7 +12,7 @@
     "release_gate": "local JSON gate PASS (code commit bff189b89)",
     "formal_admission": "passed (S3 04960665b): performance E=2432.687188; prompt raw=4.00000",
     "official_protocol": "JSON Lines (STDIO_PROTOCOL.md)",
-    "local_bench": "write 0.27s; query 0.056s; B 4.84MB; M 13.8MB maxrss / 10.8MB cgroup; clustered ann 0.065s",
+    "local_bench": "write 0.27s; query 0.075s; B 4.84MB; M 14.0MB maxrss; checkpoint/recovery fixed",
     "prompt_material": "10 units, same schema as the previously valid material; no out-of-range local score is embedded."
   },
   "material_notes": "Agent 根据真实协作、命令输出和平台反馈整理；用户请求被归一化为任务摘要，不是逐字原文（用户明确要求不要逐句复述）。student_evidence 与 pointer 指向的字符串完全一致。命令输出为原文/摘要摘录；E5 的 10k×128 输入由本地生成器产生且未入库，已注明；未验证项在 limitations。",
