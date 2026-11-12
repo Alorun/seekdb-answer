@@ -262,15 +262,8 @@ inline size_t utf8Length(std::string_view s) {
 }
 
 inline std::string formatDouble(double v) {
-  // %.9g semantics, but std::to_chars is ~4x faster than snprintf (it is on
-  // the per-query result path: every distance and vector component).
   char buf[64];
-  auto r = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::general, 9);
-  if (r.ec != std::errc()) {
-    std::snprintf(buf, sizeof(buf), "%.9g", v);
-    return std::string(buf);
-  }
-  *r.ptr = '\0';
+  std::snprintf(buf, sizeof(buf), "%.9g", v);
   return std::string(buf);
 }
 

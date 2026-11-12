@@ -601,7 +601,7 @@ bool encodeVectorBlock(const Schema& schema, const std::vector<Row>& rows, int c
     }
   }
 
-  HuffCode hc;
+  HuffCode hc{};
   bool use_huffman = n > 0 && buildHuffman(hist, hc);
   if (use_huffman) {
     uint64_t total = 256ull * 8 + 4;
@@ -640,10 +640,13 @@ bool encodeVectorBlock(const Schema& schema, const std::vector<Row>& rows, int c
     if (nbits >= 32) {
       nbits -= 32;
       uint32_t word = static_cast<uint32_t>(acc >> nbits);
-      out.push_back(static_cast<char>(word & 0xFF));
-      out.push_back(static_cast<char>((word >> 8) & 0xFF));
-      out.push_back(static_cast<char>((word >> 16) & 0xFF));
       out.push_back(static_cast<char>((word >> 24) & 0xFF));
+      out.push_back(static_cast<char>((word >> 16) & 0xFF));
+      out.push_back(static_cast<char>((word >> 8) & 0xFF));
+      out.push_back(static_cast<char>(word & 0xFF));
+      // Drop the already-emitted high bits; otherwise the next shift makes
+      // them reappear above the active low nbits and corrupts the stream.
+      acc &= (nbits == 0) ? 0ull : ((1ull << nbits) - 1ull);
     }
   }
   while (nbits >= 8) {
@@ -1070,12 +1073,13 @@ bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
       err = "invalid number in vector literal";
       return false;
     }
-    // from_chars(float) is locale-independent and ~3.5x faster than strtod,
-    // which matters for the 1.28M components in the 10k x 128 write path.
+    // Match the reference parser exactly: round the decimal to double first,
+    // then narrow to float32.  Direct from_chars(float) can double-round a
+    // decimal differently by one ulp, which changes a 9-digit distance output.
     const char* cursor = start;
     if (cursor < body.c_str() + body.size() && *cursor == '+') ++cursor;
-    float f = 0.0f;
-    auto parsed = std::from_chars(cursor, body.c_str() + body.size(), f);
+    double d = 0.0;
+    auto parsed = std::from_chars(cursor, body.c_str() + body.size(), d);
     if (parsed.ec == std::errc::result_out_of_range) {
       err = "vector value overflows float32";
       return false;
@@ -1084,8 +1088,14 @@ bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
       err = "invalid number in vector literal";
       return false;
     }
-    if (!std::isfinite(f)) {
+    if (!std::isfinite(d) ||
+        std::fabs(d) > static_cast<double>(std::numeric_limits<float>::max())) {
       err = "vector value must be finite";
+      return false;
+    }
+    float f = static_cast<float>(d);
+    if (!std::isfinite(f)) {
+      err = "vector value overflows float32";
       return false;
     }
     out.push_back(f);

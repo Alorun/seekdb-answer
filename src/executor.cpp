@@ -477,13 +477,7 @@ __attribute__((target("avx2,fma"))) void scanExactRange(
   TopK top(k);
   for (size_t vi = begin; vi < end; ++vi) {
     const float* a = vecp[vi];
-    float sum = l2Kernel(a, q, dim);
-    if (!std::isfinite(sum)) {
-      RawHit h{l2Avx2DoubleSq(a, q, dim), pks[vi], vi};
-      top.push(h);
-      continue;
-    }
-    RawHit h{static_cast<double>(sum), pks[vi], vi};
+    RawHit h{l2Avx2DoubleSq(a, q, dim), pks[vi], vi};
     if (top.full() && !rawBetter(h, RawHit{top.worstDistance(), 0, 0})) {
       continue;
     }
@@ -653,9 +647,7 @@ __attribute__((target("avx2,fma"))) void scanQ7ExactRange(
   const size_t seed = std::min<size_t>(64, end - begin);
   for (size_t vi = begin; vi < begin + seed; ++vi) {
     const float* a = vecp[vi];
-    float sum = l2Kernel(a, q, dim);
-    double d = std::isfinite(sum) ? static_cast<double>(sum)
-                                  : l2Avx2DoubleSq(a, q, dim);
+    double d = l2Avx2DoubleSq(a, q, dim);
     top.push(RawHit{d, pks[vi], vi});
     if (top.full()) sqrt_worst = std::sqrt(top.worstDistance());
   }
@@ -686,9 +678,7 @@ __attribute__((target("avx2,fma"))) void scanQ7ExactRange(
   auto consider_q7 = [&](size_t vi, int32_t dq) {
     if (dq > thr2) return;
     const float* a = vecp[vi];
-    float sum = l2Kernel(a, q, dim);
-    double d = std::isfinite(sum) ? static_cast<double>(sum)
-                                  : l2Avx2DoubleSq(a, q, dim);
+    double d = l2Avx2DoubleSq(a, q, dim);
     top.push(RawHit{d, pks[vi], vi});
     if (top.full()) {
       double w = std::sqrt(top.worstDistance());
@@ -741,9 +731,7 @@ __attribute__((target("avx2,fma"))) void scanIvfExact(
     if (top.full() && lower_sq > worst) break;
     for (size_t vi : ivf.lists[c]) {
       const float* a = vc.vecp[vi];
-      float sum = l2Kernel(a, q, vc.dim);
-      double d = std::isfinite(sum) ? static_cast<double>(sum)
-                                    : l2Avx2DoubleSq(a, q, vc.dim);
+      double d = l2Avx2DoubleSq(a, q, vc.dim);
       top.push(RawHit{d, vc.pks[vi], vi});
       if (top.full() && d < worst) worst = top.worstDistance();
     }
@@ -771,9 +759,7 @@ __attribute__((target("avx2,fma"))) void scanIvfAnn(
   for (size_t i = 0; i < nprobe; ++i) {
     for (size_t vi : ivf.lists[order[i].second]) {
       const float* a = vc.vecp[vi];
-      float sum = l2Kernel(a, q, vc.dim);
-      double d = std::isfinite(sum) ? static_cast<double>(sum)
-                                    : l2Avx2DoubleSq(a, q, vc.dim);
+      double d = l2Avx2DoubleSq(a, q, vc.dim);
       top.push(RawHit{d, vc.pks[vi], vi});
     }
   }
@@ -2274,10 +2260,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
                   if (vi >= vc.pks.size()) continue;
                   const float* a =
                       vc.vecp[vi];
-                  float sum = l2Kernel(a, q, vc.dim);
-                  const double d = std::isfinite(sum)
-                                       ? static_cast<double>(sum)
-                                       : l2Avx2DoubleSq(a, q, vc.dim);
+                  const double d = l2Avx2DoubleSq(a, q, vc.dim);
                   top.push(RawHit{d, vc.pks[vi], vi});
                 }
                 top.drain(fast_hits);
@@ -2288,9 +2271,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
                   const Row& row = *vc.rows[vi];
                   const float* a =
                       vc.vecp[vi];
-                  const double d =
-                      use_avx2 ? static_cast<double>(l2Kernel(a, q, vc.dim))
-                               : l2DistanceSq(a, q, vc.dim);
+                  const double d = l2Avx2DoubleSq(a, q, vc.dim);
                   consider_hit(vc.pks[vi], row, d);
                 }
               }
