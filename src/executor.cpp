@@ -4,6 +4,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdlib>
+#include <chrono>
 #include <limits>
 #include <immintrin.h>
 #include <queue>
@@ -597,6 +598,130 @@ __attribute__((target("avx2"), always_inline)) static inline void q7Dot4(
   }
 }
 
+// AVX-512BW dot kernel, used only after a startup correctness check and a
+// throughput A/B against the AVX2 kernel; hosts that downclock 512-bit code
+// keep the AVX2 path.
+__attribute__((target("avx2,avx512f,avx512bw,avx512vl,fma"), always_inline))
+static inline int32_t hsum512(__m512i acc) {
+  alignas(64) int32_t tmp[16];
+  _mm512_store_si512(reinterpret_cast<__m512i*>(tmp), acc);
+  int32_t sum = 0;
+  for (int32_t x : tmp) sum += x;
+  return sum;
+}
+
+__attribute__((target("avx2,avx512f,avx512bw,avx512vl,fma"), always_inline))
+static inline int32_t q7Dot512(const uint8_t* __restrict a,
+                               const int8_t* __restrict b, size_t n) {
+  const __m512i ones = _mm512_set1_epi16(1);
+  __m512i acc = _mm512_setzero_si512();
+  size_t i = 0;
+  for (; i + 64 <= n; i += 64) {
+    __m512i va = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a + i));
+    __m512i vb = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(b + i));
+    acc = _mm512_add_epi32(
+        acc, _mm512_madd_epi16(_mm512_maddubs_epi16(va, vb), ones));
+  }
+  int32_t dot = hsum512(acc);
+  for (; i < n; ++i) {
+    dot += static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+  }
+  return dot;
+}
+
+__attribute__((target("avx2,avx512f,avx512bw,avx512vl,fma"), always_inline))
+static inline void q7Dot4_512(const uint8_t* __restrict a0,
+                              const uint8_t* __restrict a1,
+                              const uint8_t* __restrict a2,
+                              const uint8_t* __restrict a3,
+                              const int8_t* __restrict b, size_t n,
+                              int32_t out[4]) {
+  const __m512i ones = _mm512_set1_epi16(1);
+  __m512i p0 = _mm512_setzero_si512();
+  __m512i p1 = _mm512_setzero_si512();
+  __m512i p2 = _mm512_setzero_si512();
+  __m512i p3 = _mm512_setzero_si512();
+  size_t i = 0;
+  for (; i + 64 <= n; i += 64) {
+    __m512i vb = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(b + i));
+    __m512i r = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a0 + i));
+    p0 = _mm512_add_epi32(
+        p0, _mm512_madd_epi16(_mm512_maddubs_epi16(r, vb), ones));
+    r = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a1 + i));
+    p1 = _mm512_add_epi32(
+        p1, _mm512_madd_epi16(_mm512_maddubs_epi16(r, vb), ones));
+    r = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a2 + i));
+    p2 = _mm512_add_epi32(
+        p2, _mm512_madd_epi16(_mm512_maddubs_epi16(r, vb), ones));
+    r = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a3 + i));
+    p3 = _mm512_add_epi32(
+        p3, _mm512_madd_epi16(_mm512_maddubs_epi16(r, vb), ones));
+  }
+  out[0] = hsum512(p0);
+  out[1] = hsum512(p1);
+  out[2] = hsum512(p2);
+  out[3] = hsum512(p3);
+  for (; i < n; ++i) {
+    out[0] += static_cast<int32_t>(a0[i]) * static_cast<int32_t>(b[i]);
+    out[1] += static_cast<int32_t>(a1[i]) * static_cast<int32_t>(b[i]);
+    out[2] += static_cast<int32_t>(a2[i]) * static_cast<int32_t>(b[i]);
+    out[3] += static_cast<int32_t>(a3[i]) * static_cast<int32_t>(b[i]);
+  }
+}
+
+__attribute__((target("avx2,avx512f,avx512bw,avx512vl,fma")))
+bool q7Prefer512() {
+  constexpr size_t N = 256, D = 128, R = 128;
+  std::vector<uint8_t> x(N * D);
+  std::vector<int8_t> y(N * D);
+  for (size_t i = 0; i < x.size(); ++i) {
+    x[i] = static_cast<uint8_t>((i * 37) % 127);
+    y[i] = static_cast<int8_t>(static_cast<int>((i * 53 + 11) % 127) - 63);
+  }
+  int64_t scalar = 0;
+  for (size_t i = 0; i < N; ++i) {
+    scalar += q7Dot(x.data() + i * D, y.data() + i * D, D);
+  }
+  int64_t wide = 0;
+  for (size_t i = 0; i < N; ++i) {
+    wide += q7Dot512(x.data() + i * D, y.data() + i * D, D);
+  }
+  if (scalar != wide) return false;
+  int32_t four[4];
+  q7Dot4_512(x.data(), x.data() + D, x.data() + 2 * D, x.data() + 3 * D,
+             y.data(), D, four);
+  for (int r = 0; r < 4; ++r) {
+    if (four[r] != q7Dot(x.data() + r * D, y.data(), D)) return false;
+  }
+  volatile int64_t sink = 0;
+  auto bench = [&](auto fn) {
+    auto t0 = std::chrono::steady_clock::now();
+    int64_t s = 0;
+    for (size_t r = 0; r < R; ++r) {
+      for (size_t i = 0; i < N; ++i) {
+        s += fn(x.data() + i * D, y.data() + i * D, D);
+      }
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    sink += s;
+    return std::chrono::duration<double>(t1 - t0).count();
+  };
+  const double t256 = bench(q7Dot);
+  const double t512 = bench(q7Dot512);
+  return t512 * 1.05 < t256;
+}
+
+bool q7Runtime512() {
+  static const bool use = [] {
+    return __builtin_cpu_supports("avx2") &&
+           __builtin_cpu_supports("fma") &&
+           __builtin_cpu_supports("avx512f") &&
+           __builtin_cpu_supports("avx512bw") &&
+           __builtin_cpu_supports("avx512vl") && q7Prefer512();
+  }();
+  return use;
+}
+
 struct Q7Query {
   std::vector<int8_t> codes;  // signed query codes in [-63,63]
   int32_t cq = 0;             // sum(s^2) + 126*sum(s)
@@ -700,6 +825,73 @@ __attribute__((target("avx2,fma"))) void scanQ7ExactRange(
   }
   for (; vi < end; ++vi) {
     consider_q7(vi, pv[vi] + cq - 2 * q7Dot(codes + vi * dim, qcodes, dim));
+  }
+  top.drain(out);
+}
+
+
+__attribute__((target("avx2,avx512f,avx512bw,avx512vl,fma"))) void scanQ7ExactRange512(
+    const Quant8Cache& c, const float* const* vecp, const int64_t* pks,
+    size_t begin, size_t end, size_t dim, const float* q, const Q7Query& qq,
+    size_t k, std::vector<RawHit>& out) {
+  TopK top(k);
+  double sqrt_worst = std::numeric_limits<double>::infinity();
+  const size_t seed = std::min<size_t>(64, end - begin);
+  for (size_t vi = begin; vi < begin + seed; ++vi) {
+    const float* a = vecp[vi];
+    double d = l2Avx2DoubleSq(a, q, dim);
+    top.push(RawHit{d, pks[vi], vi});
+    if (top.full()) sqrt_worst = std::sqrt(top.worstDistance());
+  }
+  if (k == 0) {
+    top.drain(out);
+    return;
+  }
+  const double inv = 1.0 / static_cast<double>(c.scale);
+  const int8_t* qcodes = qq.codes.data();
+  // Conservative integer threshold in code-distance units.  Using the maximum
+  // row error instead of the per-row error keeps the inner loop free of a
+  // second array stream and of double arithmetic; the quantizer error is nearly
+  // constant across rows, so this costs almost no extra survivors.
+  auto threshold2 = [&]() -> int32_t {
+    const double bound =
+        sqrt_worst + qq.error_norm + static_cast<double>(c.max_err);
+    // Relative margin: errs/query_err are float-rounded and a tie at very
+    // large magnitudes must not be pruned by rounding noise.
+    const double t = bound * inv * (1.0 + 1e-6) + 1e-12;
+    const double t2 = t * t;
+    if (!(t2 < 2147483000.0)) return std::numeric_limits<int32_t>::max();
+    return static_cast<int32_t>(std::ceil(t2));
+  };
+  int32_t thr2 = threshold2();
+  const uint8_t* codes = c.codes.data();
+  const int32_t* pv = c.pv.data();
+  const int32_t cq = qq.cq;
+  auto consider_q7 = [&](size_t vi, int32_t dq) {
+    if (dq > thr2) return;
+    const float* a = vecp[vi];
+    double d = l2Avx2DoubleSq(a, q, dim);
+    top.push(RawHit{d, pks[vi], vi});
+    if (top.full()) {
+      double w = std::sqrt(top.worstDistance());
+      if (w < sqrt_worst) {
+        sqrt_worst = w;
+        thr2 = threshold2();
+      }
+    }
+  };
+  size_t vi = begin + seed;
+  for (; vi + 4 <= end; vi += 4) {
+    int32_t dots[4];
+    q7Dot4_512(codes + vi * dim, codes + (vi + 1) * dim,
+           codes + (vi + 2) * dim, codes + (vi + 3) * dim, qcodes, dim, dots);
+    consider_q7(vi, pv[vi] + cq - 2 * dots[0]);
+    consider_q7(vi + 1, pv[vi + 1] + cq - 2 * dots[1]);
+    consider_q7(vi + 2, pv[vi + 2] + cq - 2 * dots[2]);
+    consider_q7(vi + 3, pv[vi + 3] + cq - 2 * dots[3]);
+  }
+  for (; vi < end; ++vi) {
+    consider_q7(vi, pv[vi] + cq - 2 * q7Dot512(codes + vi * dim, qcodes, dim));
   }
   top.drain(out);
 }
@@ -2344,18 +2536,33 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
             // exact float32 kernel on the (few) surviving candidates.
             std::vector<RawHit> left, right;
             auto run_left = [&] {
-              scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), 0,
-                               n / 2, cache.dim, q, qq, k, left);
+              if (q7Runtime512()) {
+                scanQ7ExactRange512(*q8, cache.vecp.data(), cache.pks.data(), 0,
+                                    n / 2, cache.dim, q, qq, k, left);
+              } else {
+                scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), 0,
+                                 n / 2, cache.dim, q, qq, k, left);
+              }
             };
             auto run_right = [&] {
-              scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), n / 2,
-                               n, cache.dim, q, qq, k, right);
+              if (q7Runtime512()) {
+                scanQ7ExactRange512(*q8, cache.vecp.data(), cache.pks.data(),
+                                    n / 2, n, cache.dim, q, qq, k, right);
+              } else {
+                scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), n / 2,
+                                 n, cache.dim, q, qq, k, right);
+              }
             };
             if (can_parallel) {
               pool_.run(run_left, run_right);
             } else {
-              scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), 0, n,
-                               cache.dim, q, qq, k, left);
+              if (q7Runtime512()) {
+                scanQ7ExactRange512(*q8, cache.vecp.data(), cache.pks.data(), 0,
+                                    n, cache.dim, q, qq, k, left);
+              } else {
+                scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), 0, n,
+                                 cache.dim, q, qq, k, left);
+              }
               right.clear();
             }
             TopK merged(k);
