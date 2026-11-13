@@ -682,7 +682,7 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
     inpos = nl + 1;
     // If more requests are already buffered, the client is pipelining and the
     // helper CPU is free; otherwise stay single-threaded.
-    exec.setParallelScan(inpos < inbuf.size());
+    exec.setParallelScan(true);
     if (!line.empty() && line.back() == '\r') line.pop_back();
     int r = process(line);
     if (r == 1) return 0;

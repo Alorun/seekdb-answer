@@ -10,6 +10,7 @@
 #include <set>
 #include <thread>
 #include <sched.h>
+#include <fstream>
 #include <sstream>
 #include <unordered_set>
 
@@ -31,12 +32,58 @@ int usableCpuCount() {
 }  // namespace
 
 ScanPool::ScanPool() {
-  // The q7 code scan is compute bound (1.28MB of codes per 10k x 128 scan, 4
-  // maddubs/madd pairs per row), so a second physical core nearly halves it.
-  // The helper is only started when the process really owns two CPUs; a
-  // single-CPU pinning keeps the single-threaded path.
-  static const bool force_off = std::getenv("MVDB_NO_2T") != nullptr;
-  usable_ = !force_off && usableCpuCount() >= 2;
+  // A second physical core nearly halves the q7 scan; SMT siblings compete for
+  // the same execution units.  Use the helper only when the affine CPUs are
+  // distinct physical cores (or when explicitly forced).
+  if (std::getenv("MVDB_NO_2T") != nullptr) {
+    usable_ = false;
+    return;
+  }
+  const bool forced = std::getenv("MVDB_TWO_THREADS") != nullptr;
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  int cpus[2] = {-1, -1};
+  int found = 0;
+  if (::sched_getaffinity(0, sizeof(set), &set) == 0) {
+    for (int c = 0; c < CPU_SETSIZE && found < 2; ++c) {
+      if (CPU_ISSET(c, &set)) cpus[found++] = c;
+    }
+  }
+  bool siblings = false;
+  if (found == 2) {
+    auto list = [](int cpu) {
+      std::ifstream in("/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
+                       "/topology/thread_siblings_list");
+      std::string line;
+      std::getline(in, line);
+      return line;
+    };
+    auto has = [](const std::string& s, int cpu) {
+      size_t p = 0;
+      while (p < s.size()) {
+        size_t q = s.find_first_of(",-", p);
+        std::string tok = s.substr(p, q == std::string::npos ? q : q - p);
+        try { if (std::stoi(tok) == cpu) return true; } catch (...) {}
+        if (q == std::string::npos) break;
+        if (s[q] == '-') {
+          size_t r = s.find(',', q + 1);
+          try {
+            int lo = std::stoi(s.substr(p, q - p));
+            int hi = std::stoi(s.substr(q + 1, r == std::string::npos ? std::string::npos : r - q - 1));
+            if (cpu >= lo && cpu <= hi) return true;
+          } catch (...) {}
+          if (r == std::string::npos) break;
+          p = r + 1;
+          continue;
+        }
+        p = q + 1;
+      }
+      return false;
+    };
+    std::string a = list(cpus[0]), b = list(cpus[1]);
+    if (!a.empty() && !b.empty()) siblings = has(a, cpus[1]) || has(b, cpus[0]);
+  }
+  usable_ = found >= 2 && (forced || !siblings);
 }
 
 ScanPool::~ScanPool() {
