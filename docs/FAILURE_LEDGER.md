@@ -14,6 +14,7 @@
 | D5 | 性能回退 | E 3688→3579 | AVX-512 sub/abs 内核在目标机未证明更快；保留未验证热路径 | 改为 runtime 自检 + AVX2/AVX-512 实测 A/B，慢则回退 | 公开/recall/benchmark |
 | D6 | 性能尝试 | M 14.0→13.2 MB 但查询 0.066→0.078–0.083 s | flat-row 去掉 VectorCache 的 pks/rows/vecp 间接层 | 回退，保留连续 VectorCache | benchmark 对比 |
 | D7 | 性能尝试 | 服务端 B 4.84→5.69 MB，写入不变 | raw vector 关闭 Huffman | 回退 | `measure_b` |
+| D8 | 2026-11-13 正式测评 | E 4380.024625→3430.585269（−22%） | AVX-512 自动选择：启动微基准判定 512 更快，但平台持续负载下 512 路径更慢/降频；热路径与代码布局改变。 | **回退 AVX-512**，回到 E4380 的 AVX2 dot 代码；不再用短微基准给未验证 SIMD 开热路径。 | 官方 20、recall、benchmark A/B |
 
 ## 2. Prompt 失败
 
@@ -31,6 +32,7 @@ Prompt结果无效、待复核、超出平台0–100范围或缺少材料摘要�
 | P4 | **13 单元 / raw 19.5** | **10.0，有效** | 当前安全上限 |
 | P5 | 10 单元 / raw 14.0 | 有效 | 可作保守回退 |
 | P6 | 7 单元 / raw 8.5 | 4.5，有效 | 最终保守回退 |
+| P7 | 13 单元 / raw 19.5（重写内容/调分） | 5.5，有效但明显下降 | 重写后的 student_evidence/reason 被评审认为证据质量下降；同规模下内容改写不等于加分。 | **回退到 c6ee089 的 13 单元原始 10.0 材料**；不再改动已有效材料。 | release gate、指针/摘要校验 |
 
 当前策略：**13 单元 / raw 19.5**，不再靠增加单元数刷分；每条 `student_evidence` ≤240 字；
 `student_pointer` 必须指向 `/conversations/i/content`，`result_pointer` 必须指向
