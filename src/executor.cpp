@@ -95,18 +95,23 @@ ScanPool::ScanPool() {
   for (int c : cpus) lists.push_back(siblings(c));
   bool found_pair = false;
   for (size_t i = 0; i < cpus.size() && !found_pair; ++i) {
-    if (lists[i].empty()) {
-      found_pair = true;  // no sysfs topology: assume distinct
-      break;
-    }
     for (size_t j = i + 1; j < cpus.size(); ++j) {
-      if (lists[j].empty() || !has_cpu(lists[i], cpus[j])) {
+      if (lists[i].empty() || lists[j].empty() ||
+          !has_cpu(lists[i], cpus[j])) {
         found_pair = true;
+        main_cpu_ = cpus[i];
+        worker_cpu_ = cpus[j];
         break;
       }
     }
   }
   usable_ = forced || found_pair;
+  if (usable_ && !forced && main_cpu_ >= 0) {
+    cpu_set_t one;
+    CPU_ZERO(&one);
+    CPU_SET(main_cpu_, &one);
+    ::sched_setaffinity(0, sizeof(one), &one);
+  }
 }
 
 
@@ -122,6 +127,12 @@ ScanPool::~ScanPool() {
 }
 
 void ScanPool::workerLoop() {
+  if (worker_cpu_ >= 0) {
+    cpu_set_t one;
+    CPU_ZERO(&one);
+    CPU_SET(worker_cpu_, &one);
+    ::sched_setaffinity(0, sizeof(one), &one);
+  }
   uint64_t seen = 0;
   for (;;) {
     uint64_t spins = 0;

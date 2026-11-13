@@ -50,6 +50,8 @@ class ScanPool {
   std::atomic<uint64_t> done_{0};
   std::atomic<bool> stop_{false};
   bool usable_ = false;
+  int main_cpu_ = -1;
+  int worker_cpu_ = -1;
 };
 
 struct ResolvedCond {
