@@ -475,12 +475,10 @@ inline bool rawBetter(const RawHit& a, const RawHit& b) {
 // falls back to a heap to avoid O(K) insertion per candidate.
 class TopK {
  public:
-  explicit TopK(size_t k) : k_(k) {
-    if (k_ <= 64) small_.reserve(k_);
-  }
+  explicit TopK(size_t k) : k_(k) {}
 
   __attribute__((always_inline)) inline size_t size() const {
-    return k_ <= 64 ? small_.size() : heap_.size();
+    return k_ <= 64 ? small_size_ : heap_.size();
   }
   __attribute__((always_inline)) inline bool full() const {
     return size() == k_;
@@ -492,8 +490,8 @@ class TopK {
   __attribute__((always_inline)) inline double worstDistance() const {
     if (k_ == 0) return std::numeric_limits<double>::infinity();
     if (k_ <= 64) {
-      return small_.empty() ? std::numeric_limits<double>::infinity()
-                            : small_.back().d;
+      return small_size_ == 0 ? std::numeric_limits<double>::infinity()
+                              : small_buf_[small_size_ - 1].d;
     }
     return heap_.empty() ? std::numeric_limits<double>::infinity()
                          : heap_.top().d;
@@ -502,13 +500,19 @@ class TopK {
   __attribute__((always_inline)) inline void push(const RawHit& h) {
     if (k_ == 0) return;
     if (k_ <= 64) {
-      if (small_.size() < k_) {
-        auto it = std::lower_bound(small_.begin(), small_.end(), h, rawBetter);
-        small_.insert(it, h);
-      } else if (rawBetter(h, small_.back())) {
-        auto it = std::lower_bound(small_.begin(), small_.end(), h, rawBetter);
-        small_.insert(it, h);
-        small_.pop_back();
+      if (small_size_ < k_) {
+        size_t pos = static_cast<size_t>(
+            std::lower_bound(small_buf_.begin(), small_buf_.begin() + small_size_,
+                             h, rawBetter) - small_buf_.begin());
+        for (size_t j = small_size_; j > pos; --j) small_buf_[j] = small_buf_[j - 1];
+        small_buf_[pos] = h;
+        ++small_size_;
+      } else if (rawBetter(h, small_buf_[small_size_ - 1])) {
+        size_t pos = static_cast<size_t>(
+            std::lower_bound(small_buf_.begin(), small_buf_.begin() + small_size_,
+                             h, rawBetter) - small_buf_.begin());
+        for (size_t j = small_size_ - 1; j > pos; --j) small_buf_[j] = small_buf_[j - 1];
+        small_buf_[pos] = h;
       }
       return;
     }
@@ -523,7 +527,7 @@ class TopK {
   void drain(std::vector<RawHit>& out) {
     out.clear();
     if (k_ <= 64) {
-      out.assign(small_.begin(), small_.end());
+      out.assign(small_buf_.begin(), small_buf_.begin() + small_size_);
       return;
     }
     out.reserve(heap_.size());
@@ -536,7 +540,8 @@ class TopK {
 
  private:
   size_t k_;
-  std::vector<RawHit> small_;
+  std::array<RawHit, 64> small_buf_{};
+  size_t small_size_ = 0;
   std::priority_queue<RawHit, std::vector<RawHit>, RawWorse> heap_;
 };
 
