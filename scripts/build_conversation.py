@@ -54,6 +54,7 @@ CONVERSATIONS = [
     ("C23", "P1", "过滤连续块多一份 code 矩阵（10k×128≈1.28 MB），平台 M 只占 20%。我要在 2 CPU/2 GiB 容器里对比开/关连续块的 filtered 延迟和 memory.peak，收益落在噪声内就回退。", "过滤块的内存取舍"),
     ("C24", "P4", "本地微基准说 AVX-512 快不算数：平台持续负载下可能降频，甚至 XCR0 不可用 SIGILL。上一次平台 E 在启用 512 后下降，我要默认回 AVX2，并把 512 路径整个删掉，而不是留一个运行时开关。", "AVX-512 平台回退"),
     ("C25", "P1", "单条多行 INSERT 超过 64 MiB 时，确认成功后重启不能丢；appendBatch 没有上限、reader 却按 64 MiB 拒绝，是一个确认即丢的持久化 bug。我要把逻辑 INSERT 拆成多条 ≤4 MiB 记录，同一 commit，并验证 chunk 中途 crash 和跨 chunk 重复主键。", "大 INSERT 分块持久化"),
+    ("C26", "P3", "uniform 的图索引不划算，但聚簇数据可以把已有 q7 code 直接当 IVF 候选层，不再复制一份 code 矩阵；先在 screen 为 clustered 的表上建，首次用 8 条样本对 exact IVF 自检，recall 低于 0.98 就回退精确 IVF。exact 模式完全不动，不能用近似结果污染 exact。", "q7 IVF 候选层与自检回退"),
 ]
 
 EXPERIMENTS = [
@@ -153,6 +154,10 @@ EXPERIMENTS = [
      "normal: ok=True affected_rows=3000 restart_rows=3000\ncrash after_wal_write: restart_rows=0\ncrash after_commit_fsync: restart_rows=3000\nduplicate_across_chunks: duplicate_key restart_rows=0",
      "crash after_commit_fsync: restart_rows=3000",
      "逻辑 INSERT 拆成多条 ≤4 MiB 记录；未提交 chunk 不生效，已确认 commit 全部保留。"),
+    ("E25", "聚簇 q7 IVF 候选层", "10k x 128 clustered; CREATE VECTOR INDEX; exact vs ann; server profile; Docker 2c/2g",
+     "exact wall=70.3us exec=40.5us parse=4.3 format=2.4\nann wall=47.0us exec=19.2us parse=4.6 format=2.4\ninitial: ann recall mean=1.0000 min=1.0000\nafter_dml: ann recall mean=1.0000 min=1.0000\nafter_restart: ann recall mean=1.0000 min=1.0000\nDocker exact q1000=159.3ms\nDocker ann q1000=116.8ms",
+     "ann wall=47.0us exec=19.2us parse=4.6 format=2.4",
+     "nlist=64/nprobe=6/pool=24；首次 8 条样本对 exact IVF 自检，recall<0.98 回退；exact 模式不动。"),
 ]
 
 UNITS = [
@@ -278,6 +283,12 @@ UNITS = [
      "只讲大 INSERT 分块持久化；与 checkpoint 编码、语句原子性不同链。",
      "从普通重启迁移到 chunk 中途 crash + 跨 chunk 重复主键。",
      "只测 3000 行×2000 字符；更大单行/VARCHAR 上限未穷举。"),
+    ("U26", DIM2, 2.0, "C26", "E25",
+     "聚簇数据能否复用 q7 code 做 IVF 候选层，既快又不牺牲 ann recall；exact 模式如何不受影响。",
+     "聚簇表只在 screen 判定 clustered 后建 q7 IVF；server exec 精确 IVF 40.5 → 19.2 µs，Docker q1000 159.3→116.8 ms，initial/UPDATE+DELETE/restart recall 均 1.0；首次 8 条样本自检，recall<0.98 回退 exact IVF，exact 模式完全不动。",
+     "只讲 q7 IVF 候选层与自检回退；与 U08 的 IVF screen、U21 的 ANN 方案基准不同链。",
+     "从 uniform 迁移到 clustered：uniform 仍走 q7 exact，clustered 走 q7 IVF；exact 模式不受影响。",
+     "自检只有 8 条样本，hidden 分布不同可能回退；ann 只用于 k≤24；build 约 40 ms/0.078 MB。"),
 ]
 
 def build():
@@ -371,8 +382,8 @@ def build():
             "未别名 L2_DISTANCE 的列名由 parser 重建，可能与 MySQL 原样保留的表达式文本不同。",
             "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。",
         ],
-        "summary": "25 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、4-bit、内存取舍、AVX-512、大 INSERT 分块。",
-        "material_summary": "25 个单元，五个维度 5/5/6/4/5；每个单元有独立的学生问题与实验结果，结果全部来自本 commit 的本地命令。",
+        "summary": "26 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块。",
+        "material_summary": "26 个单元，五个维度 5/6/6/4/5；每个单元有独立的学生问题与实验结果，结果全部来自本 commit 的本地命令。",
     }
     return data
 

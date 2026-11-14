@@ -1,6 +1,6 @@
 # Prompt 审计与新版开发提示词
 
-> 2026-11-14 19:05 更新：本轮已用 `scripts/build_conversation.py` 生成 25 单元材料（五维 5/5/6/4/5，raw 42.0，52 KiB），每个单元的学生话与结果分别引用、结果均来自本 commit 的本地命令。旧 13 单元材料保留在 `agent/candidates/conversation.stable13.json` 作为回退；下面关于旧材料的审计仍保留，作为历史记录。
+> 2026-11-14 19:05 更新：本轮已用 `scripts/build_conversation.py` 生成 26 单元材料（五维 5/6/6/4/5，raw 44.0，55 KiB），每个单元的学生话与结果分别引用、结果均来自本 commit 的本地命令。旧 13 单元材料保留在 `agent/candidates/conversation.stable13.json` 作为回退；下面关于旧材料的审计仍保留，作为历史记录。
 
 ## 结论与交付边界
 
