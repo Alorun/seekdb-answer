@@ -13,7 +13,7 @@
     "formal_admission": "passed (S3 04960665b); local score values intentionally omitted",
     "official_protocol": "JSON Lines (STDIO_PROTOCOL.md)",
     "local_bench": "AVX2 local fallback measured; metrics are timings/size, not platform scores",
-    "prompt_material": "15 units, raw 23.5, implementation coverage expanded; no out-of-range local score."
+    "prompt_material": "15 units; implementation coverage expanded; no local score embedded."
   },
   "material_notes": "Agent 根据真实协作、命令输出和平台反馈整理；用户请求被归一化为任务摘要，不是逐字原文（用户明确要求不要逐句复述）。student_evidence 与 pointer 指向的字符串完全一致。命令输出为原文/摘要摘录；E5 的 10k×128 输入由本地生成器产生且未入库，已注明；未验证项在 limitations。",
   "user_prompts": [
