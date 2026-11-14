@@ -155,7 +155,7 @@ EXPERIMENTS = [
      "crash after_commit_fsync: restart_rows=3000",
      "逻辑 INSERT 拆成多条 ≤4 MiB 记录；未提交 chunk 不生效，已确认 commit 全部保留。"),
     ("E25", "聚簇 q7 IVF 候选层", "10k x 128 clustered; CREATE VECTOR INDEX; exact vs ann; server profile; Docker 2c/2g",
-     "exact wall=70.3us exec=40.5us parse=4.3 format=2.4\nann wall=47.0us exec=19.2us parse=4.6 format=2.4\ninitial: ann recall mean=1.0000 min=1.0000\nafter_dml: ann recall mean=1.0000 min=1.0000\nafter_restart: ann recall mean=1.0000 min=1.0000\nDocker exact q1000=159.3ms\nDocker ann q1000=116.8ms",
+     "exact wall=70.3us exec=40.5us parse=4.3 format=2.4\nann wall=47.0us exec=19.2us parse=4.6 format=2.4\ninitial: ann recall mean=1.0000 min=1.0000\nafter_dml: ann recall mean=1.0000 min=1.0000\nafter_restart: ann recall mean=1.0000 min=1.0000\nDocker exact q1000=159.3ms\nDocker ann q1000=116.8ms\nold HEAD 3a5c782a clustered exact q1000=187.9ms\nold HEAD 3a5c782a clustered ann q1000=203.3ms",
      "ann wall=47.0us exec=19.2us parse=4.6 format=2.4",
      "nlist=64/nprobe=6/pool=24；首次 8 条样本对 exact IVF 自检，recall<0.98 回退；exact 模式不动。"),
 ]
@@ -285,7 +285,7 @@ UNITS = [
      "只测 3000 行×2000 字符；更大单行/VARCHAR 上限未穷举。"),
     ("U26", DIM2, 2.0, "C26", "E25",
      "聚簇数据能否复用 q7 code 做 IVF 候选层，既快又不牺牲 ann recall；exact 模式如何不受影响。",
-     "聚簇表只在 screen 判定 clustered 后建 q7 IVF；server exec 精确 IVF 40.5 → 19.2 µs，Docker q1000 159.3→116.8 ms，initial/UPDATE+DELETE/restart recall 均 1.0；首次 8 条样本自检，recall<0.98 回退 exact IVF，exact 模式完全不动。",
+     "聚簇表只在 screen 判定 clustered 后建 q7 IVF；server exec 精确 IVF 40.5 → 19.2 µs，Docker q1000 159.3→116.8 ms（旧 HEAD 的 clustered ann 是 203.3 ms，约 1.74x），initial/UPDATE+DELETE/restart recall 均 1.0；首次 8 条样本自检，recall<0.98 回退 exact IVF，exact 模式完全不动。",
      "只讲 q7 IVF 候选层与自检回退；与 U08 的 IVF screen、U21 的 ANN 方案基准不同链。",
      "从 uniform 迁移到 clustered：uniform 仍走 q7 exact，clustered 走 q7 IVF；exact 模式不受影响。",
      "自检只有 8 条样本，hidden 分布不同可能回退；ann 只用于 k≤24；build 约 40 ms/0.078 MB。"),

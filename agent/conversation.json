@@ -467,7 +467,7 @@
    "name": "聚簇 q7 IVF 候选层",
    "command": "10k x 128 clustered; CREATE VECTOR INDEX; exact vs ann; server profile; Docker 2c/2g",
    "output": "ann wall=47.0us exec=19.2us parse=4.6 format=2.4",
-   "context": "exact wall=70.3us exec=40.5us parse=4.3 format=2.4\nann wall=47.0us exec=19.2us parse=4.6 format=2.4\ninitial: ann recall mean=1.0000 min=1.0000\nafter_dml: ann recall mean=1.0000 min=1.0000\nafter_restart: ann recall mean=1.0000 min=1.0000\nDocker exact q1000=159.3ms\nDocker ann q1000=116.8ms",
+   "context": "exact wall=70.3us exec=40.5us parse=4.3 format=2.4\nann wall=47.0us exec=19.2us parse=4.6 format=2.4\ninitial: ann recall mean=1.0000 min=1.0000\nafter_dml: ann recall mean=1.0000 min=1.0000\nafter_restart: ann recall mean=1.0000 min=1.0000\nDocker exact q1000=159.3ms\nDocker ann q1000=116.8ms\nold HEAD 3a5c782a clustered exact q1000=187.9ms\nold HEAD 3a5c782a clustered ann q1000=203.3ms",
    "exit_code": 0,
    "analysis": "nlist=64/nprobe=6/pool=24；首次 8 条样本对 exact IVF 自检，recall<0.98 回退；exact 模式不动。",
    "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
@@ -802,7 +802,7 @@
    "problem": "聚簇数据能否复用 q7 code 做 IVF 候选层，既快又不牺牲 ann recall；exact 模式如何不受影响。",
    "student_evidence": "uniform 的图索引不划算，但聚簇数据可以把已有 q7 code 直接当 IVF 候选层，不再复制一份 code 矩阵；先在 screen 为 clustered 的表上建，首次用 8 条样本对 exact IVF 自检，recall 低于 0.98 就回退精确 IVF。exact 模式完全不动，不能用近似结果污染 exact。",
    "student_pointer": "/conversations/25/content",
-   "reason": "聚簇表只在 screen 判定 clustered 后建 q7 IVF；server exec 精确 IVF 40.5 → 19.2 µs，Docker q1000 159.3→116.8 ms，initial/UPDATE+DELETE/restart recall 均 1.0；首次 8 条样本自检，recall<0.98 回退 exact IVF，exact 模式完全不动。",
+   "reason": "聚簇表只在 screen 判定 clustered 后建 q7 IVF；server exec 精确 IVF 40.5 → 19.2 µs，Docker q1000 159.3→116.8 ms（旧 HEAD 的 clustered ann 是 203.3 ms，约 1.74x），initial/UPDATE+DELETE/restart recall 均 1.0；首次 8 条样本自检，recall<0.98 回退 exact IVF，exact 模式完全不动。",
    "independence": "只讲 q7 IVF 候选层与自检回退；与 U08 的 IVF screen、U21 的 ANN 方案基准不同链。",
    "result_evidence": "ann wall=47.0us exec=19.2us parse=4.6 format=2.4",
    "result_pointer": "/experiments/24/output",

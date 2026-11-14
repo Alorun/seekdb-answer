@@ -106,7 +106,7 @@
 - ANN 独立基准（10k×128）：uniform exact 44.95 us → ann 37.78 us（1.19x，recall 1.0）；
   clustered exact 49.40 us → 精确 IVF 8.42 us（5.87x，recall 1.0，build 39.9 ms，索引 0.078 MB）。
 - 聚簇 ann（10k×128，20 个中心 σ=0.35）：服务端 exec 精确 IVF 40.5 → q7 IVF 19.2 µs；
-  Docker 2 CPU/2 GiB 端到端 q1000 159.3 → 116.8 ms；initial/UPDATE+DELETE/restart
+  Docker 2 CPU/2 GiB 端到端 q1000 159.3 → 116.8 ms（旧 HEAD 的 clustered ann 203.3 ms，约 1.74x）；initial/UPDATE+DELETE/restart
   recall 均 1.0（nprobe=6, pool=24）。uniform 仍走 q7 精确 superset。
 - 结论：uniform 的 q7 扫描已接近 1.28 MB/查询的带宽下限，4-bit/2-bit/HNSW 都没有安全收益；
   聚簇数据用 q7 IVF 有约 2x 服务端收益；真正的下一步需要平台 T/B/M 分项，才能判断
