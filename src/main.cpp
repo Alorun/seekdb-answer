@@ -608,7 +608,9 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
            mvdb::jsonl::quote(st.message) + "}}\n");
       return 0;
     }
-    std::string out = "{\"id\":" + idtxt + ",\"ok\":true";
+    std::string out;
+    out.reserve(128 + result.rows.size() * (8 * (result.columns.size() + 1)));
+    out += "{\"id\":" + idtxt + ",\"ok\":true";
     if (result.has_result) {
       out += ",\"columns\":[";
       for (size_t i = 0; i < result.columns.size(); ++i) {

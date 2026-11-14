@@ -356,15 +356,17 @@
     {
       "id": "U1",
       "dimension": "问题理解与自主拆解",
-      "score": 0.5,
+      "score": 1.5,
       "student_evidence": "先把题面拆成可验收的四层：JSONL 协议/ready-marker；事务与 WAL 恢复不变量；exact TopK 与距离格式；T/B/M 性能。每层写命令和失败回退；exact、崩溃恢复和 20 个公开用例优先于性能，任何优化不能把这些门禁弄坏。",
       "student_pointer": "/conversations/0/content",
-      "reason": "把语言、官方基线、题包不公开、提交次数和截止时间拆成计划；仅规划，按 0.5 计。"
+      "reason": "把语言、官方基线、题包不公开、提交次数和截止时间拆成计划；仅规划，按 0.5 计。",
+      "result_pointer": "/experiments/1/output",
+      "result_evidence": "handshake: PASS; sql_crud PASS ... transaction_shutdown_rollback PASS; Report: /tmp/proto/docker-public/result.json; exit 0"
     },
     {
       "id": "U2",
       "dimension": "技术理解与迁移",
-      "score": 1.0,
+      "score": 0.5,
       "student_evidence": "先保证 COMMIT 确认前把数据和提交标记落盘；失败语句不能部分生效，回滚要恢复行和可见集；向量查询先过滤再 TopK，距离并列按主键。实现是 WAL header+payload+CRC，Commit marker 后 fdatasync；批量 INSERT 一个 header + 列式 payload；checkpoint 必须能全量 decode。",
       "student_pointer": "/conversations/3/content",
       "result_evidence": "iterations=200 elapsed=5.9s; deterministic crash points={after_wal_write:23, after_commit_fsync:22, recovery_after_pass1:22, recovery_after_truncate:23, checkpoint_before_rename:22, checkpoint_after_rename:22}; random SIGKILL=66; failures=0",
@@ -394,7 +396,7 @@
     {
       "id": "U5",
       "dimension": "取舍与反思",
-      "score": 1.0,
+      "score": 0.5,
       "student_evidence": "uniform 10k×128 上 HNSW recall 0.98 只有约 1.5–2× 查询收益，却要 3–11 s 构建和 6.7–7.9 MiB 索引；先保留 exact，clustered 数据再评估 ANN。",
       "student_pointer": "/conversations/5/content",
       "result_evidence": "uniform       42     3384.2      6.73     3 |  256     0.9806     280.56     463.97      289.63",
