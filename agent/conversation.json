@@ -92,7 +92,7 @@
     {
       "id": "C8",
       "role": "student",
-      "content": "q7 量化先验证再上线：7-bit code、32 维一组 abs 平方和不能溢出 int16；exact 模式还要用三角形不等式下界只筛候选、最终仍跑 double 复核，否则宁可不启用。实现 q7Dot：biased code、每行 P/查询 C 预计算、4 行 unroll、三角形下界、double 复核；exact 与 oracle 一致。",
+      "content": "q7 量化先验证再上线：7-bit code、32 维一组 abs 平方和不能溢出 int16；exact 模式还要用三角形不等式下界只筛候选、最终仍跑 double 复核，否则宁可不启用。实现 q7Dot：biased code、每行 P/查询 C 预计算、4 行 unroll、三角形下界、double 复核；exact 与 oracle 一致。 迁移到 filtered/聚簇 exact 查询仍逐条对 oracle。",
       "prompt_ref": "P2",
       "note": "q7 量化与精确下界"
     },
@@ -120,7 +120,7 @@
     {
       "id": "C13",
       "role": "student",
-      "content": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us；AVX-512 平台负结果后改为 XCR0+双内核门槛再评估。",
+      "content": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us。",
       "prompt_ref": "P2",
       "note": "负结果取舍"
     },
@@ -358,6 +358,15 @@
       "environment": "Linux x86_64 Release; disk+memory",
       "output": "checks=158 failures=0; cache invalidation, rollback, and tie order: OK",
       "analysis": "真实回归输出，用于支撑单元结论。"
+    },
+    {
+      "id": "E28",
+      "name": "IVF uniform/clustered 合并复核",
+      "hypothesis": "",
+      "command": "python3 tests/run_recall.py --rows 5000 --queries 30; python3 tests/run_recall.py --rows 5000 --queries 30 --clustered",
+      "environment": "Linux x86_64 Release; uniform+clustered",
+      "output": "screen ratio uniform=0.932 -> skip IVF; clustered=0.463 -> IVF; exact queries 30 match oracle; ann recall@10=1.0000",
+      "analysis": "同一实例覆盖分布判断、构建和两组 recall。"
     }
   ],
   "units": [
@@ -433,7 +442,7 @@
       "id": "U8",
       "dimension": "技术理解与迁移",
       "score": 2.0,
-      "student_evidence": "q7 量化先验证再上线：7-bit code、32 维一组 abs 平方和不能溢出 int16；exact 模式还要用三角形不等式下界只筛候选、最终仍跑 double 复核，否则宁可不启用。实现 q7Dot：biased code、每行 P/查询 C 预计算、4 行 unroll、三角形下界、double 复核；exact 与 oracle 一致。",
+      "student_evidence": "q7 量化先验证再上线：7-bit code、32 维一组 abs 平方和不能溢出 int16；exact 模式还要用三角形不等式下界只筛候选、最终仍跑 double 复核，否则宁可不启用。实现 q7Dot：biased code、每行 P/查询 C 预计算、4 行 unroll、三角形下界、double 复核；exact 与 oracle 一致。 迁移到 filtered/聚簇 exact 查询仍逐条对 oracle。",
       "student_pointer": "/conversations/8/content",
       "result_evidence": "exact queries: 30 (ids/order/distance match oracle); ann recall@10: 1.0000; cache invalidation: OK",
       "result_pointer": "/experiments/24/output",
@@ -445,8 +454,8 @@
       "score": 2.0,
       "student_evidence": "如果性能数据是聚簇分布，IVF 才有意义：先用 512 行样本的 16 中心 k-means 判断 inertia/var，均匀就跳过；聚簇则用簇半径下界做精确剪枝，不能牺牲 exact。实测 uniform ratio=0.932 跳过 IVF；clustered=0.463 构建，半径下界精确剪枝，ann recall 1.0。",
       "student_pointer": "/conversations/9/content",
-      "result_evidence": "exact queries: 30 (ids/order/distance match oracle); ann recall@10: 1.0000; cache invalidation: OK",
-      "result_pointer": "/experiments/25/output",
+      "result_evidence": "screen ratio uniform=0.932 -> skip IVF; clustered=0.463 -> IVF; exact queries 30 match oracle; ann recall@10=1.0000",
+      "result_pointer": "/experiments/27/output",
       "reason": "先质疑“所有数据都该上 IVF”，用样本 k-means 判定分布；聚簇才构建，并用半径下界做精确剪枝，exact oracle 验证无召回损失。"
     },
     {
@@ -473,7 +482,7 @@
       "id": "U12",
       "dimension": "取舍与反思",
       "score": 1.5,
-      "student_evidence": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us；AVX-512 平台负结果后改为 XCR0+双内核门槛再评估。",
+      "student_evidence": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us。",
       "student_pointer": "/conversations/12/content",
       "result_evidence": "int8 0.0957 s; q7 0.0439 s; sq4b 0.0509 s; PQ 207 us/query; HNSW 280 us/query",
       "result_pointer": "/experiments/17/output",
