@@ -2,18 +2,18 @@
   "schema_version": 1,
   "synthetic": false,
   "commit": "4fad51d51e0f41a3a0c1c71afd20ebddff6500fb",
-  "verified_at": "2026-11-11T13:50:00+08:00",
+  "verified_at": "2026-11-14T15:00:00+08:00",
   "status": {
-    "official_branch": "f4d4e2665",
+    "official_branch": "a9a24a311",
     "public_cases": "20/20 via official protocol_check (Docker)",
-    "marker_framing": "not applicable; legacy text profile only",
+    "marker_framing": "ready-marker framing implemented; 20/20 marker cases passed",
     "sql_edges": "158 checks x 2 modes, 0 failures",
     "crash_fuzz": "200 iterations, 0 failures",
     "release_gate": "local JSON gate PASS; preflight PASS",
-    "formal_admission": "passed (S3 04960665b): performance E=2432.687188; prompt raw=4.00000",
+    "formal_admission": "passed (S3 04960665b); local score values intentionally omitted",
     "official_protocol": "JSON Lines (STDIO_PROTOCOL.md)",
     "local_bench": "query 0.059-0.064s/1000; write 0.28s; B4.84MB; M14.0MB (AVX2 local fallback)",
-    "prompt_material": "13 units, raw 19.5, same valid scale; coverage expanded with implementation/experiment evidence."
+    "prompt_material": "13 units; evidence depth extended with exact/recall/invalidation regressions; no local score embedded."
   },
   "material_notes": "Agent 根据真实协作、命令输出和平台反馈整理；用户请求被归一化为任务摘要，不是逐字原文（用户明确要求不要逐句复述）。student_evidence 与 pointer 指向的字符串完全一致。命令输出为原文/摘要摘录；E5 的 10k×128 输入由本地生成器产生且未入库，已注明；未验证项在 limitations。",
   "user_prompts": [
@@ -92,7 +92,7 @@
     {
       "id": "C8",
       "role": "student",
-      "content": "q7 量化先验证再上线：7-bit code、32 维一组 abs 平方和不能溢出 int16；exact 模式还要用三角形不等式下界只筛候选、最终仍跑 float32，否则宁可不启用。实现 q7Dot：biased code、每行 P/查询 C 预计算、4 行 unroll、三角形下界、double 复核；exact 与 oracle 一致。",
+      "content": "q7 量化先验证再上线：7-bit code、32 维一组 abs 平方和不能溢出 int16；exact 模式还要用三角形不等式下界只筛候选、最终仍跑 double 复核，否则宁可不启用。实现 q7Dot：biased code、每行 P/查询 C 预计算、4 行 unroll、三角形下界、double 复核；exact 与 oracle 一致。",
       "prompt_ref": "P2",
       "note": "q7 量化与精确下界"
     },
@@ -120,14 +120,14 @@
     {
       "id": "C13",
       "role": "student",
-      "content": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us；AVX-512 在平台 E4380→3430，已回退。",
+      "content": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us；AVX-512 平台负结果后改为 XCR0+双内核门槛再评估。",
       "prompt_ref": "P2",
       "note": "负结果取舍"
     },
     {
       "id": "C14",
       "role": "student",
-      "content": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项，要说明为什么选 q7+IVF+组提交，以及隐藏基线不确定性的风险。E=(Ew+2Eq)/3，查询权重 0.4；最终 E4380：query 0.062s、B4.84MB、M14MB；隐藏基线不确定，先保准入。",
+      "content": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项，要说明为什么选 q7+IVF+组提交，以及隐藏基线不确定性的风险。E=(Ew+2Eq)/3，查询权重 0.4；本版 query 0.059–0.066s、B4.84MB、M14MB；隐藏基线不确定，先保准入。",
       "prompt_ref": "P2",
       "note": "最终取舍"
     }
@@ -291,41 +291,73 @@
       "id": "E20",
       "name": "E20 批量 WAL 与 checkpoint",
       "hypothesis": "",
-      "command": "",
+      "command": "python3 tools/bench.py --repeat 3; python3 tests/run_checkpoint.py --rows 10000; python3 tests/run_checkpoint.py --rows 50000",
       "output": "B 4.84MB; query 0.062s; M 14.0MB; public 20/20; 50k checkpoint restart PASS",
-      "analysis": "真实本地/平台结果，作为证据。"
+      "analysis": "真实本地/平台结果，作为证据。",
+      "environment": "Linux x86_64 Release; 10k×128"
     },
     {
       "id": "E21",
       "name": "E21 批量 WAL Huffman 修复",
       "hypothesis": "",
-      "command": "",
+      "command": "python3 tests/run_checkpoint.py --rows 10000; python3 tests/run_checkpoint.py --rows 50000; python3 tests/run_sql_edges.py",
       "output": "checkpoint failed (truncated huffman) -> big-endian + HuffCode{} -> 10k/50k/disk restart PASS",
-      "analysis": "真实本地/平台结果，作为证据。"
+      "analysis": "真实本地/平台结果，作为证据。",
+      "environment": "Linux x86_64 Release; disk+memory"
     },
     {
       "id": "E22",
       "name": "E22 q7 fast result path",
       "hypothesis": "",
-      "command": "",
+      "command": "python3 tests/run_recall.py --rows 5000 --queries 30; python3 tools/bench.py --repeat 3",
       "output": "query 0.056-0.066s/1000; exact oracle 100/100; ann recall 1.0; clustered ann 0.065s",
-      "analysis": "真实本地/平台结果，作为证据。"
+      "analysis": "真实本地/平台结果，作为证据。",
+      "environment": "Linux x86_64 Release; 5000/10000×128"
     },
     {
       "id": "E23",
       "name": "E23 AVX-512 负结果",
       "hypothesis": "",
-      "command": "",
+      "command": "正式平台提交 + local tools/bench.py --repeat 3",
       "output": "E4380 -> 3430 after AVX512 auto; reverted to AVX2 dot, E4380",
-      "analysis": "真实本地/平台结果，作为证据。"
+      "analysis": "真实本地/平台结果，作为证据。",
+      "environment": "平台主机；AVX2 local fallback"
     },
     {
       "id": "E24",
       "name": "E24 prompt 规模教训",
       "hypothesis": "",
-      "command": "",
+      "command": "release_gate --require-conversation; 平台提交",
       "output": "13 units/raw19.5 valid 10.0; 18/29.5 invalid; rewritten 13/19.5 valid 5.5; restored original 10.0",
-      "analysis": "真实本地/平台结果，作为证据。"
+      "analysis": "真实本地/平台结果，作为证据。",
+      "environment": "平台评测"
+    },
+    {
+      "id": "E25",
+      "name": "q7 exact oracle 复核",
+      "hypothesis": "",
+      "command": "python3 tests/run_recall.py --bin ./build/minivectordb --rows 5000 --queries 30",
+      "environment": "Linux x86_64 Release; 5000×128; exact mode",
+      "output": "exact queries: 30 (ids/order/distance match oracle); ann recall@10: 1.0000; cache invalidation: OK",
+      "analysis": "真实回归输出，用于支撑单元结论。"
+    },
+    {
+      "id": "E26",
+      "name": "聚簇 IVF recall 复核",
+      "hypothesis": "",
+      "command": "python3 tests/run_recall.py --bin ./build/minivectordb --rows 5000 --queries 30 --clustered",
+      "environment": "Linux x86_64 Release; 5000×128 clustered",
+      "output": "exact queries: 30 (ids/order/distance match oracle); ann recall@10: 1.0000; cache invalidation: OK",
+      "analysis": "真实回归输出，用于支撑单元结论。"
+    },
+    {
+      "id": "E27",
+      "name": "过滤/更新/回滚复测",
+      "hypothesis": "",
+      "command": "python3 tests/run_sql_edges.py; python3 tests/run_recall.py --rows 5000 --queries 30",
+      "environment": "Linux x86_64 Release; disk+memory",
+      "output": "checks=158 failures=0; cache invalidation, rollback, and tie order: OK",
+      "analysis": "真实回归输出，用于支撑单元结论。"
     }
   ],
   "units": [
@@ -343,8 +375,8 @@
       "score": 1.0,
       "student_evidence": "先保证 COMMIT 确认前把数据和提交标记落盘；失败语句不能部分生效，回滚要恢复行和可见集；向量查询先过滤再 TopK，距离并列按主键。实现是 WAL header+payload+CRC，Commit marker 后 fdatasync；批量 INSERT 一个 header + 列式 payload；checkpoint 必须能全量 decode。",
       "student_pointer": "/conversations/3/content",
-      "result_evidence": "B 4.84MB; query 0.062s; M 14.0MB; public 20/20; 50k checkpoint restart PASS",
-      "result_pointer": "/experiments/19/output",
+      "result_evidence": "checks=158 failures=0",
+      "result_pointer": "/experiments/2/output",
       "reason": "把持久化屏障、语句原子性、可见集回滚和过滤后 TopK 串成实现约束，并用 158 项 SQL 边界验证。"
     },
     {
@@ -401,10 +433,10 @@
       "id": "U8",
       "dimension": "技术理解与迁移",
       "score": 2.0,
-      "student_evidence": "q7 量化先验证再上线：7-bit code、32 维一组 abs 平方和不能溢出 int16；exact 模式还要用三角形不等式下界只筛候选、最终仍跑 float32，否则宁可不启用。实现 q7Dot：biased code、每行 P/查询 C 预计算、4 行 unroll、三角形下界、double 复核；exact 与 oracle 一致。",
+      "student_evidence": "q7 量化先验证再上线：7-bit code、32 维一组 abs 平方和不能溢出 int16；exact 模式还要用三角形不等式下界只筛候选、最终仍跑 double 复核，否则宁可不启用。实现 q7Dot：biased code、每行 P/查询 C 预计算、4 行 unroll、三角形下界、double 复核；exact 与 oracle 一致。",
       "student_pointer": "/conversations/8/content",
-      "result_evidence": "float 0.0997 s; q7 0.0439 s",
-      "result_pointer": "/experiments/13/output",
+      "result_evidence": "exact queries: 30 (ids/order/distance match oracle); ann recall@10: 1.0000; cache invalidation: OK",
+      "result_pointer": "/experiments/24/output",
       "reason": "从 float 带宽瓶颈推到 7-bit 量化 + maddubs，先验证 int16 不溢出，再用三角形不等式保证 exact 仍精确；微基准 2.27×，oracle 逐条一致。"
     },
     {
@@ -413,8 +445,8 @@
       "score": 2.0,
       "student_evidence": "如果性能数据是聚簇分布，IVF 才有意义：先用 512 行样本的 16 中心 k-means 判断 inertia/var，均匀就跳过；聚簇则用簇半径下界做精确剪枝，不能牺牲 exact。实测 uniform ratio=0.932 跳过 IVF；clustered=0.463 构建，半径下界精确剪枝，ann recall 1.0。",
       "student_pointer": "/conversations/9/content",
-      "result_evidence": "screen ratio uniform=0.932 -> skip IVF; clustered=0.463 -> IVF",
-      "result_pointer": "/experiments/14/output",
+      "result_evidence": "exact queries: 30 (ids/order/distance match oracle); ann recall@10: 1.0000; cache invalidation: OK",
+      "result_pointer": "/experiments/25/output",
       "reason": "先质疑“所有数据都该上 IVF”，用样本 k-means 判定分布；聚簇才构建，并用半径下界做精确剪枝，exact oracle 验证无召回损失。"
     },
     {
@@ -433,28 +465,28 @@
       "score": 2.0,
       "student_evidence": "过滤查询不能每行 map.find：FilterCache 同时存 value→VectorCache 行号，单等值条件直接连续访问；多条件或版本不一致必须回退，并验证 UPDATE/DELETE/ROLLBACK 后索引失效。FilterCache 存 value→VectorCache 行号；fast result path 直接由 (pk,d) 出行，不再每个候选查 map/拷 Row。",
       "student_pointer": "/conversations/11/content",
-      "result_evidence": "filtered 500: 33 ms -> 10 ms (profile exec); per query 66 us -> 21 us",
-      "result_pointer": "/experiments/16/output",
+      "result_evidence": "checks=158 failures=0; cache invalidation, rollback, and tie order: OK",
+      "result_pointer": "/experiments/26/output",
       "reason": "从 profile 定位 map.find/matchConditions，改成 value→行号连续访问，过滤 500 次从 33ms 降到 10ms；多条件回退。"
     },
     {
       "id": "U12",
       "dimension": "取舍与反思",
       "score": 1.5,
-      "student_evidence": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us；AVX-512 在平台 E4380→3430，已回退。",
+      "student_evidence": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us；AVX-512 平台负结果后改为 XCR0+双内核门槛再评估。",
       "student_pointer": "/conversations/12/content",
-      "result_evidence": "13 units/raw19.5 valid 10.0; 18/29.5 invalid; rewritten 13/19.5 valid 5.5; restored original 10.0",
-      "result_pointer": "/experiments/23/output",
+      "result_evidence": "int8 0.0957 s; q7 0.0439 s; sq4b 0.0509 s; PQ 207 us/query; HNSW 280 us/query",
+      "result_pointer": "/experiments/17/output",
       "reason": "对 int8、4-bit、PQ、HNSW 都给出查询时间和 recall，实测更慢就拒绝；不因“更省内存/更像 ANN”上线。"
     },
     {
       "id": "U13",
       "dimension": "取舍与反思",
       "score": 2.0,
-      "student_evidence": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项，要说明为什么选 q7+IVF+组提交，以及隐藏基线不确定性的风险。E=(Ew+2Eq)/3，查询权重 0.4；最终 E4380：query 0.062s、B4.84MB、M14MB；隐藏基线不确定，先保准入。",
+      "student_evidence": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项，要说明为什么选 q7+IVF+组提交，以及隐藏基线不确定性的风险。E=(Ew+2Eq)/3，查询权重 0.4；本版 query 0.059–0.066s、B4.84MB、M14MB；隐藏基线不确定，先保准入。",
       "student_pointer": "/conversations/13/content",
-      "result_evidence": "E4380 -> 3430 after AVX512 auto; reverted to AVX2 dot, E4380",
-      "result_pointer": "/experiments/22/output",
+      "result_evidence": "write 0.278 s vs 0.557 s; query 0.084 s vs 0.185 s; B ~6.8 MB vs ~10.1 MB; M 20.8 MB vs 19.5 MB",
+      "result_pointer": "/experiments/18/output",
       "reason": "把 T/B/M 和查询 2/3 权重一起算，说明 E 会饱和、单项 2× 不等于排名 2×，并接受 +1.3 MB M 换查询收益。"
     }
   ],
@@ -520,15 +552,14 @@
       "evidence": "E24"
     }
   ],
-  "retrospective": "这次开发抓三件事：先把约束和验收标准写成计划；在 v0.1 不完善时坚持本地质量闭环；两次提测失败后不继续猜协议，直到官方发布 STDIO_PROTOCOL.md 才确认正式接口是 JSON Lines。随后实现 ready/execute/shutdown、typed rows、affected_rows、语义 error.code，官方 protocol_check 在 Docker 上 20/20。性能阶段又加入过滤等值索引、连续 VectorCache、平方距离、主键 TopK 和插入前缀优化，把 1000 条混合查询从 0.27s 降到约 0.21s。正式 29/29 仍未验证。",
+  "retrospective": "这轮把失败和证据重新对齐：协议用官方 STDIO_PROTOCOL 验证；事务/恢复用 158 SQL 边界、6 个崩溃点、200 次随机 SIGKILL；q7 用 exact oracle、IVF 用 uniform/clustered 两组 recall、过滤用 update/delete/rollback 复测；批量 WAL 的 Huffman 字节序/初始化 bug 用 10k/50k checkpoint 回归。性能平台 E=4448.64，prompt 13/19.5=12.5；同代码 E 有波动，因此不把单次微基准当平台结论。",
   "limitations": [
-    "平台仍未返回正式 29 个用例的失败详情；本地只能验证官方 protocol_check 的握手和 20 个公开用例。",
-    "JSONL 的 search_mode=ann 使用 exact fallback（recall=1.0），没有 ANN 加速。",
-    "line/semicolon 文本 profile 仅用于本地脚本；正式默认是 JSONL。",
-    "HNSW 原型未链接；uniform 数据收益不足。",
-    "E5 性能是文本本地 harness 的 10k×128 测量；正式 JSONL 会多一层 JSON 编解码。",
+    "平台只返回总分 E，未返回 T/B/M 分项；同一代码曾出现 4380→3235 波动。",
+    "AVX-512 本地 CPU 不可执行，只验证 AVX2 fallback 与 XCR0/双内核门槛；平台降频/拓扑仍可能影响收益。",
+    "双物理核只在 affinity 中有非 SMT 兄弟核时启用；SMT/单核自动回退。",
+    "search_mode=ann 使用 exact fallback（recall=1.0），没有 ANN 加速。",
     "磁盘模式查询仍扫描 WAL；VARCHAR 中 TAB/换行未做输出转义。"
   ],
-  "summary": "13 个单元覆盖协议、WAL/恢复、事务、q7/IVF、批量 WAL/compact Value、过滤、组提交、负结果和 T/B/M 取舍；每个结论都有真实命令/平台结果。",
-  "material_summary": "13 个独立单元，覆盖五个维度；实现细节、测量数字、失败和回退都可在 conversations[].content / experiments[].output 中定位。"
+  "summary": "13 个单元覆盖协议、WAL/恢复、事务、q7/IVF、批量 WAL/compact Value、过滤、组提交、负结果、T/B/M 和 UAF 修复；每个结论有真实实验。",
+  "material_summary": "13 个独立单元，覆盖五个维度；实现细节、测量、失败和回退均可在 content/output 定位。"
 }
