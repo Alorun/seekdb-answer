@@ -42,7 +42,7 @@
    "id": "C01",
    "role": "student",
    "prompt_ref": "P1",
-   "content": "我先把 80 分拆成三条线：MySQL case 任一失败总分为 0，所以准入优先；性能和 prompt 各占 40 分但都要同一个 commit；每天两次正式提交，没有通过版本总分为 0。先冻结代码和材料，再谈优化。",
+   "content": "我先把 80 分拆开看：MySQL case 只要挂一个，总分直接 0，所以准入排第一；性能 40、prompt 40，但必须同一个 commit；一天两次正式提交，没通过的版本也是 0。先把代码和材料冻结，再谈优化，不然改着改着连提交基线都没了。",
    "note": "目标拆解与提交门禁"
   },
   {
@@ -63,7 +63,7 @@
    "id": "C04",
    "role": "student",
    "prompt_ref": "P3",
-   "content": "先在同一台机器、同一 10k×128 负载上对 S3 和当前版本做 A/B，再换聚簇数据复测。这是多项改动的组合，不能把收益全归给 q7 或过滤中的某一个；我要看写入、查询、峰值内存三组一起变。",
+   "content": "我不看单次绝对值。先在同一台机器、同一 10k×128 负载上把 S3 和当前版本来回跑，再换聚簇数据复测；这是好几项改动叠在一起，不能把收益全算给 q7 或过滤。写入、查询、峰值内存三组一起看，哪组没动就说明那块白改了。",
    "note": "组合版本 A/B"
   },
   {
@@ -84,7 +84,7 @@
    "id": "C07",
    "role": "student",
    "prompt_ref": "P1",
-   "content": "q7 量化距离只能做下界，不能直接输出；用 |‖v-q‖−s‖code(v)-code(q)‖| ≤ err(v)+err(q) 筛出候选，最终仍用 float32/double 复核。过滤后的集合也要逐条对 oracle，不能只看无过滤。",
+   "content": "q7 量化距离只能当下界，不能直接拿来输出，这个不能省。用 |‖v-q‖−s‖code(v)-code(q)‖| ≤ err(v)+err(q) 把候选筛出来，最后还是要 float32/double 复核。过滤后的集合也得逐条对 oracle，不能只看无过滤那组好看。",
    "note": "q7 下界与精确复核"
   },
   {
@@ -119,7 +119,7 @@
    "id": "C12",
    "role": "student",
    "prompt_ref": "P1",
-   "content": "普通单元测试通过不等于强杀安全：已确认提交不能丢、未提交不能半可见、恢复中再杀要能重复恢复。我要用 6 个 crash point 加随机 SIGKILL，在内存和磁盘两种模式下各跑一遍。",
+   "content": "普通单测过了不等于强杀安全。已确认提交不能丢、未提交不能半可见、恢复中再杀要能重复恢复；我用 6 个 crash point 加随机 SIGKILL，内存和磁盘两种模式各跑一遍。这个不自己跑，我不敢写“持久化通过”。",
    "note": "崩溃恢复反证"
   },
   {
@@ -175,7 +175,7 @@
    "id": "C20",
    "role": "student",
    "prompt_ref": "P3",
-   "content": "E=(Ew+2Eq)/3，查询权重是写入的 2 倍；多用一个物理核的查询收益经过 f(R)=R/(1+R) 会饱和，不是 2×，在 2 vCPU 与驱动共享时更不一定值。我要在 uniform 和 clustered 上对比 1T/2T 的 1000 查询墙钟，再决定默认是否开第二核。",
+   "content": "E=(Ew+2Eq)/3，查询权重是写入的两倍；多用一个物理核的收益过 f(R)=R/(1+R) 会饱和，不是 2×，在 2 vCPU 跟驱动抢核时更不一定值。我在 uniform 和 clustered 上各跑 1T/2T 的 1000 查询墙钟，再决定默认开不开第二核，不凭感觉。",
    "note": "指标饱和与双核取舍"
   },
   {
@@ -217,7 +217,7 @@
    "id": "C26",
    "role": "student",
    "prompt_ref": "P3",
-   "content": "uniform 的图索引不划算，但聚簇数据可以把已有 q7 code 直接当 IVF 候选层，不再复制一份 code 矩阵；先在 screen 为 clustered 的表上建，首次用 8 条样本对 exact IVF 自检，recall 低于 0.98 就回退精确 IVF。exact 模式完全不动，不能用近似结果污染 exact。",
+   "content": "uniform 上图索引我试过，不划算，但聚簇数据可以把已有 q7 code 直接当 IVF 候选层，不用再复制一份 code 矩阵。先在 screen 判成 clustered 的表上建，第一次用 8 条样本对 exact IVF 自检，recall 低于 0.98 就退回精确 IVF；exact 模式一点都不能动，不能拿近似结果污染 exact。",
    "note": "q7 IVF 候选层与自检回退"
   }
  ],
@@ -479,7 +479,7 @@
    "dimension": "问题理解与自主拆解",
    "score": 0.5,
    "problem": "把 80 分拆成准入、性能、prompt 三条线，并确定没有通过版本总分为 0 的提交门禁。",
-   "student_evidence": "我先把 80 分拆成三条线：MySQL case 任一失败总分为 0，所以准入优先；性能和 prompt 各占 40 分但都要同一个 commit；每天两次正式提交，没有通过版本总分为 0。先冻结代码和材料，再谈优化。",
+   "student_evidence": "我先把 80 分拆开看：MySQL case 只要挂一个，总分直接 0，所以准入排第一；性能 40、prompt 40，但必须同一个 commit；一天两次正式提交，没通过的版本也是 0。先把代码和材料冻结，再谈优化，不然改着改着连提交基线都没了。",
    "student_pointer": "/conversations/0/content",
    "reason": "只有规划，没有执行结果，按 0.5 计；它是唯一一条纯规划单元，不引用实验。",
    "independence": "与 U04/U11 的版本 A/B、协议执行不同：本单元只描述约束和取舍边界。",
@@ -514,7 +514,7 @@
    "dimension": "问题理解与自主拆解",
    "score": 2.0,
    "problem": "S3→当前版本在 uniform 和 clustered 上的端到端收益，以及能否把收益归因于单一改动。",
-   "student_evidence": "先在同一台机器、同一 10k×128 负载上对 S3 和当前版本做 A/B，再换聚簇数据复测。这是多项改动的组合，不能把收益全归给 q7 或过滤中的某一个；我要看写入、查询、峰值内存三组一起变。",
+   "student_evidence": "我不看单次绝对值。先在同一台机器、同一 10k×128 负载上把 S3 和当前版本来回跑，再换聚簇数据复测；这是好几项改动叠在一起，不能把收益全算给 q7 或过滤。写入、查询、峰值内存三组一起看，哪组没动就说明那块白改了。",
    "student_pointer": "/conversations/3/content",
    "reason": "uniform：write 0.5268→0.2442 s、query 0.1761→0.0490 s；clustered：write 0.5689→0.2649 s、query 0.1914→0.1154 s。两个场景都复测；这是多项改动的组合，不能把 3.6x 查询收益全归给 q7。",
    "independence": "与 U20 的指标饱和问题不同：本单元只做组合版本 A/B 与归因边界。",
@@ -556,7 +556,7 @@
    "dimension": "技术理解与迁移",
    "score": 2.0,
    "problem": "q7 量化距离为什么不能直接输出，三角形下界怎样保证 exact 不漏，迁移到过滤查询还成立吗。",
-   "student_evidence": "q7 量化距离只能做下界，不能直接输出；用 |‖v-q‖−s‖code(v)-code(q)‖| ≤ err(v)+err(q) 筛出候选，最终仍用 float32/double 复核。过滤后的集合也要逐条对 oracle，不能只看无过滤。",
+   "student_evidence": "q7 量化距离只能当下界，不能直接拿来输出，这个不能省。用 |‖v-q‖−s‖code(v)-code(q)‖| ≤ err(v)+err(q) 把候选筛出来，最后还是要 float32/double 复核。过滤后的集合也得逐条对 oracle，不能只看无过滤那组好看。",
    "student_pointer": "/conversations/6/content",
    "reason": "q7 只做下界；190 项差分覆盖过滤/无过滤、UPDATE/DELETE、ROLLBACK、restart，exact 与 NumPy oracle 一致，ann recall 1.0。下界只用于筛，最终仍用 exact 复核。",
    "independence": "只讲 q7 精确性；过滤性能在 U16，IVF 在 U08。",
@@ -624,7 +624,7 @@
    "dimension": "独立验证与质疑",
    "score": 2.0,
    "problem": "普通单元测试通过能否证明强杀恢复；怎样用 6 个崩溃点 + 随机 SIGKILL + 恢复中再杀反证。",
-   "student_evidence": "普通单元测试通过不等于强杀安全：已确认提交不能丢、未提交不能半可见、恢复中再杀要能重复恢复。我要用 6 个 crash point 加随机 SIGKILL，在内存和磁盘两种模式下各跑一遍。",
+   "student_evidence": "普通单测过了不等于强杀安全。已确认提交不能丢、未提交不能半可见、恢复中再杀要能重复恢复；我用 6 个 crash point 加随机 SIGKILL，内存和磁盘两种模式各跑一遍。这个不自己跑，我不敢写“持久化通过”。",
    "student_pointer": "/conversations/11/content",
    "reason": "240 轮（内存/磁盘各 120）覆盖 6 个确定性崩溃点 + 80 次随机 SIGKILL，failures=0；恢复中再杀也能重复恢复。",
    "independence": "只讲崩溃恢复验证；与语句原子性、WAL 编码不同链。",
@@ -722,7 +722,7 @@
    "dimension": "取舍与反思",
    "score": 2.0,
    "problem": "E 权重固定时，多用一个物理核的查询收益为什么不是线性的，在 2 vCPU 共享驱动时是否值得。",
-   "student_evidence": "E=(Ew+2Eq)/3，查询权重是写入的 2 倍；多用一个物理核的查询收益经过 f(R)=R/(1+R) 会饱和，不是 2×，在 2 vCPU 与驱动共享时更不一定值。我要在 uniform 和 clustered 上对比 1T/2T 的 1000 查询墙钟，再决定默认是否开第二核。",
+   "student_evidence": "E=(Ew+2Eq)/3，查询权重是写入的两倍；多用一个物理核的收益过 f(R)=R/(1+R) 会饱和，不是 2×，在 2 vCPU 跟驱动抢核时更不一定值。我在 uniform 和 clustered 上各跑 1T/2T 的 1000 查询墙钟，再决定默认开不开第二核，不凭感觉。",
    "student_pointer": "/conversations/19/content",
    "reason": "E=0.2f(Rw)+0.4f(Rq)+0.2f(Rb)+0.2f(Rm)，f 饱和；uniform 1T→2T 只从 59.8ms 到 53.4ms（约 1.12x），clustered 仅约 1.07x。第二核的收益远小于 2x，还要与驱动共享 2 vCPU。",
    "independence": "只讲指标饱和与双核取舍；与 U04 的版本归因不同问题。",
@@ -800,7 +800,7 @@
    "dimension": "技术理解与迁移",
    "score": 2.0,
    "problem": "聚簇数据能否复用 q7 code 做 IVF 候选层，既快又不牺牲 ann recall；exact 模式如何不受影响。",
-   "student_evidence": "uniform 的图索引不划算，但聚簇数据可以把已有 q7 code 直接当 IVF 候选层，不再复制一份 code 矩阵；先在 screen 为 clustered 的表上建，首次用 8 条样本对 exact IVF 自检，recall 低于 0.98 就回退精确 IVF。exact 模式完全不动，不能用近似结果污染 exact。",
+   "student_evidence": "uniform 上图索引我试过，不划算，但聚簇数据可以把已有 q7 code 直接当 IVF 候选层，不用再复制一份 code 矩阵。先在 screen 判成 clustered 的表上建，第一次用 8 条样本对 exact IVF 自检，recall 低于 0.98 就退回精确 IVF；exact 模式一点都不能动，不能拿近似结果污染 exact。",
    "student_pointer": "/conversations/25/content",
    "reason": "聚簇表只在 screen 判定 clustered 后建 q7 IVF；server exec 精确 IVF 40.5 → 19.2 µs，Docker q1000 159.3→116.8 ms（旧 HEAD 的 clustered ann 是 203.3 ms，约 1.74x），initial/UPDATE+DELETE/restart recall 均 1.0；首次 8 条样本自检，recall<0.98 回退 exact IVF，exact 模式完全不动。",
    "independence": "只讲 q7 IVF 候选层与自检回退；与 U08 的 IVF screen、U21 的 ANN 方案基准不同链。",
