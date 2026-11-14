@@ -296,6 +296,7 @@ class World:
                     if c == "embedding" and len(v) != VEC_DIM:
                         return Outcome(False, 1366, "vector dimension mismatch")
                 pks = [pk for pk, row in st.rows[table].items() if row_matches(row, o.get("where", []))]
+                changed = 0
                 for pk in pks:
                     row = st.rows[table][pk]
                     vals = [row[0], row[1], row[2], row[3]]
@@ -306,8 +307,13 @@ class World:
                             vals[idx] = tuple(int(x) for x in v)
                         else:
                             vals[idx] = v
-                    st.rows[table][pk] = (vals[0], vals[1], vals[2], vals[3])
-                return Outcome(True, 0, affected=len(pks))
+                    new_row = (vals[0], vals[1], vals[2], vals[3])
+                    # MySQL's default affected_rows counts changed rows; a
+                    # no-op UPDATE leaves the row untouched and reports 0.
+                    if new_row != row:
+                        st.rows[table][pk] = new_row
+                        changed += 1
+                return Outcome(True, 0, affected=changed)
 
             # delete
             pks = [pk for pk, row in st.rows[table].items() if row_matches(row, o.get("where", []))]

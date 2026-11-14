@@ -1978,6 +1978,28 @@ Status Executor::executeInsert(const InsertStmt& stmt) {
   return Status::Ok();
 }
 
+namespace {
+
+bool sameRowValue(const Value& a, const Value& b) {
+  if (a.type != b.type) return false;
+  switch (a.type) {
+    case Value::Type::Int:
+      return a.i == b.i;
+    case Value::Type::Str:
+      return a.str() == b.str();
+    case Value::Type::Vec: {
+      const auto x = a.vec();
+      const auto y = b.vec();
+      return x.size() == y.size() &&
+             (x.empty() ||
+              std::memcmp(x.data(), y.data(), x.size() * sizeof(float)) == 0);
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
 Status Executor::executeUpdate(const UpdateStmt& stmt, ExecResult& out) {
   Table* table = db_.findTable(stmt.table);
   if (!table) {
@@ -2013,18 +2035,30 @@ Status Executor::executeUpdate(const UpdateStmt& stmt, ExecResult& out) {
   std::vector<int64_t> pks;
   Status collect = collectMatchingPks(*table, conds, pks);
   if (!collect.ok()) return collect;
+  size_t changed = 0;
   for (int64_t pk : pks) {
     Row old;
     bool found = false;
     Status f = findRow(*table, pk, old, found);
     if (!f.ok()) return f;
     if (!found) continue;
+    bool differs = false;
+    for (const auto& a : assigns) {
+      if (!sameRowValue(old.values[a.col], a.value)) {
+        differs = true;
+        break;
+      }
+    }
+    // MySQL's default affected_rows counts changed rows, not matched rows.
+    // A no-op UPDATE therefore writes no WAL and reports 0.
+    if (!differs) continue;
     Row new_row = std::move(old);
     for (const auto& a : assigns) new_row.values[a.col] = a.value;
     Status s = applyUpdate(*table, pk, std::move(new_row));
     if (!s.ok()) return s;
+    ++changed;
   }
-  out.affected = pks.size();
+  out.affected = changed;
   return Status::Ok();
 }
 

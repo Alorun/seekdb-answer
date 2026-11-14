@@ -268,7 +268,8 @@ class Lexer {
 
 class Parser {
  public:
-  explicit Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
+  Parser(std::vector<Token> tokens, std::string_view input)
+      : tokens_(std::move(tokens)), input_(input) {}
 
   Statement parse() {
     skipSemicolons();
@@ -694,6 +695,7 @@ class Parser {
         item.text = "*";
       } else if (peek().kind == Token::Kind::Ident &&
                  iequals(peek().text, "L2_DISTANCE")) {
+        const size_t expr_start = peek().start;
         next();
         expectPunct('(');
         item.kind = SelectItem::Kind::Distance;
@@ -706,7 +708,11 @@ class Parser {
         }
         item.vector_text = next().text;
         expectPunct(')');
-        item.text = "L2_DISTANCE(" + item.column + ", '" + item.vector_text + "')";
+        // MySQL uses the expression text exactly as written as the column
+        // name when there is no alias.  We have the lexer token offsets, so
+        // keep the original spacing/case/quotes instead of rebuilding it.
+        item.text = std::string(
+            input_.substr(expr_start, last_end_ - expr_start));
       } else {
         item.kind = SelectItem::Kind::Column;
         item.column = expectIdent();
@@ -792,6 +798,7 @@ class Parser {
   }
 
   std::vector<Token> tokens_;
+  std::string_view input_;
   size_t pos_ = 0;
   size_t last_end_ = 0;
   size_t consumed_ = 0;
@@ -810,7 +817,7 @@ ParseResult parseStatement(const std::string& input) {
     break;
   }
   if (only_empty) return ParseResult::MakeEmpty();
-  Parser parser(std::move(tokens));
+  Parser parser(std::move(tokens), input);
   try {
     Statement stmt = parser.parse();
     return ParseResult::MakeOk(std::move(stmt), parser.consumed());
