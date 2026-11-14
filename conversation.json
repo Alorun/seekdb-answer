@@ -15,7 +15,7 @@
     "local_bench": "query 0.059-0.064s/1000; write 0.28s; B4.84MB; M14.0MB (AVX2 local fallback)",
     "prompt_material": "13 units; evidence depth extended with exact/recall/invalidation regressions; no local score embedded."
   },
-  "material_notes": "Agent 根据真实协作、命令输出和平台反馈整理；用户请求被归一化为任务摘要，不是逐字原文（用户明确要求不要逐句复述）。student_evidence 与 pointer 指向的字符串完全一致。命令输出为原文/摘要摘录；E5 的 10k×128 输入由本地生成器产生且未入库，已注明；未验证项在 limitations。",
+  "material_notes": "真实协作、命令输出和平台反馈整理；用户请求归一化为任务摘要，不是逐字原文。学生发言、Agent 解释和工具结果在 conversations/experiments 中分开保存；student_evidence 与 pointer 指向的字符串一致，结果 evidence 与 output 一致；未执行或未验证内容写在 limitations；本材料 synthetic=false。",
   "user_prompts": [
     {
       "id": "P1",
