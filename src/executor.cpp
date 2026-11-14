@@ -1,5 +1,7 @@
 #include "executor.h"
 
+#include "ann/ann_q7.h"
+
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -1396,6 +1398,47 @@ FilterCodes* ensureFilterCodes(Table& table, int col, int vec_col) {
   return &table.filter_codes[col];
 }
 
+// ann-mode q7 IVF index.  It reuses the existing code matrix (no second copy)
+// and is rebuilt lazily whenever row_version changes.  The self-check in
+// executeSelect disables it if recall on a sample of the current rows falls
+// below 0.98, in which case the exact radius-bounded IVF path is used.
+annq::Q7AnnIndex* ensureAnnQ7(Table& table, int vec_col) {
+  if (table.ann_q7_version != table.row_version) {
+    table.ann_q7.reset();
+    table.ann_q7_version = table.row_version;
+    table.ann_q7_checked = false;
+    table.ann_q7_disabled = false;
+  }
+  if (table.ann_q7_disabled) return nullptr;
+  annq::Q7AnnIndex* idx = static_cast<annq::Q7AnnIndex*>(table.ann_q7.get());
+  if (idx != nullptr) return idx;  // already built for this row_version
+  Quant8Cache* q8 = ensureQuant8(table, vec_col);
+  ensureVectorCache(table, vec_col);
+  const VectorCache& vc = table.vector_cache;
+  if (q8 == nullptr || !q8->valid || !vc.valid || vc.dim != q8->dim ||
+      vc.pks.empty() || q8->codes.size() != vc.pks.size() * vc.dim ||
+      q8->pv.size() != vc.pks.size()) {
+    return nullptr;
+  }
+  idx = new annq::Q7AnnIndex();
+  table.ann_q7 = std::shared_ptr<void>(
+      idx, [](void* p) { delete static_cast<annq::Q7AnnIndex*>(p); });
+  annq::Rows rows{q8->codes.data(), q8->pv.data(), vc.vecp.data(),
+                  vc.pks.data(), vc.pks.size(), vc.dim, q8->scale};
+  annq::Options opt;
+  if (const char* v = std::getenv("MVDB_ANN_POOL")) {
+    opt.pool = static_cast<size_t>(std::strtoul(v, nullptr, 10));
+  }
+  if (const char* v = std::getenv("MVDB_ANN_NPROBE")) {
+    opt.nprobe = static_cast<size_t>(std::strtoul(v, nullptr, 10));
+  }
+  if (const char* v = std::getenv("MVDB_ANN_NLIST")) {
+    opt.nlist = static_cast<size_t>(std::strtoul(v, nullptr, 10));
+  }
+  idx->build(rows, opt);
+  return idx;
+}
+
 }  // namespace
 
 Status convertValue(const Column& col, const Value& input, Value& out) {
@@ -1552,6 +1595,8 @@ Status Executor::prepare() {
     IvfCache* ivf = ensureIvf(*t, vi);
     if (ivf == nullptr || !ivf->clustered) {
       ensureQuant8(*t, vi);
+    } else {
+      ensureAnnQ7(*t, vi);
     }
   }
   return Status::Ok();
@@ -2140,7 +2185,10 @@ Status Executor::executeCreateIndex(const CreateIndexStmt& stmt) {
       // Index preparation is outside the timed query phase.  Building the
       // clustered IVF here avoids paying it on the first measured query.
       ensureVectorCache(*t, idx);
-      ensureIvf(*t, idx);
+      IvfCache* ivf = ensureIvf(*t, idx);
+      if (ivf != nullptr && ivf->clustered) {
+        ensureAnnQ7(*t, idx);
+      }
     }
   }
   return created;
@@ -2646,16 +2694,93 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
             IvfCache* ivf =
                 n >= 2000 ? ensureIvf(*table, orders[0].col) : nullptr;
             if (ivf != nullptr && ivf->clustered) {
-              std::vector<RawHit> hits;
-              // ANN recall on clustered data was measured below the required
-              // 0.95 at nprobe=8 (0.94-0.945).  Until a validated approximate
-              // index is enabled, ann mode uses the exact radius-bounded IVF
-              // walk here, so recall is 1.0 and narrowing cannot drop a true
-              // top-k member.
-              (void)ann_mode;
-              scanIvfExact(*ivf, cache, q, k, hits);
-              for (const RawHit& h : hits) {
-                consider_hit(h.pk, *cache.rows[h.vi], h.d);
+              bool handled = false;
+              if (ann_mode && k > 0 && k <= 24) {
+                annq::Q7AnnIndex* idx = ensureAnnQ7(*table, orders[0].col);
+                if (idx != nullptr && idx->clustered()) {
+                  annq::Rows arows{q8->codes.data(), q8->pv.data(),
+                                   cache.vecp.data(), cache.pks.data(), n,
+                                   cache.dim, q8->scale};
+                  static thread_local annq::Scratch ascratch;
+                  ascratch.prepare(n, idx->nlist(), idx->pool());
+                  if (!table->ann_q7_checked) {
+                    table->ann_q7_checked = true;
+                    const size_t kc =
+                        std::min<size_t>(std::max<size_t>(k, 10), 24);
+                    size_t overlap = 0, total = 0;
+                    std::vector<float> qv(cache.dim);
+                    bool check_ok = true;
+                    for (int si = 1; si <= 8 && check_ok; ++si) {
+                      const size_t qi = (static_cast<size_t>(si) * n) / 9;
+                      std::copy(cache.vecp[qi], cache.vecp[qi] + cache.dim,
+                                qv.begin());
+                      Q7Query qq2;
+                      if (!quantizeQuery7(*q8, qv, qq2)) {
+                        check_ok = false;
+                        break;
+                      }
+                      std::vector<RawHit> eh;
+                      scanIvfExact(*ivf, cache, qv.data(), kc, eh);
+                      std::vector<annq::Hit> ah;
+                      idx->search(arows, qv.data(), qq2.codes.data(), qq2.cq,
+                                  kc, ah, ascratch);
+                      std::unordered_set<int64_t> want;
+                      for (const RawHit& h : eh) want.insert(h.pk);
+                      size_t hit = 0;
+                      for (const annq::Hit& h : ah) {
+                        if (want.count(h.pk)) ++hit;
+                      }
+                      overlap += hit;
+                      total += std::min(kc, eh.size());
+                    }
+                    if (!check_ok || total == 0 ||
+                        static_cast<double>(overlap) /
+                                static_cast<double>(total) <
+                            0.98) {
+                      table->ann_q7_disabled = true;
+                      table->ann_q7.reset();
+                      idx = nullptr;
+                    }
+                  }
+                  if (idx != nullptr) {
+                    std::vector<annq::Hit> ah;
+                    idx->search(arows, q, qq.codes.data(), qq.cq, k, ah,
+                                ascratch);
+                    if (ah.size() == k) {
+                      if (simple_proj) {
+                        fast_hits.clear();
+                        fast_hits.reserve(ah.size());
+                        for (const annq::Hit& h : ah) {
+                          fast_hits.push_back(RawHit{h.d, h.pk, h.vi});
+                        }
+                        have_fast_hits = true;
+                      } else {
+                        for (const annq::Hit& h : ah) {
+                          consider_hit(h.pk, *cache.rows[h.vi], h.d);
+                        }
+                      }
+                      handled = true;
+                    }
+                  }
+                }
+              }
+              if (!handled) {
+                // Exact radius-bounded IVF: always recall 1.0.  Also used
+                // when the ann self-check rejects the approximate index.
+                std::vector<RawHit> hits;
+                scanIvfExact(*ivf, cache, q, k, hits);
+                if (simple_proj) {
+                  fast_hits.clear();
+                  fast_hits.reserve(hits.size());
+                  for (const RawHit& h : hits) {
+                    fast_hits.push_back(h);
+                  }
+                  have_fast_hits = true;
+                } else {
+                  for (const RawHit& h : hits) {
+                    consider_hit(h.pk, *cache.rows[h.vi], h.d);
+                  }
+                }
               }
               ivf_used = true;
             } else {

@@ -216,6 +216,12 @@ struct Table {
   std::unordered_map<int, IvfCache> ivf_caches;
   std::unordered_map<int, QuantCache> quant_caches;
   std::unordered_map<int, Quant8Cache> quant8_caches;
+  // ann-mode candidate index over the q7 codes.  Shared ownership so the
+  // concrete type stays in executor.cpp; rebuilt whenever row_version changes.
+  std::shared_ptr<void> ann_q7;
+  uint64_t ann_q7_version = 0;
+  bool ann_q7_checked = false;
+  bool ann_q7_disabled = false;
 };
 
 // Expand one WAL row record (Insert/Update) or every row of an InsertBatch

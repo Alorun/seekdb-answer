@@ -12,6 +12,7 @@ add_executable(minivectordb
   src/database.cpp
   src/executor.cpp
   src/jsonl.cpp
+  src/ann/ann_q7.cpp
 )
 
 target_compile_features(minivectordb PRIVATE cxx_std_20)

@@ -29,6 +29,7 @@
 | D16 | 2026-11-14 审计 | 聚簇数据 ann 模式平均 recall 可低于 0.95（审计 0.945；本地 10k 均值 0.995、单查询最低 0.8） | `scanIvfAnn` 固定 nprobe=8，忽略 `ivf->nprobe`，且无 recall 余量 | ann 模式在聚簇数据改走精确半径 IVF（`scanIvfExact`），recall=1.0；uniform 走 q7 精确 superset | 10k 聚簇 exact oracle 20/20 + ann recall 1.0；uniform/clustered run_recall 1.0 |
 | D17 | 2026-11-14 审计 | `'[1.2.3,0]'`、`'[1-2,0]'`、`'[1+2,0]'` 被静默接受为 `[1.2,0]` 等 | 快速十进制路径只返回 bool，调用方另用宽松字符扫描推进位置 | `parseSimpleDecimal` 返回精确 `next` 指针；非法字符留给外层逗号检查；要求小数点前至少一位数字 | malformed 全部 invalid_vector；20000 组随机字面量与 from_chars 双精度→float32 位级一致 |
 | D18 | 2026-11-14 审计 | `SET autocommit=0; INSERT; ROLLBACK` 后行仍可见 | SET autocommit 被当作 no-op | Executor 保存 `autocommit_`；autocommit=0 的首条 DML 开启并保持事务，ROLLBACK 回滚，SET autocommit=1 提交打开的事务，shutdown 回滚 | autocommit=0 的 rollback/commit/turn-on/shutdown 四组检查 |
+| D19 | 2026-11-14 | 聚簇数据 ann 模式之前直接走 `scanIvfExact`（精确 float 列表扫描），服务端约 40.5 µs/查询；ANN 原型同数据 8.4 µs 但未接入 | 只有 exact IVF，没有 q7 IVF 候选索引；担心 recall 与 exact 模式回归 | ann 模式接入 q7 IVF（nlist=64/nprobe=6/pool=24），首次使用用 8 条样本对 exact IVF 自检，recall<0.98 自动回退精确 IVF；exact 模式完全不动。10k 聚簇：server exec 40.5→19.2 µs，Docker q1000 159.3→116.8 ms，initial/UPDATE+DELETE/restart recall 均为 1.0 | `run_ann_clustered.py` 三阶段 recall、public 20、sql_edges、recall、crash、ASAN、Docker 20 |
 
 ## 2. Prompt 失败
 

@@ -95,10 +95,15 @@ distinct values, so the per-value copy turns the scan into a sequential stream
 while keeping the same provable superset.  The blocks are rebuilt when the
 table's row version changes (INSERT/UPDATE/DELETE/ROLLBACK).
 
-`ann` mode is currently exact for both shapes: clustered tables use the
-radius-bounded IVF lists (`scanIvfExact`), uniform tables use the same q7
-superset scan.  Recall@10 is therefore 1.0 in both groups, well above the 0.95
-requirement; no approximate graph index is shipped.
+`ann` mode has two data-gated paths.  Clustered tables use a q7 IVF candidate
+index (nlist 64, nprobe 6, pool 24) that reuses the existing code matrix and
+re-ranks its candidate pool with the exact float kernel; its first use runs an
+8-query self-check against the exact radius-bounded IVF and falls back to that
+exact walk if recall is below 0.98.  Uniform tables use the same q7 superset
+scan as exact mode (IVF on uniform data has recall ~= nprobe/nlist and is not
+used).  `MVDB_ANN_POOL`, `MVDB_ANN_NPROBE` and `MVDB_ANN_NLIST` tune the index
+for experiments; defaults are 24/6/64.  Returned distances are always exact
+float32 and ids are unique.
 
 When two physical cores are available, the scan is split in half and run on a
 persistent worker thread; each half computes its own superset and the exact
@@ -129,11 +134,11 @@ live rows, table definitions and index metadata (`--checkpoint-bytes N`).
 - No NULL, JOIN, aggregates, subqueries, ALTER TABLE, foreign keys, nested
   transactions or primary-key updates.
 - DDL inside an explicit transaction is rejected.
-- `ann` mode returns exact results (q7 superset for uniform, exact IVF for
-  clustered); there is no approximate graph/IVF index in the shipped image.
-  Measured HNSW/PQ prototypes were slower than q7 on uniform 10k x 128, and
-  IVF on uniform data has recall ~= nprobe/nlist, so no safe 3x win exists
-  there. Recall is 1.0.
+- `ann` mode is approximate on clustered data (q7 IVF, recall validated 1.0
+  on the clustered test set, 0.98 self-check fallback).  There is no graph
+  index: measured HNSW/PQ prototypes were slower than q7 on uniform
+  10k x 128, and IVF on uniform data has recall ~= nprobe/nlist, so no safe 3x
+  win exists there.  Uniform ann uses the exact q7 superset path.
 - There is no AVX-512 path: the platform A/B never proved it faster, and a
   bad ZMM/OS state previously invalidated a whole performance run.
 - Disk-mode queries scan the WAL; immutable segments are a later milestone.
