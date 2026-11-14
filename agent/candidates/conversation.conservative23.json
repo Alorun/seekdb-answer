@@ -784,6 +784,6 @@
     "未别名 L2_DISTANCE 的列名由 parser 重建，可能与 MySQL 原样保留的表达式文本不同。",
     "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。"
   ],
-  "summary": "23 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、大 INSERT 分块。",
-  "material_summary": "23 个单元，五个维度 4/6/5/4/4；每个单元有独立的学生问题与实验结果，结果全部来自本 commit 的本地命令。"
+  "summary": "23 个独立单元覆盖：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、AVX-512、大 INSERT 分块。",
+  "material_summary": "23 个单元，五个维度 4/6/6/4/3；每个单元有独立的学生问题与实验结果，结果全部来自本 commit 的本地命令。"
 }
