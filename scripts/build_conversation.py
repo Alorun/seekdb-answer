@@ -39,7 +39,7 @@ CONVERSATIONS = [
     ("C08", "P3", "IVF 不能对所有数据都建：512 行/16 中心 screen 看方差比，uniform ratio 高就跳过；clustered 才建，并用 dist(q,centroid)−radius 做精确剪枝。阈值是启发式，样本 512 可能误判，要用 debug 输出和 recall 两边核对。", "IVF 分布判定"),
     ("C09", "P1", "多行 INSERT 里一行主键冲突时，整条语句不能部分生效；但同一显式事务里之前成功的语句要保留，ROLLBACK 再撤销。我要用提交后的行集验证，不是看到 duplicate_key 就结束。", "语句原子性"),
     ("C10", "P3", "连续 autocommit DML 可以共用一次 fdatasync，但响应必须在 sync 后按序释放；顺序驱动仍应逐批 sync，不能靠等下一个请求凑批。我要用 strace 分别数顺序和突发两种输入的 fdatasync 次数。", "组提交与响应顺序"),
-    ("C11", "P4", "前两次提测失败说明不能靠 semicolon/ready-marker 猜协议；先找官方 STDIO_PROTOCOL，按 JSONL 的 ready/id/ok/columns/rows/error.code 对齐，跑 protocol_check 20 例，再进 Docker 和 restart。公开 20/20 不能写成正式准入。", "官方 JSONL 协议验证"),
+    ("C11", "P4", "前两次提测失败说明不能靠 semicolon/ready-marker 猜协议；先找官方 STDIO_PROTOCOL，按 JSONL 的 ready/id/ok/columns/rows/error.code 对齐，跑官方交互检查器的全部 20 例，再进 Docker 和 restart。公开 20/20 不能写成正式准入。", "官方 JSONL 协议验证"),
     ("C12", "P1", "普通单元测试通过不等于强杀安全：已确认提交不能丢、未提交不能半可见、恢复中再杀要能重复恢复。我要用 6 个 crash point 加随机 SIGKILL，在内存和磁盘两种模式下各跑一遍。", "崩溃恢复反证"),
     ("C13", "P4", "合法 SQL 不能把进程打崩：LIMIT 2^63−1 这种值只应该返回全部行或报参数错误，不能 std::length_error abort。我要先看旧版是否复现，再确认 reserve 被表行数封顶。", "巨大 LIMIT 崩溃"),
     ("C14", "P1", "float32 有限大值的平方和可能溢出成 inf；距离要用 double 累加，输出要有限。我要插入 3e19 和 2e19 两行，看排序和最后一位是否还对。", "float32 大值距离"),

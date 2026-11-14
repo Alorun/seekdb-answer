@@ -112,7 +112,7 @@
    "id": "C11",
    "role": "student",
    "prompt_ref": "P4",
-   "content": "前两次提测失败说明不能靠 semicolon/ready-marker 猜协议；先找官方 STDIO_PROTOCOL，按 JSONL 的 ready/id/ok/columns/rows/error.code 对齐，跑 protocol_check 20 例，再进 Docker 和 restart。公开 20/20 不能写成正式准入。",
+   "content": "前两次提测失败说明不能靠 semicolon/ready-marker 猜协议；先找官方 STDIO_PROTOCOL，按 JSONL 的 ready/id/ok/columns/rows/error.code 对齐，跑官方交互检查器的全部 20 例，再进 Docker 和 restart。公开 20/20 不能写成正式准入。",
    "note": "官方 JSONL 协议验证"
   },
   {
@@ -593,7 +593,7 @@
    "dimension": "独立验证与质疑",
    "score": 2.0,
    "problem": "前两次提测失败后，怎样证明文本协议/ready-marker 假设是错的，并以官方 JSONL 为准。",
-   "student_evidence": "前两次提测失败说明不能靠 semicolon/ready-marker 猜协议；先找官方 STDIO_PROTOCOL，按 JSONL 的 ready/id/ok/columns/rows/error.code 对齐，跑 protocol_check 20 例，再进 Docker 和 restart。公开 20/20 不能写成正式准入。",
+   "student_evidence": "前两次提测失败说明不能靠 semicolon/ready-marker 猜协议；先找官方 STDIO_PROTOCOL，按 JSONL 的 ready/id/ok/columns/rows/error.code 对齐，跑官方交互检查器的全部 20 例，再进 Docker 和 restart。公开 20/20 不能写成正式准入。",
    "student_pointer": "/conversations/10/content",
    "reason": "按官方 STDIO_PROTOCOL 对齐 JSONL，protocol_check 在 Docker 上 20/20，handshake/storage_restart/shutdown 都过；公开 20 例不是正式准入。",
    "independence": "只讲协议验证；与 DDL 边界、崩溃恢复不同链。",
