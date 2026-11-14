@@ -7,15 +7,15 @@ platform confirms all MySQL cases pass.
 
 | field | value |
 |---|---|
-| branch / commit | `2026-competition-round2` / `511b03a45c3d41a04fffeaedfa1b68671ef99997` |
-| code commit | `7c009b3e24a480f4de86ec76a6d6c5fdd06197c9` (material commit is its child) |
-| conversation | pending rebuild; see the final conversation.json digest, 26 units / raw 44.0 |
+| branch / commit | `2026-competition-round2` / `1a50d05baf22bd96e72be36024cefc24b989c3b1` |
+| code commit | `9c129bc4915251e690b2b037276bcfc637dbea3c` (material commit is its child) |
+| conversation | 54,902 bytes, sha256 `edd6ca79ad13de6adf303c03604ebe971e24bd40cf0584dbb56e8d294c547b26`, 26 units / raw 44.0 |
 | local gate | `release_gate.py --require-conversation` PASS (anonymous remote + Docker smoke) |
 | official public | protocol_check 20/20 (Docker tip image), public 20/20, marker 20/20 |
 | SQL edges | 158 checks x 2 modes, 0 failures |
 | recall | 5000x128 uniform/clustered exact oracle match; ann recall 1.0 |
 | crash/checkpoint | 240 crash iterations 0 failures; checkpoint 10k/50k/disk restart counts PASS |
-| local perf A/B | S3→current uniform write 0.5268→0.2442 s, query 0.1761→0.0490 s, RSS 14.4→12.4 MiB |
+| local perf A/B | S3→current uniform write 0.5268→0.2442 s, query 0.1761→0.0490 s, RSS 14.4→12.4 MiB; clustered ann server exec 40.5→19.2 µs, Docker q1000 159.3→116.8 ms, recall 1.0 |
 | formal admission/perf | pending platform run for this commit |
 
 
