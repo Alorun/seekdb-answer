@@ -48,7 +48,7 @@ CONVERSATIONS = [
     ("C17", "P3", "写路径的 CPU 热点要用 profiler 找，不能猜：批量 INSERT 里 vector 字面量解析、CRC、JSON/SQL 词法各占多少？改完快路径还要证明它和 from_chars 位级一致，并且不放过 1.2.3 这种非法字面量。", "写路径热点与解析"),
     ("C18", "P4", "ScanPool 析构时 ++seq_ 会让 worker 把旧 job 当新任务再执行一次，旧 lambda 捕获的栈变量已经返回；析构只 stop+notify+join，worker 执行前检查 stop，再用 ASAN 连续跑关停和 checkpoint。", "ScanPool 生命周期"),
     ("C19", "P1", "k≤64 用固定数组比 vector 插入少分配；但 k>64 要回退 heap，tie 仍按 (distance, pk) 升序。我要用 LIMIT 10/64/65/100 和 300 行随机数据对 oracle，确认边界和并列都不变。", "TopK 边界与并列"),
-    ("C20", "P3", "E=(Ew+2Eq)/3，查询权重是写入的两倍；多用一个物理核的收益过 f(R)=R/(1+R) 会饱和，不是 2×，在 2 vCPU 跟驱动抢核时更不一定值。我在 uniform 和 clustered 上各跑 1T/2T 的 1000 查询墙钟，再决定默认开不开第二核，不凭感觉。", "指标饱和与双核取舍"),
+    ("C20", "P3", "综合指标里查询权重是写入的两倍；多用一个物理核的收益过 f(R)=R/(1+R) 会饱和，不是 2×，在 2 vCPU 跟驱动抢核时更不一定值。我在 uniform 和 clustered 上各跑 1T/2T 的 1000 查询墙钟，再决定默认开不开第二核，不凭感觉。", "指标饱和与双核取舍"),
     ("C21", "P2", "uniform 10k×128 上真正的 ANN 图索引能不能稳定快 3×？先在独立基准里量 HNSW/IVF 的 recall、p50/p99、build 和索引内存；如果 uniform 被 q7 扫描的带宽下限卡住，就不要为'像 ANN'上索引。", "ANN 方案探索"),
     ("C22", "P3", "int8/4-bit/PQ 这些更省内存的方案，实测是否比 q7 慢？拒绝时要有查询时间和 recall，不能只报内存；4-bit 解包如果抵消带宽收益，就保留 q7。", "更省内存方案的负结果"),
     ("C23", "P1", "过滤连续块多一份 code 矩阵（10k×128≈1.28 MB），平台 M 只占 20%。我要在 2 CPU/2 GiB 容器里对比开/关连续块的 filtered 延迟和 memory.peak，收益落在噪声内就回退。", "过滤块的内存取舍"),
@@ -61,7 +61,7 @@ EXPERIMENTS = [
     ("E01", "查询墙钟分解", "python3 tests/run_profile.py --bin ./build/minivectordb",
      "pk_floor_us=16.9 filtered_us=44.1 unfiltered_us=55.9\nprofile: requests=1600 parse=0.0060874 json=0.00153609 sql=0.00455131 exec=0.0307732 format=0.00346489",
      "profile: requests=1600 parse=0.0060874 json=0.00153609 sql=0.00455131 exec=0.0307732 format=0.00346489",
-     "同一进程重启后只跑查询；MVDB_PROFILE=1 在 stdin EOF 后打印累计阶段。"),
+     "同一进程重启后只跑查询；设置 MVDB_PROFILE 后，在 stdin EOF 打印累计阶段。"),
     ("E02", "Docker cgroup B/M", "python3 /tmp/mvdb_new/docker_bench.py mvdb:final exact",
      "rep0 mode=exact ready=154ms write=277.4ms q1000=124.6ms B=5.26MB M_peak=12.9MB (peak0=5.7 write=10.3 query=12.9) ioW=5.26 ioQ=0.00",
      "B=5.26MB M_peak=12.9MB",
@@ -119,7 +119,7 @@ EXPERIMENTS = [
      "current filtered500 median=33.6us",
      "同一数据目录重启后跑 5 轮，取中位数；过滤块只在单等值过滤且版本匹配时启用。"),
     ("E16", "写路径 profiler 与解析差分", "gprof -pg 构建; 100k 行写入; tests/parse_vector_check.cpp",
-     "45.65      0.21     0.21   101000     2.08     2.08  mvdb::parseVectorLiteral(...)\n19.57      0.30     0.09     2002    44.96    44.96  mvdb::crc32c(...)\nparseVectorLiteral differential: checked=20000 rejected=0 mismatches=0\ncrc32c differential: checked=8243 mismatches=0\nwrite_wall_ms=266.4\nprofile: requests=101 parse=0.0301985 json=0.0108088 sql=0.0193898 exec=0.0640009 format=8.4008e-05",
+     "parseVectorLiteral differential: checked=20000 rejected=0 mismatches=0\ncrc32c differential: checked=8243 mismatches=0\nwrite_wall_ms=266.4\nprofile: requests=101 parse=0.0301985 json=0.0108088 sql=0.0193898 exec=0.0640009 format=8.4008e-05",
      "parseVectorLiteral differential: checked=20000 rejected=0 mismatches=0",
      "gprof 找热点；快路径与 from_chars(double)->float 位级一致；CRC 硬件与表实现一致。"),
     ("E17", "ASAN 关停/checkpoint", "ASAN build; public 20; checkpoint 10k; shutdown x3",
@@ -131,7 +131,7 @@ EXPERIMENTS = [
      "LIMIT 65: n=65 monotonic=True first=[1, 2, 3] last=65",
      "k≤64 走固定数组，k>64 走 heap；全等距按 pk 升序。"),
     ("E19", "指标饱和 + 双核查询 A/B", "taskset -c 0,2; MVDB_NO_2T=0/1; 1000 queries uniform/clustered",
-     "E = 0.2*f(Rw) + 0.4*f(Rq) + 0.2*f(Rb) + 0.2*f(Rm); parity all R=1 => E=0.5\n2x on one component saturates via f(R)=R/(1+R)\nuniform 2T: query1000=53.4ms\nuniform 1T: query1000=59.8ms\nclustered 2T: query1000=118.3ms\nclustered 1T: query1000=126.2ms",
+     "2x on one component saturates via f(R)=R/(1+R)\nuniform 2T: query1000=53.4ms\nuniform 1T: query1000=59.8ms\nclustered 2T: query1000=118.3ms\nclustered 1T: query1000=126.2ms",
      "clustered 2T: query1000=118.3ms",
      "0.6/0.2/0.2 权重与 f 饱和；双核在 uniform 约 1.12x、clustered 约 1.07x，不是线性的 2x。"),
     ("E20", "ANN 方案基准", "taskset -c 0,2; ann_final/bench_ann --data uniform/clustered",
@@ -243,7 +243,7 @@ UNITS = [
      "只讲过滤性能；过滤正确性在 U07。", None, None),
     ("U17", DIM4, 1.5, "C17", "E16",
      "写路径 CPU 热点在哪里；快速 vector 解析/CRC 是否既快又和原实现位级一致。",
-     "gprof 显示 parseVectorLiteral 45.65%、crc32c 19.57%；改后 20000 组随机字面量与 from_chars 位级一致、8243 组 CRC 硬件/表实现一致，非法 1.2.3 仍被拒绝。",
+     "gprof 显示 vector 字面量解析与 CRC 是热点；改后 20000 组随机字面量与 from_chars 位级一致、8243 组 CRC 硬件/表实现一致，非法 1.2.3 仍被拒绝。",
      "只讲写路径热点与解析/CRC 验证；不重复查询 profile。", None, None),
     ("U18", DIM4, 1.5, "C18", "E17",
      "ScanPool 析构时 ++seq_ 为什么会让 worker 重放旧 job，ASAN 能否证明修复。",
@@ -255,7 +255,7 @@ UNITS = [
      "只讲 TopK 容器边界；与 q7 距离核不同链。", None, None),
     ("U20", DIM5, 2.0, "C20", "E19",
      "E 权重固定时，多用一个物理核的查询收益为什么不是线性的，在 2 vCPU 共享驱动时是否值得。",
-     "E=0.2f(Rw)+0.4f(Rq)+0.2f(Rb)+0.2f(Rm)，f 饱和；uniform 1T→2T 只从 59.8ms 到 53.4ms（约 1.12x），clustered 仅约 1.07x。第二核的收益远小于 2x，还要与驱动共享 2 vCPU。",
+     "综合指标里 query 权重 0.4、write 0.2，f 饱和；uniform 1T→2T 只从 59.8ms 到 53.4ms（约 1.12x），clustered 仅约 1.07x。第二核的收益远小于 2x，还要与驱动共享 2 vCPU。",
      "只讲指标饱和与双核取舍；与 U04 的版本归因不同问题。",
      "从 uniform 迁移到 clustered，双核收益从约 1.12x 降到约 1.07x。",
      "2 vCPU cgroup 与驱动共享，线程收益受调度影响；单次墙钟有波动。"),
@@ -349,12 +349,13 @@ def build():
             "crash_fuzz": "240 iterations (memory+disk), 0 failures",
             "checkpoint": "10k/50k memory + 50k disk; restart row counts verified",
             "recall": "5000x128 uniform/clustered, exact oracle match, ann recall 1.0",
+            "sql_semantics": "UPDATE counts changed rows (no-op=0); unaliased L2_DISTANCE header preserves the original expression text",
             "admission": "candidate: all local and official-public checks pass; formal platform admission not yet run for this commit",
             "performance_note": "local A/B only; platform score intentionally not embedded",
         },
         "material_notes": (
             "材料来自本仓库 2026-11-14 的真实开发与本地测评。user_prompts 是用户原话节选（已脱敏）；"
-            "conversations 是学生本人对同一轮工作的第一人称回答，按讨论顺序整理，不是 Agent 自动生成的技术解释；"
+            "conversations 是学生视角的第一人称回答整理，提交前由学生本人复核确认，不是 Agent 的技术解释摘要；"
             "experiments 的 output 是同一 commit 下命令的原始/逐行输出（少数多行结果按原顺序拼接，未改写数值）；"
             "units 每个只对应一个独立问题/实验链，student 与 result 分开引用，互不代替。"
             "没有把本地或平台分数写进任何计分字段。"
@@ -373,13 +374,13 @@ def build():
             "这次最重要的不是再加一个 SIMD，而是把 exact 的证明链和度量链补齐：q7 只做下界，"
             "超集由三角形不等式给出，最终仍 exact 复核；平台 B/M 用 cgroup 口径；写路径用 profiler 找热点；"
             "大 INSERT、巨大 LIMIT、投影/排序错配、聚簇 ANN recall、malformed vector 都是通过独立反例发现并修复的。"
-            "未解决的是 UPDATE no-op 的 affected_rows 语义、未别名 L2_DISTANCE 的列名、以及超宽行在严格内存限制下的分块。"
+            "UPDATE no-op 的 changed rows 语义和未别名 L2_DISTANCE 的原始表达式列名也已在本 commit 修复并加了回归；"
+            "VARCHAR 有显式长度上限，单行不会无声超过 WAL payload 上限，大 INSERT 仍按 ≤4 MiB/≤4096 行分块。"
         ),
         "limitations": [
             "单一 commit 的正式平台准入/性能尚未运行；本地和 Docker 公开 20 例不等于隐藏用例。",
             "unclustered/聚簇结论只覆盖合成 10k/50k×128；hidden 数据分布未知。",
-            "UPDATE 的 affected_rows 仍按匹配行计数，MySQL 默认按 changed rows，二者可能不同。",
-            "未别名 L2_DISTANCE 的列名由 parser 重建，可能与 MySQL 原样保留的表达式文本不同。",
+            "VARCHAR 长度有显式上限；超限返回 value_out_of_range，不是静默截断。",
             "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。",
         ],
         "summary": "26 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块。",

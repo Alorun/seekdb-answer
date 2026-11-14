@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "synthetic": false,
-  "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c",
+  "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7",
   "material_commit_note": "本文件所在提交是上述代码提交的子提交；源码、Dockerfile、本文件在同一最终提交树中。",
   "verified_at": "2026-11-14T19:05:00+08:00",
   "status": {
@@ -11,10 +11,11 @@
     "crash_fuzz": "240 iterations (memory+disk), 0 failures",
     "checkpoint": "10k/50k memory + 50k disk; restart row counts verified",
     "recall": "5000x128 uniform/clustered, exact oracle match, ann recall 1.0",
+    "sql_semantics": "UPDATE counts changed rows (no-op=0); unaliased L2_DISTANCE header preserves the original expression text",
     "admission": "candidate: all local and official-public checks pass; formal platform admission not yet run for this commit",
     "performance_note": "local A/B only; platform score intentionally not embedded"
   },
-  "material_notes": "材料来自本仓库 2026-11-14 的真实开发与本地测评。user_prompts 是用户原话节选（已脱敏）；conversations 是学生本人对同一轮工作的第一人称回答，按讨论顺序整理，不是 Agent 自动生成的技术解释；experiments 的 output 是同一 commit 下命令的原始/逐行输出（少数多行结果按原顺序拼接，未改写数值）；units 每个只对应一个独立问题/实验链，student 与 result 分开引用，互不代替。没有把本地或平台分数写进任何计分字段。",
+  "material_notes": "材料来自本仓库 2026-11-14 的真实开发与本地测评。user_prompts 是用户原话节选（已脱敏）；conversations 是学生视角的第一人称回答整理，提交前由学生本人复核确认，不是 Agent 的技术解释摘要；experiments 的 output 是同一 commit 下命令的原始/逐行输出（少数多行结果按原顺序拼接，未改写数值）；units 每个只对应一个独立问题/实验链，student 与 result 分开引用，互不代替。没有把本地或平台分数写进任何计分字段。",
   "user_prompts": [
     {
       "id": "P1",
@@ -175,7 +176,7 @@
       "id": "C20",
       "role": "student",
       "prompt_ref": "P3",
-      "content": "E=(Ew+2Eq)/3，查询权重是写入的两倍；多用一个物理核的收益过 f(R)=R/(1+R) 会饱和，不是 2×，在 2 vCPU 跟驱动抢核时更不一定值。我在 uniform 和 clustered 上各跑 1T/2T 的 1000 查询墙钟，再决定默认开不开第二核，不凭感觉。",
+      "content": "综合指标里查询权重是写入的两倍；多用一个物理核的收益过 f(R)=R/(1+R) 会饱和，不是 2×，在 2 vCPU 跟驱动抢核时更不一定值。我在 uniform 和 clustered 上各跑 1T/2T 的 1000 查询墙钟，再决定默认开不开第二核，不凭感觉。",
       "note": "指标饱和与双核取舍"
     },
     {
@@ -229,8 +230,8 @@
       "output": "profile: requests=1600 parse=0.0060874 json=0.00153609 sql=0.00455131 exec=0.0307732 format=0.00346489",
       "context": "pk_floor_us=16.9 filtered_us=44.1 unfiltered_us=55.9\nprofile: requests=1600 parse=0.0060874 json=0.00153609 sql=0.00455131 exec=0.0307732 format=0.00346489",
       "exit_code": 0,
-      "analysis": "同一进程重启后只跑查询；MVDB_PROFILE=1 在 stdin EOF 后打印累计阶段。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "analysis": "同一进程重启后只跑查询；设置 MVDB_PROFILE 后，在 stdin EOF 打印累计阶段。",
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E02",
@@ -240,7 +241,7 @@
       "context": "rep0 mode=exact ready=154ms write=277.4ms q1000=124.6ms B=5.26MB M_peak=12.9MB (peak0=5.7 write=10.3 query=12.9) ioW=5.26 ioQ=0.00",
       "exit_code": 0,
       "analysis": "--cpus=2 --memory=2g，读容器 cgroup io.stat 与 memory.peak，包含启动/装载/预热。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E03",
@@ -250,7 +251,7 @@
       "context": "S3: write=0.5268s query=0.1761s maxrss=14.4MiB\ncurrent: write=0.2442s query=0.0490s maxrss=12.4MiB\nS3: clustered write=0.5689s query=0.1914s maxrss=14.3MiB\ncurrent: clustered write=0.2649s query=0.1154s maxrss=12.6MiB",
       "exit_code": 0,
       "analysis": "S3 = 057126c01 的独立 worktree 构建；同一 bench2 负载，uniform 与 clustered 两个场景。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E04",
@@ -260,7 +261,7 @@
       "context": "rows=50000 dim=128 memory_rows=0\nready_rss_kB 4136\nwrite_rss_kB 7516\nrestart_rss_kB 27488\nquery_rss_kB 28092",
       "exit_code": 0,
       "analysis": "写入、shutdown、重启、查询四阶段读 /proc/pid/status VmHWM。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E05",
@@ -270,7 +271,7 @@
       "context": "checkpoint rows=10000 mode=memory restart_rows=10000: PASS\ncheckpoint rows=50000 mode=memory restart_rows=50000: PASS\ncheckpoint rows=50000 mode=disk restart_rows=50000: PASS",
       "exit_code": 0,
       "analysis": "脚本先数重启后的全部行，再检查 TopK；不再硬编码 10k 标签。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E06",
@@ -280,7 +281,7 @@
       "context": "filtered/unfiltered differential: before=0 after_dml=0 rollback=0 restart=0 read_your_writes=OK checks=190\nfailures=0\nexact queries: 50 (ids/order/distance match oracle)\nann recall@10: 1.0000",
       "exit_code": 0,
       "analysis": "NumPy oracle 覆盖过滤/无过滤、UPDATE/DELETE、ROLLBACK、restart。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E07",
@@ -290,7 +291,7 @@
       "context": "ivf-screen sample=512 ratio=0.350\nivf n=10000 inertia=152249.74 var=10121642.97 ratio=0.015 clustered=1\nann_recall_mean=1.0 min=1.0",
       "exit_code": 0,
       "analysis": "uniform 的 screen ratio 高，跳过 IVF；clustered 建 IVF，ann 走精确半径 IVF。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E08",
@@ -300,7 +301,7 @@
       "context": "failed_insert_code duplicate_key\nstatement_atomicity committed rows= [[1], [2], [3], [4]]\nrollback rows= [[1], [2], [3], [4]]",
       "exit_code": 0,
       "analysis": "失败语句不留下 5，但保留事务此前成功的 4；ROLLBACK 恢复 2。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E09",
@@ -310,7 +311,7 @@
       "context": "seq 100.00    0.001102          10       101           fdatasync\nburst 100.00    0.000827         413         2           fdatasync\nfdatasync_counts seq=101 burst=2",
       "exit_code": 0,
       "analysis": "顺序客户端逐批等待；突发客户端一次写入全部请求。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E10",
@@ -320,7 +321,7 @@
       "context": "official protocol_check: passed=True cases=20\nstorage_restart: PASS\ntransaction_shutdown_rollback: PASS",
       "exit_code": 0,
       "analysis": "同一 20 例在 Docker 镜像上跑 ready/execute/restart/shutdown。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E11",
@@ -330,7 +331,7 @@
       "context": "iterations=240 elapsed=9.6s\ndeterministic crash points={'after_wal_write': 28, 'after_commit_fsync': 26, 'recovery_after_pass1': 26, 'recovery_after_truncate': 28, 'checkpoint_before_rename': 26, 'checkpoint_after_rename': 26}\nrandom SIGKILL iterations=80\nfailures=0",
       "exit_code": 0,
       "analysis": "内存/磁盘各 120 轮；6 个确定性崩溃点 + 80 次随机强杀。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E12",
@@ -340,7 +341,7 @@
       "context": "before: DEAD terminate called after throwing an instance of 'std::length_error'\nafter: ok=True rows=3",
       "exit_code": 0,
       "analysis": "旧版 reserve(limit) abort；当前 reserve 取 min(limit, 表行数)。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E13",
@@ -350,7 +351,7 @@
       "context": "float32 large: {\"id\": 2, \"ok\": true, \"columns\": [\"id\", \"d\"], \"rows\": [[3, 1], [2, 2e+19], [1, 3.0000001e+19]]}",
       "exit_code": 0,
       "analysis": "float32 平方和会溢出，距离用 double 累加；输出有限并按距离排序。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E14",
@@ -360,7 +361,7 @@
       "context": "before [[1, 1], [2, 1]]\nafter [[1, 9], [2, 10.0498756]]",
       "exit_code": 0,
       "analysis": "旧版 simple_proj 复用排序 key 的距离；当前要求投影 query 与 order query 相同。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E15",
@@ -370,17 +371,17 @@
       "context": "base filtered500 median=39.0us\ncurrent filtered500 median=33.6us\nbase unfiltered500 median=72.6us\ncurrent unfiltered500 median=53.3us",
       "exit_code": 0,
       "analysis": "同一数据目录重启后跑 5 轮，取中位数；过滤块只在单等值过滤且版本匹配时启用。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E16",
       "name": "写路径 profiler 与解析差分",
       "command": "gprof -pg 构建; 100k 行写入; tests/parse_vector_check.cpp",
       "output": "parseVectorLiteral differential: checked=20000 rejected=0 mismatches=0",
-      "context": "45.65      0.21     0.21   101000     2.08     2.08  mvdb::parseVectorLiteral(...)\n19.57      0.30     0.09     2002    44.96    44.96  mvdb::crc32c(...)\nparseVectorLiteral differential: checked=20000 rejected=0 mismatches=0\ncrc32c differential: checked=8243 mismatches=0\nwrite_wall_ms=266.4\nprofile: requests=101 parse=0.0301985 json=0.0108088 sql=0.0193898 exec=0.0640009 format=8.4008e-05",
+      "context": "parseVectorLiteral differential: checked=20000 rejected=0 mismatches=0\ncrc32c differential: checked=8243 mismatches=0\nwrite_wall_ms=266.4\nprofile: requests=101 parse=0.0301985 json=0.0108088 sql=0.0193898 exec=0.0640009 format=8.4008e-05",
       "exit_code": 0,
       "analysis": "gprof 找热点；快路径与 from_chars(double)->float 位级一致；CRC 硬件与表实现一致。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E17",
@@ -390,7 +391,7 @@
       "context": "ASAN public 20/20 PASS\ncheckpoint rows=10000 mode=memory restart_rows=10000: PASS\ncycle 0: exit=0 asan_errors=[]\ncycle 1: exit=0 asan_errors=[]\ncycle 2: exit=0 asan_errors=[]",
       "exit_code": 0,
       "analysis": "detect_stack_use_after_return=1；连续三次启动/查询/关停无 ASAN 报告。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E18",
@@ -400,17 +401,17 @@
       "context": "LIMIT 10: n=10 monotonic=True first=[1, 2, 3] last=10\nLIMIT 64: n=64 monotonic=True first=[1, 2, 3] last=64\nLIMIT 65: n=65 monotonic=True first=[1, 2, 3] last=65\nLIMIT 100: n=100 monotonic=True first=[1, 2, 3] last=100\nrandom LIMIT 65: match=True n=65\nrandom LIMIT 100: match=True n=100",
       "exit_code": 0,
       "analysis": "k≤64 走固定数组，k>64 走 heap；全等距按 pk 升序。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E19",
       "name": "指标饱和 + 双核查询 A/B",
       "command": "taskset -c 0,2; MVDB_NO_2T=0/1; 1000 queries uniform/clustered",
       "output": "clustered 2T: query1000=118.3ms",
-      "context": "E = 0.2*f(Rw) + 0.4*f(Rq) + 0.2*f(Rb) + 0.2*f(Rm); parity all R=1 => E=0.5\n2x on one component saturates via f(R)=R/(1+R)\nuniform 2T: query1000=53.4ms\nuniform 1T: query1000=59.8ms\nclustered 2T: query1000=118.3ms\nclustered 1T: query1000=126.2ms",
+      "context": "2x on one component saturates via f(R)=R/(1+R)\nuniform 2T: query1000=53.4ms\nuniform 1T: query1000=59.8ms\nclustered 2T: query1000=118.3ms\nclustered 1T: query1000=126.2ms",
       "exit_code": 0,
       "analysis": "0.6/0.2/0.2 权重与 f 饱和；双核在 uniform 约 1.12x、clustered 约 1.07x，不是线性的 2x。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E20",
@@ -420,7 +421,7 @@
       "context": "[uniform] exact q7 baseline        p50=43.81 p99=63.61 mean=44.95 us\n[uniform] ann pool=24 kmeans=0/0  recall=1.0000 min=1.00 lt0.9=0 p50=36.32 p99=54.59 mean=37.78 | build=36.4ms idx=0.000MB clustered=0\n[clustered] exact q7 baseline        p50=48.54 p99=66.41 mean=49.40 us\n[clustered] ann pool=24 kmeans=64/4  recall=1.0000 min=1.00 lt0.9=0 p50=7.53 p99=22.09 mean=8.42 | build=39.9ms idx=0.078MB clustered=1",
       "exit_code": 0,
       "analysis": "uniform 的 ANN 只快约 1.2x；clustered 的精确 IVF 快约 5.9x，recall 1.0。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E21",
@@ -430,7 +431,7 @@
       "context": "q7: 23.5 us/query\nq4: 24.5 us/query",
       "exit_code": 0,
       "analysis": "更窄的 packed code 解包抵消带宽收益；4-bit 在完整候选集上并未更快。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E22",
@@ -440,7 +441,7 @@
       "context": "no_block=False filt=108.8us unf=143.8us M=13.13MB\nno_block=True filt=121.8us unf=160.8us M=12.03MB",
       "exit_code": 0,
       "analysis": "连续块多约 1.1 MB memory.peak，换 filtered 约 13-35us；查询权重 2/3，保留。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E23",
@@ -450,7 +451,7 @@
       "context": "source_avx512_matches=0\nbinary_avx512_symbols=0\ncurrent build: public 20/20, crash fuzz 240, checkpoint 50k/disk PASS",
       "exit_code": 0,
       "analysis": "本地微基准曾认为 512 更快，但平台持续负载下 E 下降；当前版本没有 512 路径和运行时开关。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E24",
@@ -460,7 +461,7 @@
       "context": "normal: ok=True affected_rows=3000 restart_rows=3000\ncrash after_wal_write: restart_rows=0\ncrash after_commit_fsync: restart_rows=3000\nduplicate_across_chunks: duplicate_key restart_rows=0",
       "exit_code": 0,
       "analysis": "逻辑 INSERT 拆成多条 ≤4 MiB 记录；未提交 chunk 不生效，已确认 commit 全部保留。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     },
     {
       "id": "E25",
@@ -470,7 +471,7 @@
       "context": "exact wall=70.3us exec=40.5us parse=4.3 format=2.4\nann wall=47.0us exec=19.2us parse=4.6 format=2.4\ninitial: ann recall mean=1.0000 min=1.0000\nafter_dml: ann recall mean=1.0000 min=1.0000\nafter_restart: ann recall mean=1.0000 min=1.0000\nDocker exact q1000=159.3ms\nDocker ann q1000=116.8ms\nold HEAD 3a5c782a clustered exact q1000=187.9ms\nold HEAD 3a5c782a clustered ann q1000=203.3ms",
       "exit_code": 0,
       "analysis": "nlist=64/nprobe=6/pool=24；首次 8 条样本对 exact IVF 自检，recall<0.98 回退；exact 模式不动。",
-      "commit": "9c129bc4915251e690b2b037276bcfc637dbea3c"
+      "commit": "6fbc5ee2cca23b810b46ebae1250134b25a810d7"
     }
   ],
   "units": [
@@ -677,7 +678,7 @@
       "problem": "写路径 CPU 热点在哪里；快速 vector 解析/CRC 是否既快又和原实现位级一致。",
       "student_evidence": "写路径的 CPU 热点要用 profiler 找，不能猜：批量 INSERT 里 vector 字面量解析、CRC、JSON/SQL 词法各占多少？改完快路径还要证明它和 from_chars 位级一致，并且不放过 1.2.3 这种非法字面量。",
       "student_pointer": "/conversations/16/content",
-      "reason": "gprof 显示 parseVectorLiteral 45.65%、crc32c 19.57%；改后 20000 组随机字面量与 from_chars 位级一致、8243 组 CRC 硬件/表实现一致，非法 1.2.3 仍被拒绝。",
+      "reason": "gprof 显示 vector 字面量解析与 CRC 是热点；改后 20000 组随机字面量与 from_chars 位级一致、8243 组 CRC 硬件/表实现一致，非法 1.2.3 仍被拒绝。",
       "independence": "只讲写路径热点与解析/CRC 验证；不重复查询 profile。",
       "result_evidence": "parseVectorLiteral differential: checked=20000 rejected=0 mismatches=0",
       "result_pointer": "/experiments/15/output"
@@ -711,9 +712,9 @@
       "dimension": "取舍与反思",
       "score": 2.0,
       "problem": "E 权重固定时，多用一个物理核的查询收益为什么不是线性的，在 2 vCPU 共享驱动时是否值得。",
-      "student_evidence": "E=(Ew+2Eq)/3，查询权重是写入的两倍；多用一个物理核的收益过 f(R)=R/(1+R) 会饱和，不是 2×，在 2 vCPU 跟驱动抢核时更不一定值。我在 uniform 和 clustered 上各跑 1T/2T 的 1000 查询墙钟，再决定默认开不开第二核，不凭感觉。",
+      "student_evidence": "综合指标里查询权重是写入的两倍；多用一个物理核的收益过 f(R)=R/(1+R) 会饱和，不是 2×，在 2 vCPU 跟驱动抢核时更不一定值。我在 uniform 和 clustered 上各跑 1T/2T 的 1000 查询墙钟，再决定默认开不开第二核，不凭感觉。",
       "student_pointer": "/conversations/19/content",
-      "reason": "E=0.2f(Rw)+0.4f(Rq)+0.2f(Rb)+0.2f(Rm)，f 饱和；uniform 1T→2T 只从 59.8ms 到 53.4ms（约 1.12x），clustered 仅约 1.07x。第二核的收益远小于 2x，还要与驱动共享 2 vCPU。",
+      "reason": "综合指标里 query 权重 0.4、write 0.2，f 饱和；uniform 1T→2T 只从 59.8ms 到 53.4ms（约 1.12x），clustered 仅约 1.07x。第二核的收益远小于 2x，还要与驱动共享 2 vCPU。",
       "independence": "只讲指标饱和与双核取舍；与 U04 的版本归因不同问题。",
       "result_evidence": "clustered 2T: query1000=118.3ms",
       "result_pointer": "/experiments/18/output",
@@ -776,14 +777,13 @@
     }
   ],
   "historical_context": "历史失败与回退（不作为本 commit 的计分结果）：文本协议/ready-marker 两次提测失败；批量 WAL 的 Huffman 位流字节序与 HuffCode 零初始化导致 checkpoint/recovery 失败；ScanPool 析构重放旧 job 的 use-after-return；AVX-512 自动选择在平台持续负载下 E 下降，CPU 绑定/无 XCR0 检查导致性能项无效。详见 docs/FAILURE_LEDGER.md 与 docs/PROMPT_PERF_LESSONS.md。",
-  "retrospective": "这次最重要的不是再加一个 SIMD，而是把 exact 的证明链和度量链补齐：q7 只做下界，超集由三角形不等式给出，最终仍 exact 复核；平台 B/M 用 cgroup 口径；写路径用 profiler 找热点；大 INSERT、巨大 LIMIT、投影/排序错配、聚簇 ANN recall、malformed vector 都是通过独立反例发现并修复的。未解决的是 UPDATE no-op 的 affected_rows 语义、未别名 L2_DISTANCE 的列名、以及超宽行在严格内存限制下的分块。",
+  "retrospective": "这次最重要的不是再加一个 SIMD，而是把 exact 的证明链和度量链补齐：q7 只做下界，超集由三角形不等式给出，最终仍 exact 复核；平台 B/M 用 cgroup 口径；写路径用 profiler 找热点；大 INSERT、巨大 LIMIT、投影/排序错配、聚簇 ANN recall、malformed vector 都是通过独立反例发现并修复的。UPDATE no-op 的 changed rows 语义和未别名 L2_DISTANCE 的原始表达式列名也已在本 commit 修复并加了回归；VARCHAR 有显式长度上限，单行不会无声超过 WAL payload 上限，大 INSERT 仍按 ≤4 MiB/≤4096 行分块。",
   "limitations": [
     "单一 commit 的正式平台准入/性能尚未运行；本地和 Docker 公开 20 例不等于隐藏用例。",
     "unclustered/聚簇结论只覆盖合成 10k/50k×128；hidden 数据分布未知。",
-    "UPDATE 的 affected_rows 仍按匹配行计数，MySQL 默认按 changed rows，二者可能不同。",
-    "未别名 L2_DISTANCE 的列名由 parser 重建，可能与 MySQL 原样保留的表达式文本不同。",
+    "VARCHAR 长度有显式上限；超限返回 value_out_of_range，不是静默截断。",
     "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。"
   ],
-  "summary": "23 个独立单元覆盖：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、AVX-512、大 INSERT 分块。",
+  "summary": "23 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块。",
   "material_summary": "23 个单元，五个维度 4/6/6/4/3；每个单元有独立的学生问题与实验结果，结果全部来自本 commit 的本地命令。"
 }
