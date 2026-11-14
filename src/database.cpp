@@ -19,7 +19,7 @@ namespace mvdb {
 
 namespace {
 constexpr size_t kHeaderSize = 44;
-constexpr uint32_t kMaxPayload = 64u * 1024u * 1024u;
+constexpr uint32_t kMaxPayload = 256u * 1024u * 1024u;
 
 void putU32(std::string& out, uint32_t v) {
   for (int i = 0; i < 4; ++i) out.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
@@ -125,6 +125,10 @@ void Wal::encodeRecord(const WalRecord& rec, std::string& out) const {
 
 Status Wal::appendBatch(const std::string& bytes, uint64_t* out_offset) {
   if (bytes.empty()) return Status::Ok();
+  if (bytes.size() < kHeaderSize ||
+      bytes.size() - kHeaderSize > kMaxPayload) {
+    return Status::Error(Err::kIo, "record too large");
+  }
   const uint64_t start = size_;
   Status st = writeAll(bytes.data(), bytes.size());
   if (!st.ok()) {

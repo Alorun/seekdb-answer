@@ -673,151 +673,6 @@ __attribute__((target("avx2"), always_inline)) static inline void q7Dot4(
   }
 }
 
-// AVX-512BW dot kernel, used only after a startup correctness check and a
-// throughput A/B against the AVX2 kernel; hosts that downclock 512-bit code
-// keep the AVX2 path.
-__attribute__((target("avx2,avx512f,avx512bw,avx512vl,fma"), always_inline))
-static inline int32_t hsum512(__m512i acc) {
-  alignas(64) int32_t tmp[16];
-  _mm512_store_si512(reinterpret_cast<__m512i*>(tmp), acc);
-  int32_t sum = 0;
-  for (int32_t x : tmp) sum += x;
-  return sum;
-}
-
-__attribute__((target("avx2,avx512f,avx512bw,avx512vl,fma"), always_inline))
-static inline int32_t q7Dot512(const uint8_t* __restrict a,
-                               const int8_t* __restrict b, size_t n) {
-  const __m512i ones = _mm512_set1_epi16(1);
-  __m512i acc = _mm512_setzero_si512();
-  size_t i = 0;
-  for (; i + 64 <= n; i += 64) {
-    __m512i va = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a + i));
-    __m512i vb = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(b + i));
-    acc = _mm512_add_epi32(
-        acc, _mm512_madd_epi16(_mm512_maddubs_epi16(va, vb), ones));
-  }
-  int32_t dot = hsum512(acc);
-  for (; i < n; ++i) {
-    dot += static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
-  }
-  return dot;
-}
-
-__attribute__((target("avx2,avx512f,avx512bw,avx512vl,fma"), always_inline))
-static inline void q7Dot4_512(const uint8_t* __restrict a0,
-                              const uint8_t* __restrict a1,
-                              const uint8_t* __restrict a2,
-                              const uint8_t* __restrict a3,
-                              const int8_t* __restrict b, size_t n,
-                              int32_t out[4]) {
-  const __m512i ones = _mm512_set1_epi16(1);
-  __m512i p0 = _mm512_setzero_si512();
-  __m512i p1 = _mm512_setzero_si512();
-  __m512i p2 = _mm512_setzero_si512();
-  __m512i p3 = _mm512_setzero_si512();
-  size_t i = 0;
-  for (; i + 64 <= n; i += 64) {
-    __m512i vb = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(b + i));
-    __m512i r = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a0 + i));
-    p0 = _mm512_add_epi32(
-        p0, _mm512_madd_epi16(_mm512_maddubs_epi16(r, vb), ones));
-    r = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a1 + i));
-    p1 = _mm512_add_epi32(
-        p1, _mm512_madd_epi16(_mm512_maddubs_epi16(r, vb), ones));
-    r = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a2 + i));
-    p2 = _mm512_add_epi32(
-        p2, _mm512_madd_epi16(_mm512_maddubs_epi16(r, vb), ones));
-    r = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a3 + i));
-    p3 = _mm512_add_epi32(
-        p3, _mm512_madd_epi16(_mm512_maddubs_epi16(r, vb), ones));
-  }
-  out[0] = hsum512(p0);
-  out[1] = hsum512(p1);
-  out[2] = hsum512(p2);
-  out[3] = hsum512(p3);
-  for (; i < n; ++i) {
-    out[0] += static_cast<int32_t>(a0[i]) * static_cast<int32_t>(b[i]);
-    out[1] += static_cast<int32_t>(a1[i]) * static_cast<int32_t>(b[i]);
-    out[2] += static_cast<int32_t>(a2[i]) * static_cast<int32_t>(b[i]);
-    out[3] += static_cast<int32_t>(a3[i]) * static_cast<int32_t>(b[i]);
-  }
-}
-
-__attribute__((target("avx2,avx512f,avx512bw,avx512vl,fma")))
-bool q7Prefer512() {
-  constexpr size_t N = 256, D = 128, R = 128;
-  std::vector<uint8_t> x(N * D);
-  std::vector<int8_t> y(N * D);
-  for (size_t i = 0; i < x.size(); ++i) {
-    x[i] = static_cast<uint8_t>((i * 37) % 127);
-    y[i] = static_cast<int8_t>(static_cast<int>((i * 53 + 11) % 127) - 63);
-  }
-  int64_t scalar = 0;
-  for (size_t i = 0; i < N; ++i) {
-    scalar += q7Dot(x.data() + i * D, y.data() + i * D, D);
-  }
-  int64_t wide = 0;
-  for (size_t i = 0; i < N; ++i) {
-    wide += q7Dot512(x.data() + i * D, y.data() + i * D, D);
-  }
-  if (scalar != wide) return false;
-  int32_t four[4];
-  q7Dot4_512(x.data(), x.data() + D, x.data() + 2 * D, x.data() + 3 * D,
-             y.data(), D, four);
-  for (int r = 0; r < 4; ++r) {
-    if (four[r] != q7Dot(x.data() + r * D, y.data(), D)) return false;
-  }
-  volatile int64_t sink = 0;
-  auto bench = [&](auto fn) {
-    auto t0 = std::chrono::steady_clock::now();
-    int64_t s = 0;
-    for (size_t r = 0; r < R; ++r) {
-      for (size_t i = 0; i < N; ++i) {
-        s += fn(x.data() + i * D, y.data() + i * D, D);
-      }
-    }
-    auto t1 = std::chrono::steady_clock::now();
-    sink += s;
-    return std::chrono::duration<double>(t1 - t0).count();
-  };
-  const double t256 = bench(q7Dot);
-  const double t512 = bench(q7Dot512);
-  if (!(t512 * 1.05 < t256)) return false;
-  auto bench4 = [&](auto fn) {
-    auto t0 = std::chrono::steady_clock::now();
-    int64_t s = 0;
-    int32_t out[4];
-    for (size_t r = 0; r < R; ++r) {
-      for (size_t i = 0; i + 4 <= N; i += 4) {
-        fn(x.data() + i * D, x.data() + (i + 1) * D,
-           x.data() + (i + 2) * D, x.data() + (i + 3) * D, y.data(), D, out);
-        s += out[0] + out[1] + out[2] + out[3];
-      }
-    }
-    auto t1 = std::chrono::steady_clock::now();
-    sink += s;
-    return std::chrono::duration<double>(t1 - t0).count();
-  };
-  return bench4(q7Dot4_512) * 1.05 < bench4(q7Dot4);
-}
-
-bool q7Runtime512() {
-  static const bool use = [] {
-    if (!(__builtin_cpu_supports("avx2") &&
-          __builtin_cpu_supports("fma") &&
-          __builtin_cpu_supports("avx512f") &&
-          __builtin_cpu_supports("avx512bw") &&
-          __builtin_cpu_supports("avx512vl"))) return false;
-    unsigned int eax, edx;
-    __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
-    // XCR0: SSE, AVX, opmask, ZMM_Hi256, Hi16_ZMM must all be enabled.
-    if ((eax & 0xE6) != 0xE6) return false;
-    return q7Prefer512();
-  }();
-  return use;
-}
-
 struct Q7Query {
   std::vector<int8_t> codes;  // signed query codes in [-63,63]
   int32_t cq = 0;             // sum(s^2) + 126*sum(s)
@@ -850,144 +705,201 @@ bool quantizeQuery7(const Quant8Cache& c, const std::vector<float>& q,
   return true;
 }
 
-// Exact q7 scan with a triangle-inequality lower bound:
-//   | ||v-q|| - scale*||code(v)-code(q)|| | <= err(v) + err(q)
-// Candidates that cannot beat the current exact k-th distance are skipped;
-// every remaining candidate is evaluated with the exact float32 kernel, so
-// this path returns exactly the same TopK as the full float scan.
+// Exact TopK over one filter value's contiguous q7 code block.
 //
-// The threshold only changes when the k-th distance improves, and it is kept
-// as an integer bound on the code-space squared distance so that the inner
-// loop is (integer dot product, add, compare, unlikely branch).
-__attribute__((target("avx2,fma"))) void scanQ7ExactRange(
-    const Quant8Cache& c, const float* const* vecp, const int64_t* pks,
-    size_t begin, size_t end, size_t dim, const float* q, const Q7Query& qq,
-    size_t k, std::vector<RawHit>& out) {
-  TopK top(k);
-  double sqrt_worst = std::numeric_limits<double>::infinity();
-  const size_t seed = std::min<size_t>(64, end - begin);
-  for (size_t vi = begin; vi < begin + seed; ++vi) {
-    const float* a = vecp[vi];
-    double d = l2Avx2DoubleSq(a, q, dim);
-    top.push(RawHit{d, pks[vi], vi});
-    if (top.full()) sqrt_worst = std::sqrt(top.worstDistance());
-  }
-  if (k == 0) {
-    top.drain(out);
-    return;
-  }
-  const double inv = 1.0 / static_cast<double>(c.scale);
+// The code-space k-th distance gives a provable superset of the true top-k:
+// let E = max_row_err + query_err and d_k the k-th smallest code-space
+// distance.  Every true top-k row r satisfies
+//   ||v_r-q|| <= ||v_(k)-q|| <= scale*sqrt(d_k) + E,
+// and the triangle bound also gives scale*sqrt(d_r) <= ||v_r-q|| + E,
+// hence d_r <= (sqrt(d_k) + 2E/scale)^2.  Evaluating exactly only that pool
+// returns the same TopK as a full exact scan while touching a few dozen rows.
+__attribute__((target("avx2,fma"))) void scanQ7BlockExact(
+    const uint8_t* codes, const uint32_t* rows, size_t n,
+    const float* const* vecp, const int64_t* pks, size_t dim, const float* q,
+    const Q7Query& qq, const Quant8Cache& qc, size_t k,
+    std::vector<RawHit>& out) {
+  out.clear();
+  if (k == 0 || n == 0) return;
   const int8_t* qcodes = qq.codes.data();
-  // Conservative integer threshold in code-distance units.  Using the maximum
-  // row error instead of the per-row error keeps the inner loop free of a
-  // second array stream and of double arithmetic; the quantizer error is nearly
-  // constant across rows, so this costs almost no extra survivors.
-  auto threshold2 = [&]() -> int32_t {
-    const double bound =
-        sqrt_worst + qq.error_norm + static_cast<double>(c.max_err);
-    // Relative margin: errs/query_err are float-rounded and a tie at very
-    // large magnitudes must not be pruned by rounding noise.
-    const double t = bound * inv * (1.0 + 1e-6) + 1e-12;
-    const double t2 = t * t;
-    if (!(t2 < 2147483000.0)) return std::numeric_limits<int32_t>::max();
-    return static_cast<int32_t>(std::ceil(t2));
-  };
-  int32_t thr2 = threshold2();
-  const uint8_t* codes = c.codes.data();
-  const int32_t* pv = c.pv.data();
+  const int32_t* pv = qc.pv.data();
   const int32_t cq = qq.cq;
-  auto consider_q7 = [&](size_t vi, int32_t dq) {
-    if (dq > thr2) return;
-    const float* a = vecp[vi];
-    double d = l2Avx2DoubleSq(a, q, dim);
-    top.push(RawHit{d, pks[vi], vi});
-    if (top.full()) {
-      double w = std::sqrt(top.worstDistance());
-      if (w < sqrt_worst) {
-        sqrt_worst = w;
-        thr2 = threshold2();
-      }
-    }
-  };
-  size_t vi = begin + seed;
-  for (; vi + 4 <= end; vi += 4) {
+  std::vector<int32_t> dq(n);
+  TopK qtop(k);
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
     int32_t dots[4];
-    q7Dot4(codes + vi * dim, codes + (vi + 1) * dim,
-           codes + (vi + 2) * dim, codes + (vi + 3) * dim, qcodes, dim, dots);
-    consider_q7(vi, pv[vi] + cq - 2 * dots[0]);
-    consider_q7(vi + 1, pv[vi + 1] + cq - 2 * dots[1]);
-    consider_q7(vi + 2, pv[vi + 2] + cq - 2 * dots[2]);
-    consider_q7(vi + 3, pv[vi + 3] + cq - 2 * dots[3]);
+    q7Dot4(codes + i * dim, codes + (i + 1) * dim, codes + (i + 2) * dim,
+           codes + (i + 3) * dim, qcodes, dim, dots);
+    const int32_t d0 = pv[rows[i]] + cq - 2 * dots[0];
+    const int32_t d1 = pv[rows[i + 1]] + cq - 2 * dots[1];
+    const int32_t d2 = pv[rows[i + 2]] + cq - 2 * dots[2];
+    const int32_t d3 = pv[rows[i + 3]] + cq - 2 * dots[3];
+    dq[i] = d0;
+    dq[i + 1] = d1;
+    dq[i + 2] = d2;
+    dq[i + 3] = d3;
+    qtop.push(RawHit{static_cast<double>(d0), pks[rows[i]], i});
+    qtop.push(RawHit{static_cast<double>(d1), pks[rows[i + 1]], i + 1});
+    qtop.push(RawHit{static_cast<double>(d2), pks[rows[i + 2]], i + 2});
+    qtop.push(RawHit{static_cast<double>(d3), pks[rows[i + 3]], i + 3});
   }
-  for (; vi < end; ++vi) {
-    consider_q7(vi, pv[vi] + cq - 2 * q7Dot(codes + vi * dim, qcodes, dim));
+  for (; i < n; ++i) {
+    const int32_t d = pv[rows[i]] + cq - 2 * q7Dot(codes + i * dim, qcodes, dim);
+    dq[i] = d;
+    qtop.push(RawHit{static_cast<double>(d), pks[rows[i]], i});
+  }
+  double thr2 = std::numeric_limits<double>::infinity();
+  if (qtop.full()) {
+    const double E = static_cast<double>(qc.max_err) + qq.error_norm;
+    const double inv = 1.0 / static_cast<double>(qc.scale);
+    const double t = std::sqrt(std::max(0.0, qtop.worstDistance())) +
+                     2.0 * E * inv;
+    thr2 = t * t * (1.0 + 1e-6) + 1e-12;
+  }
+  std::vector<uint32_t> pool;
+  pool.reserve(64);
+  for (size_t j = 0; j < n; ++j) {
+    if (static_cast<double>(dq[j]) <= thr2) pool.push_back(static_cast<uint32_t>(j));
+  }
+  for (uint32_t j : pool) {
+    const float* a = vecp[rows[j]];
+    for (size_t cc = 0; cc < dim; cc += 16) {
+      _mm_prefetch(reinterpret_cast<const char*>(a + cc), _MM_HINT_T0);
+    }
+  }
+  TopK top(k);
+  for (uint32_t j : pool) {
+    const uint32_t vi = rows[j];
+    top.push(RawHit{l2Avx2DoubleSq(vecp[vi], q, dim), pks[vi], vi});
   }
   top.drain(out);
 }
 
+// Exact q7 scan with a triangle-inequality lower bound.
+//
+// The q7 pass finds the code-space k-th distance d_k.  The triangle bound
+// proves every true top-k row has dq <= (sqrt(d_k)+2E/scale)^2 with
+// E = max_row_err + query_err, so only that superset is re-ranked exactly.
+// The first version tracked d_k with the generic TopK (a double + pk and a
+// RawHit per row); on 10k rows that bookkeeping cost more than the q7 dot
+// product.  The two tight loops below use a fixed int32 sorted array for the
+// scored k<=64 shape and a plain max-heap otherwise.
+struct Q7Kth {
+  explicit Q7Kth(size_t k) : k_(k) {}
+  __attribute__((always_inline)) inline bool full() const { return n_ == k_; }
+  __attribute__((always_inline)) inline int32_t worst() const {
+    return n_ ? buf_[n_ - 1] : INT32_MAX;
+  }
+  __attribute__((always_inline)) inline void add(int32_t v) {
+    if (n_ < k_) {
+      size_t p = n_;
+      while (p > 0 && buf_[p - 1] > v) {
+        buf_[p] = buf_[p - 1];
+        --p;
+      }
+      buf_[p] = v;
+      ++n_;
+    } else if (v < buf_[n_ - 1]) {
+      size_t p = n_ - 1;
+      while (p > 0 && buf_[p - 1] > v) {
+        buf_[p] = buf_[p - 1];
+        --p;
+      }
+      buf_[p] = v;
+    }
+  }
+ private:
+  int32_t buf_[64];
+  size_t n_ = 0;
+  size_t k_ = 0;
+};
 
-__attribute__((target("avx2,avx512f,avx512bw,avx512vl,fma"))) void scanQ7ExactRange512(
+template <typename Add>
+__attribute__((target("avx2,fma"))) inline void q7Collect(
+    const Quant8Cache& c, size_t begin, size_t n, size_t dim,
+    const int8_t* qcodes, int32_t cq, int32_t* dq, Add add) {
+  const uint8_t* codes = c.codes.data();
+  const int32_t* pv = c.pv.data();
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    int32_t dots[4];
+    q7Dot4(codes + (begin + i) * dim, codes + (begin + i + 1) * dim,
+           codes + (begin + i + 2) * dim, codes + (begin + i + 3) * dim,
+           qcodes, dim, dots);
+    const int32_t d0 = pv[begin + i] + cq - 2 * dots[0];
+    const int32_t d1 = pv[begin + i + 1] + cq - 2 * dots[1];
+    const int32_t d2 = pv[begin + i + 2] + cq - 2 * dots[2];
+    const int32_t d3 = pv[begin + i + 3] + cq - 2 * dots[3];
+    dq[i] = d0;
+    dq[i + 1] = d1;
+    dq[i + 2] = d2;
+    dq[i + 3] = d3;
+    add(d0);
+    add(d1);
+    add(d2);
+    add(d3);
+  }
+  for (; i < n; ++i) {
+    const int32_t d = pv[begin + i] + cq -
+                      2 * q7Dot(codes + (begin + i) * dim, qcodes, dim);
+    dq[i] = d;
+    add(d);
+  }
+}
+
+__attribute__((target("avx2,fma"))) void scanQ7ExactRange(
     const Quant8Cache& c, const float* const* vecp, const int64_t* pks,
     size_t begin, size_t end, size_t dim, const float* q, const Q7Query& qq,
     size_t k, std::vector<RawHit>& out) {
-  TopK top(k);
-  double sqrt_worst = std::numeric_limits<double>::infinity();
-  const size_t seed = std::min<size_t>(64, end - begin);
-  for (size_t vi = begin; vi < begin + seed; ++vi) {
-    const float* a = vecp[vi];
-    double d = l2Avx2DoubleSq(a, q, dim);
-    top.push(RawHit{d, pks[vi], vi});
-    if (top.full()) sqrt_worst = std::sqrt(top.worstDistance());
-  }
-  if (k == 0) {
-    top.drain(out);
-    return;
-  }
-  const double inv = 1.0 / static_cast<double>(c.scale);
+  out.clear();
+  if (k == 0 || begin >= end) return;
+  const size_t n = end - begin;
+  std::vector<int32_t> dq(n);
   const int8_t* qcodes = qq.codes.data();
-  // Conservative integer threshold in code-distance units.  Using the maximum
-  // row error instead of the per-row error keeps the inner loop free of a
-  // second array stream and of double arithmetic; the quantizer error is nearly
-  // constant across rows, so this costs almost no extra survivors.
-  auto threshold2 = [&]() -> int32_t {
-    const double bound =
-        sqrt_worst + qq.error_norm + static_cast<double>(c.max_err);
-    // Relative margin: errs/query_err are float-rounded and a tie at very
-    // large magnitudes must not be pruned by rounding noise.
-    const double t = bound * inv * (1.0 + 1e-6) + 1e-12;
-    const double t2 = t * t;
-    if (!(t2 < 2147483000.0)) return std::numeric_limits<int32_t>::max();
-    return static_cast<int32_t>(std::ceil(t2));
-  };
-  int32_t thr2 = threshold2();
-  const uint8_t* codes = c.codes.data();
-  const int32_t* pv = c.pv.data();
   const int32_t cq = qq.cq;
-  auto consider_q7 = [&](size_t vi, int32_t dq) {
-    if (dq > thr2) return;
-    const float* a = vecp[vi];
-    double d = l2Avx2DoubleSq(a, q, dim);
-    top.push(RawHit{d, pks[vi], vi});
-    if (top.full()) {
-      double w = std::sqrt(top.worstDistance());
-      if (w < sqrt_worst) {
-        sqrt_worst = w;
-        thr2 = threshold2();
+  double dk = std::numeric_limits<double>::infinity();
+  if (k <= 64) {
+    Q7Kth qk(k);
+    q7Collect(c, begin, n, dim, qcodes, cq, dq.data(),
+              [&](int32_t v) { qk.add(v); });
+    if (qk.full()) dk = static_cast<double>(qk.worst());
+  } else {
+    std::priority_queue<int32_t> qheap;
+    q7Collect(c, begin, n, dim, qcodes, cq, dq.data(), [&](int32_t v) {
+      if (qheap.size() < k) {
+        qheap.push(v);
+      } else if (v < qheap.top()) {
+        qheap.pop();
+        qheap.push(v);
       }
-    }
-  };
-  size_t vi = begin + seed;
-  for (; vi + 4 <= end; vi += 4) {
-    int32_t dots[4];
-    q7Dot4_512(codes + vi * dim, codes + (vi + 1) * dim,
-           codes + (vi + 2) * dim, codes + (vi + 3) * dim, qcodes, dim, dots);
-    consider_q7(vi, pv[vi] + cq - 2 * dots[0]);
-    consider_q7(vi + 1, pv[vi + 1] + cq - 2 * dots[1]);
-    consider_q7(vi + 2, pv[vi + 2] + cq - 2 * dots[2]);
-    consider_q7(vi + 3, pv[vi + 3] + cq - 2 * dots[3]);
+    });
+    if (qheap.size() >= k) dk = static_cast<double>(qheap.top());
   }
-  for (; vi < end; ++vi) {
-    consider_q7(vi, pv[vi] + cq - 2 * q7Dot512(codes + vi * dim, qcodes, dim));
+  double thr2 = std::numeric_limits<double>::infinity();
+  if (std::isfinite(dk)) {
+    const double E = static_cast<double>(c.max_err) + qq.error_norm;
+    const double inv = 1.0 / static_cast<double>(c.scale);
+    const double t = std::sqrt(std::max(0.0, dk)) + 2.0 * E * inv;
+    thr2 = t * t * (1.0 + 1e-6) + 1e-12;
+  }
+  std::vector<uint32_t> pool;
+  pool.reserve(128);
+  for (size_t j = 0; j < n; ++j) {
+    if (static_cast<double>(dq[j]) <= thr2) {
+      pool.push_back(static_cast<uint32_t>(j));
+    }
+  }
+  for (uint32_t j : pool) {
+    const float* a = vecp[begin + j];
+    for (size_t cc = 0; cc < dim; cc += 16) {
+      _mm_prefetch(reinterpret_cast<const char*>(a + cc), _MM_HINT_T0);
+    }
+  }
+  TopK top(k);
+  for (uint32_t j : pool) {
+    const size_t vi = begin + j;
+    top.push(RawHit{l2Avx2DoubleSq(vecp[vi], q, dim), pks[vi], vi});
   }
   top.drain(out);
 }
@@ -1430,6 +1342,58 @@ Quant8Cache* ensureQuant8(Table& table, int col) {
   buildQuant8(table, col);
   it = table.quant8_caches.find(col);
   return it == table.quant8_caches.end() ? nullptr : &it->second;
+}
+
+// Group the q7 codes by every equality-filter value.  A filtered TopK visits a
+// small subset whose rows are strided by the number of distinct values, so the
+// table-wide code matrix gives one cache line per 6.4 KB.  Copying each value's
+// rows into one contiguous block turns that into a sequential stream; the
+// blocks partition the rows, so the total extra memory is one code matrix.
+FilterCodes* ensureFilterCodes(Table& table, int col, int vec_col) {
+  Quant8Cache* q8 = ensureQuant8(table, vec_col);
+  if (q8 == nullptr || !q8->valid || q8->dim == 0 ||
+      q8->codes.size() != table.vector_cache.pks.size() * q8->dim) {
+    return nullptr;
+  }
+  auto it = table.filter_codes.find(col);
+  if (it != table.filter_codes.end() && it->second.valid &&
+      it->second.version == table.row_version &&
+      it->second.vec_col == vec_col && it->second.dim == q8->dim) {
+    return &it->second;
+  }
+  FilterCache* fc = ensureFilterCache(table, col);
+  if (fc == nullptr || fc->version != table.row_version) return nullptr;
+  FilterCodes c;
+  c.version = table.row_version;
+  c.col = col;
+  c.vec_col = vec_col;
+  c.dim = q8->dim;
+  const size_t rows = table.vector_cache.pks.size();
+  auto copy_list = [&](const std::vector<uint32_t>& idx,
+                       std::vector<uint8_t>& block) {
+    block.resize(idx.size() * c.dim);
+    for (size_t j = 0; j < idx.size(); ++j) {
+      if (idx[j] >= rows) continue;
+      std::memcpy(block.data() + j * c.dim, q8->codes.data() +
+                                                static_cast<size_t>(idx[j]) * c.dim,
+                  c.dim);
+    }
+  };
+  c.str.reserve(fc->str_idx.size());
+  for (const auto& [key, idx] : fc->str_idx) {
+    std::vector<uint8_t> block;
+    copy_list(idx, block);
+    c.str.emplace(key, std::move(block));
+  }
+  c.num.reserve(fc->num_idx.size());
+  for (const auto& [key, idx] : fc->num_idx) {
+    std::vector<uint8_t> block;
+    copy_list(idx, block);
+    c.num.emplace(key, std::move(block));
+  }
+  c.valid = true;
+  table.filter_codes[col] = std::move(c);
+  return &table.filter_codes[col];
 }
 
 }  // namespace
@@ -1885,59 +1849,84 @@ Status Executor::executeInsert(const InsertStmt& stmt) {
   }
   if (rows.empty()) return Status::Ok();
 
-  WalRecord rec;
-  rec.type = static_cast<uint8_t>(WalType::InsertBatch);
-  rec.lsn = db_.newLsn();
-  rec.txn = txn_id_;
-  rec.table = table->schema.table_id;
-  rec.pk = 0;
-
-  std::string batch;
-  batch.resize(44);  // WAL header, patched after the payload is encoded
-  size_t estimate = 48;
-  for (const Column& col : schema.columns) {
-    if (col.type == ColumnType::Vector) {
-      estimate += static_cast<size_t>(col.length) * 4;
-    } else if (col.type == ColumnType::Varchar) {
-      estimate += 16;
-    } else {
-      estimate += 8;
-    }
-  }
-  batch.reserve(44 + rows.size() * estimate);
-  std::string encode_err;
-  if (!encodeInsertBatch(schema, rows, batch, encode_err)) {
-    return Status::Error(Err::kInvalidValue,
-                         "cannot encode insert batch: " + encode_err);
-  }
-  const uint32_t payload_len = static_cast<uint32_t>(batch.size() - 44);
-  const uint32_t crc = crc32c(batch.data() + 44, payload_len);
-  db_.wal().encodeHeader(rec, payload_len, crc, batch.data());
-
-  uint64_t offset = 0;
-  Status st = db_.wal().appendBatch(batch, &offset);
-  if (!st.ok()) return st;
-  maybeCrash("after_wal_write");
-  if (first_lsn_ == 0) first_lsn_ = rec.lsn;
-  last_lsn_ = rec.lsn;
-  op_count_ += static_cast<uint32_t>(rows.size());
-
-  for (Row& row : rows) {
-    const int64_t pk = row.values[static_cast<size_t>(schema.pk_index)].i;
-    table->locations[pk] = offset;
-    if (!table->disk_mode) {
-      auto hint = table->rows.end();
-      if (!table->rows.empty() && pk <= table->rows.rbegin()->first) {
-        hint = table->rows.lower_bound(pk);
+  // A statement may legally carry more bytes than one WAL record can hold
+  // (e.g. 68 x 1 MB VARCHAR values).  Split the logical INSERT into records
+  // small enough for the reader (<=4 MiB of estimated row bytes each), all
+  // under the same commit; every row keeps the offset of its own record.
+  constexpr size_t kChunkBytes = 4ull << 20;
+  constexpr size_t kChunkRows = 4096;
+  auto row_bytes = [&](const Row& row) -> size_t {
+    size_t n = 32;
+    for (size_t c = 0; c < schema.columns.size(); ++c) {
+      const Column& col = schema.columns[c];
+      const Value& v = row.values[c];
+      if (col.type == ColumnType::BigInt) {
+        n += 8;
+      } else if (col.type == ColumnType::Varchar) {
+        n += v.str().size() + 8;
+      } else {
+        n += v.vec().size() * sizeof(float) + 8;
       }
-      table->rows.emplace_hint(hint, pk, std::move(row));
     }
-    Undo u;
-    u.table_id = table->schema.table_id;
-    u.pk = pk;
-    u.had_row = false;
-    u.had_location = false;
-    undo_.push_back(std::move(u));
+    return n;
+  };
+  std::string encode_err;
+  size_t row_idx = 0;
+  while (row_idx < rows.size()) {
+    size_t chunk_end = row_idx;
+    size_t chunk_bytes = 0;
+    while (chunk_end < rows.size() && chunk_end - row_idx < kChunkRows) {
+      const size_t rb = row_bytes(rows[chunk_end]);
+      if (chunk_end > row_idx && chunk_bytes + rb > kChunkBytes) break;
+      chunk_bytes += rb;
+      ++chunk_end;
+    }
+    std::vector<Row> chunk;
+    chunk.reserve(chunk_end - row_idx);
+    for (size_t k = row_idx; k < chunk_end; ++k) {
+      chunk.push_back(std::move(rows[k]));
+    }
+    WalRecord rec;
+    rec.type = static_cast<uint8_t>(WalType::InsertBatch);
+    rec.lsn = db_.newLsn();
+    rec.txn = txn_id_;
+    rec.table = table->schema.table_id;
+    rec.pk = 0;
+    std::string batch;
+    batch.resize(44);  // WAL header, patched after the payload is encoded
+    batch.reserve(44 + chunk_bytes + chunk.size() * 16);
+    if (!encodeInsertBatch(schema, chunk, batch, encode_err)) {
+      return Status::Error(Err::kInvalidValue,
+                           "cannot encode insert batch: " + encode_err);
+    }
+    const uint32_t payload_len = static_cast<uint32_t>(batch.size() - 44);
+    const uint32_t crc = crc32c(batch.data() + 44, payload_len);
+    db_.wal().encodeHeader(rec, payload_len, crc, batch.data());
+    uint64_t offset = 0;
+    Status st = db_.wal().appendBatch(batch, &offset);
+    if (!st.ok()) return st;
+    maybeCrash("after_wal_write");
+    if (first_lsn_ == 0) first_lsn_ = rec.lsn;
+    last_lsn_ = rec.lsn;
+    op_count_ += static_cast<uint32_t>(chunk.size());
+    for (Row& row : chunk) {
+      const int64_t pk = row.values[static_cast<size_t>(schema.pk_index)].i;
+      table->locations[pk] = offset;
+      if (!table->disk_mode) {
+        auto hint = table->rows.end();
+        if (!table->rows.empty() && pk <= table->rows.rbegin()->first) {
+          hint = table->rows.lower_bound(pk);
+        }
+        table->rows.emplace_hint(hint, pk, std::move(row));
+      }
+      Undo u;
+      u.table_id = table->schema.table_id;
+      u.pk = pk;
+      u.had_row = false;
+      u.had_location = false;
+      undo_.push_back(std::move(u));
+    }
+    row_idx = chunk_end;
   }
   spillIfNeeded(*table);
   ++table->row_version;
@@ -2336,7 +2325,8 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     // building and sorting a Candidate (and its projection) for every row.
     out.has_result = true;
     fill_result_columns(out);
-    out.rows.reserve(static_cast<size_t>(stmt.limit));
+    out.rows.reserve(std::min<size_t>(static_cast<size_t>(stmt.limit),
+                                      table->rows.size()));
     auto take_row = [&](const Row& row) -> Status {
       Status m;
       if (!matchConditions(row, conds, m)) return m;
@@ -2388,7 +2378,10 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
       distance_topk && schema.pk_index >= 0 && cols.size() == 2 &&
       cols[0].kind == OutCol::Kind::Value &&
       cols[0].col == schema.pk_index &&
-      cols[1].kind == OutCol::Kind::Distance;
+      cols[1].kind == OutCol::Kind::Distance &&
+      cols[1].query == orders[0].query &&
+      std::min(cols[1].query.size(), orders[0].query.size()) ==
+          static_cast<size_t>(schema.columns[orders[0].col].length);
   std::vector<RawHit> fast_hits;
   bool have_fast_hits = false;
 
@@ -2541,18 +2534,54 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
             if (idx_list != nullptr) {
               if (simple_proj) {
                 // No row payload is needed: scan the dense vector cache and
-                // keep (distance, pk) only.  The map lookup and the Row copy
-                // per improving candidate are what made filtered queries slow.
-                TopK top(k);
-                for (uint32_t vi : *idx_list) {
-                  if (vi >= vc.pks.size()) continue;
-                  const float* a =
-                      vc.vecp[vi];
-                  const double d = l2Avx2DoubleSq(a, q, vc.dim);
-                  top.push(RawHit{d, vc.pks[vi], vi});
+                // keep (distance, pk) only.  Prefer the value's contiguous q7
+                // block: it streams sequentially and re-evaluates only the
+                // rows whose triangle-inequality bound can still enter the
+                // top-k, so the result is identical to the exact loop below.
+                bool block_done = false;
+                static const bool allow_block =
+                    std::getenv("MVDB_NO_FILTER_BLOCK") == nullptr;
+                if (allow_block && use_avx2) {
+                  Quant8Cache* q8 = ensureQuant8(*table, orders[0].col);
+                  Q7Query qq;
+                  if (q8 != nullptr && q8->valid && q8->dim == vc.dim &&
+                      q8->codes.size() == vc.pks.size() * vc.dim &&
+                      quantizeQuery7(*q8, orders[0].query, qq)) {
+                    FilterCodes* fcodes = ensureFilterCodes(
+                        *table, conds[0].col, orders[0].col);
+                    if (fcodes != nullptr) {
+                      const std::vector<uint8_t>* block = nullptr;
+                      if (conds[0].literal.type == Value::Type::Str) {
+                        auto bit = fcodes->str.find(
+                            std::string(conds[0].literal.str()));
+                        if (bit != fcodes->str.end()) block = &bit->second;
+                      } else if (conds[0].literal.type == Value::Type::Int) {
+                        auto bit = fcodes->num.find(conds[0].literal.i);
+                        if (bit != fcodes->num.end()) block = &bit->second;
+                      }
+                      if (block != nullptr && idx_list->size() <= 4096 &&
+                          block->size() == idx_list->size() * vc.dim) {
+                        scanQ7BlockExact(block->data(), idx_list->data(),
+                                         idx_list->size(), vc.vecp.data(),
+                                         vc.pks.data(), vc.dim, q, qq, *q8, k,
+                                         fast_hits);
+                        have_fast_hits = true;
+                        block_done = true;
+                      }
+                    }
+                  }
                 }
-                top.drain(fast_hits);
-                have_fast_hits = true;
+                if (!block_done) {
+                  TopK top(k);
+                  for (uint32_t vi : *idx_list) {
+                    if (vi >= vc.pks.size()) continue;
+                    const float* a = vc.vecp[vi];
+                    const double d = l2Avx2DoubleSq(a, q, vc.dim);
+                    top.push(RawHit{d, vc.pks[vi], vi});
+                  }
+                  top.drain(fast_hits);
+                  have_fast_hits = true;
+                }
               } else {
                 for (uint32_t vi : *idx_list) {
                   if (vi >= vc.pks.size()) continue;
@@ -2618,11 +2647,13 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
                 n >= 2000 ? ensureIvf(*table, orders[0].col) : nullptr;
             if (ivf != nullptr && ivf->clustered) {
               std::vector<RawHit> hits;
-              if (ann_mode) {
-                scanIvfAnn(*ivf, cache, q, k, 8, hits);
-              } else {
-                scanIvfExact(*ivf, cache, q, k, hits);
-              }
+              // ANN recall on clustered data was measured below the required
+              // 0.95 at nprobe=8 (0.94-0.945).  Until a validated approximate
+              // index is enabled, ann mode uses the exact radius-bounded IVF
+              // walk here, so recall is 1.0 and narrowing cannot drop a true
+              // top-k member.
+              (void)ann_mode;
+              scanIvfExact(*ivf, cache, q, k, hits);
               for (const RawHit& h : hits) {
                 consider_hit(h.pk, *cache.rows[h.vi], h.d);
               }
@@ -2632,33 +2663,18 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
             // exact float32 kernel on the (few) surviving candidates.
             std::vector<RawHit> left, right;
             auto run_left = [&] {
-              if (q7Runtime512()) {
-                scanQ7ExactRange512(*q8, cache.vecp.data(), cache.pks.data(), 0,
-                                    n / 2, cache.dim, q, qq, k, left);
-              } else {
-                scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), 0,
-                                 n / 2, cache.dim, q, qq, k, left);
-              }
+              scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), 0,
+                               n / 2, cache.dim, q, qq, k, left);
             };
             auto run_right = [&] {
-              if (q7Runtime512()) {
-                scanQ7ExactRange512(*q8, cache.vecp.data(), cache.pks.data(),
-                                    n / 2, n, cache.dim, q, qq, k, right);
-              } else {
-                scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), n / 2,
-                                 n, cache.dim, q, qq, k, right);
-              }
+              scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), n / 2,
+                               n, cache.dim, q, qq, k, right);
             };
             if (can_parallel) {
               pool_.run(run_left, run_right);
             } else {
-              if (q7Runtime512()) {
-                scanQ7ExactRange512(*q8, cache.vecp.data(), cache.pks.data(), 0,
-                                    n, cache.dim, q, qq, k, left);
-              } else {
-                scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), 0, n,
-                                 cache.dim, q, qq, k, left);
-              }
+              scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), 0, n,
+                               cache.dim, q, qq, k, left);
               right.clear();
             }
             TopK merged(k);
@@ -2843,6 +2859,26 @@ Status Executor::execute(const Statement& stmt, ExecResult& out) {
         out.sync_marker = true;
         return Status::Ok();
       }
+      if (key == "autocommit") {
+        std::string v = toLower(stmt.set.value);
+        const bool on = (v == "1" || v == "on" || v == "true");
+        const bool off = (v == "0" || v == "off" || v == "false");
+        if (!on && !off) {
+          return Status::Error(Err::kInvalidValue,
+                               "autocommit must be 0/1/ON/OFF");
+        }
+        if (on && !autocommit_) {
+          // MySQL commits an open transaction when autocommit is turned on.
+          if (active_) {
+            Status c = commitTxn();
+            if (!c.ok()) return c;
+          }
+          autocommit_ = true;
+        } else if (off) {
+          autocommit_ = false;
+        }
+        return Status::Ok();
+      }
       const bool is_query_mode =
           key == "query_mode" || key == "mode" ||
           (key.size() > 11 && key.ends_with(".query_mode"));
@@ -2895,7 +2931,7 @@ Status Executor::execute(const Statement& stmt, ExecResult& out) {
         }
         return st;
       }
-      if (implicit) {
+      if (implicit && autocommit_) {
         Status c = commitTxn();
         if (!c.ok()) return c;
       }

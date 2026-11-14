@@ -172,6 +172,22 @@ struct FilterCache {
   std::unordered_map<int64_t, std::vector<uint32_t>> num_idx;
 };
 
+// Contiguous q7 code blocks for equality-filtered TopK.  The row's own codes
+// in Quant8Cache are in primary-key order; a filtered scan only visits every
+// k-th row, so it would touch one 128-byte line per 6.4 KB and pay a cache/TLB
+// miss for each candidate.  This cache copies each filter value's codes into
+// one contiguous block (the blocks together are exactly one extra copy of the
+// code matrix, ~1.28 MB at 10k x 128).
+struct FilterCodes {
+  uint64_t version = 0;
+  int col = -1;
+  int vec_col = -1;
+  size_t dim = 0;
+  std::unordered_map<std::string, std::vector<uint8_t>> str;
+  std::unordered_map<int64_t, std::vector<uint8_t>> num;
+  bool valid = false;
+};
+
 struct IvfCache {
   uint64_t version = 0;
   int col = -1;
@@ -196,6 +212,7 @@ struct Table {
   uint64_t row_version = 0;
   VectorCache vector_cache;
   std::unordered_map<int, FilterCache> filter_caches;
+  std::unordered_map<int, FilterCodes> filter_codes;
   std::unordered_map<int, IvfCache> ivf_caches;
   std::unordered_map<int, QuantCache> quant_caches;
   std::unordered_map<int, Quant8Cache> quant8_caches;

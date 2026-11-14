@@ -23,6 +23,12 @@
 | D10 | 2026-11-14 | 15 单元/raw23.5 平台仍 12.5，和13单元相同 | 增加单元数没有加分；反而接近18/29.5越界区。 | 回到13单元/raw19.5，改为补技术细节和反思。 | release gate、官方20 |
 | D11 | 2026-11-14 | prompt 中 U14/U15、U2/U6/U12/U13 的 result_pointer 与内容语义错位 | 批量WAL指向checkpoint、checkpoint指向query；负结果指向prompt教训；最终取舍指向fast query。 | 逐一改为 E20/E21/E4/E18/E19，并校验 evidence 与 output 精确一致。 | gate + 人工语义核对 |
 | D12 | 2026-11-14 | ASAN 下 checkpoint/重启/关停偶发 `stack-use-after-return`；正常构建偶发退出码非0 | `ScanPool::~ScanPool` 用 `++seq_` 唤醒 worker，worker 把旧 `job_`（捕获 executeSelect 栈上 left/right/q8）当新任务再执行一次，此时 executeSelect 已返回。 | 析构不再递增 seq，只设 stop+notify；worker 在调用 job_ 前检查 stop；ASAN 10k checkpoint/关停连续 3 次通过。 | ASAN official 20、checkpoint 10k、正常 public/crash |
+| D13 | 2026-11-14 审计 | 单条多行 INSERT >64 MiB 被确认成功后重启全部丢失 | `Wal::appendBatch` 无 payload 上限，而 `readRecord`/`forEachRecord` 按 `kMaxPayload=64MiB` 拒绝；shutdown 的 checkpoint 只打印 warning | 按 ≤4 MiB / ≤4096 行把逻辑 INSERT 拆成同一事务内的多条 InsertBatch，每行记录自己的 WAL offset；`appendBatch` 在写前执行同一上限检查。61.2 MB / 68 行重启后 68 行、第 68 行内容长度 900000 | 大 INSERT 重启、chunk 中途 crash、重复 PK 跨 chunk |
+| D14 | 2026-11-14 审计 | `ORDER BY id LIMIT 9223372036854775807` 触发 `std::length_error`，进程 abort，无响应 | pk 顺序 TopK 快路径 `out.rows.reserve(stmt.limit)` 直接按 LIMIT 预留 | reserve 取 `min(limit, table->rows.size())` | LIMIT 2^63-1 / 1e9 返回全部行，无崩溃 |
+| D15 | 2026-11-14 审计 | `SELECT L2_DISTANCE(q1)` 但 `ORDER BY L2_DISTANCE(q2)` 时输出 q2 的距离 | `simple_proj` 只检查投影形状，未检查投影距离的查询向量与 ORDER BY key 相同 | 要求 `cols[1].query == orders[0].query` 且维度一致，否则走通用投影路径 | 两个不同查询向量的组合返回正确距离 |
+| D16 | 2026-11-14 审计 | 聚簇数据 ann 模式平均 recall 可低于 0.95（审计 0.945；本地 10k 均值 0.995、单查询最低 0.8） | `scanIvfAnn` 固定 nprobe=8，忽略 `ivf->nprobe`，且无 recall 余量 | ann 模式在聚簇数据改走精确半径 IVF（`scanIvfExact`），recall=1.0；uniform 走 q7 精确 superset | 10k 聚簇 exact oracle 20/20 + ann recall 1.0；uniform/clustered run_recall 1.0 |
+| D17 | 2026-11-14 审计 | `'[1.2.3,0]'`、`'[1-2,0]'`、`'[1+2,0]'` 被静默接受为 `[1.2,0]` 等 | 快速十进制路径只返回 bool，调用方另用宽松字符扫描推进位置 | `parseSimpleDecimal` 返回精确 `next` 指针；非法字符留给外层逗号检查；要求小数点前至少一位数字 | malformed 全部 invalid_vector；20000 组随机字面量与 from_chars 双精度→float32 位级一致 |
+| D18 | 2026-11-14 审计 | `SET autocommit=0; INSERT; ROLLBACK` 后行仍可见 | SET autocommit 被当作 no-op | Executor 保存 `autocommit_`；autocommit=0 的首条 DML 开启并保持事务，ROLLBACK 回滚，SET autocommit=1 提交打开的事务，shutdown 回滚 | autocommit=0 的 rollback/commit/turn-on/shutdown 四组检查 |
 
 ## 2. Prompt 失败
 
@@ -60,11 +66,16 @@ Prompt结果无效、待复核、超出平台0–100范围或缺少材料摘要�
 6. `python3 tests/run_crash_fuzz.py ./build/minivectordb --iterations 100 --seed <新种子>`
 7. `python3 tests/run_checkpoint.py --bin ./build/minivectordb`（10k batch + threshold=1 + 重启）
 8. `python3 tests/run_marker_cases.py`（20/20）
-9. `python3 scripts/release_gate.py --require-conversation`
-10. Docker 官方公开 20 例（`protocol_check`，若本地有题包）
-11. Prompt：13 单元、raw 19.5、JSON ≤64 KiB、pointer/evidence 精确、无 >100 本地分数
-12. 性能：`tools/bench.py` 与上一版同机对照；只接受“查询不回退 + 写入/B/M 有收益”的改动
-13. `git status` 干净、远端 SHA 一致、无密钥
+9. `python3 tests/run_filter_diff.py`（190 checks，0 failures）
+10. `python3 tests/run_profile.py`（记录 write/query 分解）
+11. 大 INSERT（>64 MiB）+ 重启；huge LIMIT；不同投影/排序查询向量的距离
+12. `g++ -O2 -std=c++20 -Isrc tests/crc_check.cpp src/common.cpp -o /tmp/crc && /tmp/crc`（0 mismatch）
+13. `g++ -O2 -std=c++20 -Isrc tests/parse_vector_check.cpp src/common.cpp -o /tmp/pv && /tmp/pv`（0 mismatch）
+14. `python3 scripts/release_gate.py --require-conversation`
+15. Docker 官方公开 20 例（`protocol_check`，若本地有题包）
+16. Prompt：24 单元目标、JSON ≤64 KiB、pointer/evidence 精确、无本地分数
+17. 性能：`tools/bench.py` / `tests/run_profile.py` 与上一版同机对照；只接受“查询不回退 + 写入/B/M 有收益”的改动
+18. `git status` 干净、远端 SHA 一致、无密钥
 
 ASAN 额外检查（大改后）：`tests/run_public_cases.py`、`run_recall.py`、`run_crash_fuzz.py` 用 ASAN 构建。
 

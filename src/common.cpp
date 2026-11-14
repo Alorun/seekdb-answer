@@ -16,7 +16,7 @@ void maybeCrash(const char* point) {
   }
 }
 
-uint32_t crc32c(const void* data, size_t n) {
+uint32_t crc32cSw(const void* data, size_t n) {
   static uint32_t table[256];
   static bool init = false;
   if (!init) {
@@ -33,6 +33,41 @@ uint32_t crc32c(const void* data, size_t n) {
   uint32_t c = 0xFFFFFFFFu;
   for (size_t i = 0; i < n; ++i) c = table[(c ^ p[i]) & 0xFF] ^ (c >> 8);
   return c ^ 0xFFFFFFFFu;
+}
+
+#if defined(__x86_64__) || defined(__i386__)
+#include <nmmintrin.h>
+__attribute__((target("sse4.2"))) uint32_t crc32cHw(const void* data,
+                                                    size_t n) {
+  const auto* p = static_cast<const unsigned char*>(data);
+  uint64_t c = 0xFFFFFFFFu;
+  while (n >= 8) {
+    uint64_t v;
+    std::memcpy(&v, p, sizeof(v));
+    c = _mm_crc32_u64(c, v);
+    p += 8;
+    n -= 8;
+  }
+  uint32_t c32 = static_cast<uint32_t>(c);
+  while (n-- > 0) c32 = _mm_crc32_u8(c32, *p++);
+  return c32 ^ 0xFFFFFFFFu;
+}
+#endif
+
+uint32_t crc32c(const void* data, size_t n) {
+#if defined(__x86_64__) || defined(__i386__)
+  // CRC32C is on the WAL write and recovery hot paths (a 160 KB INSERT batch
+  // and every replayed record).  SSE4.2 is ~6x the table version; self-test it
+  // once so an unusual CPU/emulator still falls back to the portable code.
+  static const bool use_hw = [] {
+    if (!__builtin_cpu_supports("sse4.2")) return false;
+    const char probe[] =
+        "MiniVectorDB crc32c self test 0123456789";
+    return crc32cHw(probe, sizeof(probe)) == crc32cSw(probe, sizeof(probe));
+  }();
+  if (use_hw) return crc32cHw(data, n);
+#endif
+  return crc32cSw(data, n);
 }
 
 std::string encodeSchema(const Schema& schema) {
@@ -1050,15 +1085,85 @@ bool parseBigInt(std::string_view text, int64_t& out, std::string& err) {
   return true;
 }
 
+namespace {
+// Fast path for the vector grammar used by every INSERT and TopK literal:
+// [+-]digits[.digits], no exponent.  With <=15 significant digits and <=22
+// fractional digits, both the integer mantissa and 10^k are exact doubles, so
+// one IEEE division rounds exactly once and the result is identical to
+// std::from_chars(double) followed by the float32 cast.  Anything else
+// (exponent, more digits, '.5') returns false and the caller retries with
+// from_chars, preserving the reference parser's grammar.
+bool parseSimpleDecimal(const char* begin, const char* end, const char*& next,
+                        double& value) {
+  static constexpr double kPow10[] = {
+      1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,
+      1e8,  1e9,  1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+      1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22};
+  const char* p = begin;
+  bool neg = false;
+  if (p < end && (*p == '+' || *p == '-')) {
+    neg = (*p == '-');
+    ++p;
+  }
+  uint64_t mant = 0;
+  int int_digits = 0;
+  int digits = 0;
+  int frac = 0;
+  bool dot = false;
+  while (p < end) {
+    const char c = *p;
+    if (c >= '0' && c <= '9') {
+      if (mant > (UINT64_MAX - 9) / 10) return false;
+      mant = mant * 10 + static_cast<uint64_t>(c - '0');
+      ++digits;
+      if (dot) {
+        ++frac;
+      } else {
+        ++int_digits;
+      }
+      ++p;
+    } else if (c == '.' && !dot) {
+      dot = true;
+      ++p;
+    } else {
+      break;
+    }
+  }
+  // from_chars' grammar requires at least one digit before the point and
+  // stops at the first character that cannot continue the number.  Returning
+  // the exact end pointer makes the caller reject '1.2.3', '1-2', '1+2', etc.
+  if (int_digits == 0 || digits > 15 || frac > 22) return false;
+  if (p < end && (*p == 'e' || *p == 'E')) return false;
+  double d;
+  if (mant == 0) {
+    d = 0.0;
+  } else if (frac == 0) {
+    d = static_cast<double>(mant);
+  } else {
+    d = static_cast<double>(mant) / kPow10[frac];
+  }
+  value = neg ? -d : d;
+  next = p;
+  return true;
+}
+}  // namespace
+
 bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
                         std::string& err) {
   out.clear();
-  std::string s = trim(text);
+  // Parse in place: the SQL literal and every JSON request vector are already
+  // owned by a token, so trimming and slicing into fresh std::strings only
+  // copied ~700 bytes per query (and per row on bulk INSERT).
+  size_t sb = 0, se = text.size();
+  while (sb < se && std::isspace(static_cast<unsigned char>(text[sb]))) ++sb;
+  while (se > sb && std::isspace(static_cast<unsigned char>(text[se - 1]))) --se;
+  std::string_view s = text.substr(sb, se - sb);
   if (s.size() < 2 || s.front() != '[' || s.back() != ']') {
     err = "vector literal must look like [v1, v2, ...]";
     return false;
   }
-  std::string body = s.substr(1, s.size() - 2);
+  std::string_view body = s.substr(1, s.size() - 2);
+  out.reserve(std::count(body.begin(), body.end(), ',') + 1);
   size_t pos = 0;
   while (pos < body.size()) {
     while (pos < body.size() &&
@@ -1066,10 +1171,11 @@ bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
       ++pos;
     }
     if (pos >= body.size()) break;
-    const char* start = body.c_str() + pos;
+    const char* start = body.data() + pos;
     // strtod also accepts C99 hex floats (0x10); the task's vector grammar is
     // decimal only, so reject them rather than silently parsing 16.
-    if (start[0] == '0' && (start[1] == 'x' || start[1] == 'X')) {
+    if (start[0] == '0' && pos + 1 < body.size() &&
+        (start[1] == 'x' || start[1] == 'X')) {
       err = "invalid number in vector literal";
       return false;
     }
@@ -1077,16 +1183,22 @@ bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
     // then narrow to float32.  Direct from_chars(float) can double-round a
     // decimal differently by one ulp, which changes a 9-digit distance output.
     const char* cursor = start;
-    if (cursor < body.c_str() + body.size() && *cursor == '+') ++cursor;
+    if (cursor < body.data() + body.size() && *cursor == '+') ++cursor;
     double d = 0.0;
-    auto parsed = std::from_chars(cursor, body.c_str() + body.size(), d);
-    if (parsed.ec == std::errc::result_out_of_range) {
-      err = "vector value overflows float32";
-      return false;
-    }
-    if (parsed.ec != std::errc() || parsed.ptr == cursor) {
-      err = "invalid number in vector literal";
-      return false;
+    const char* next = start;
+    if (parseSimpleDecimal(start, body.data() + body.size(), next, d)) {
+      // fast path already set `next` to the first unconsumed character
+    } else {
+      auto parsed = std::from_chars(cursor, body.data() + body.size(), d);
+      if (parsed.ec == std::errc::result_out_of_range) {
+        err = "vector value overflows float32";
+        return false;
+      }
+      if (parsed.ec != std::errc() || parsed.ptr == cursor) {
+        err = "invalid number in vector literal";
+        return false;
+      }
+      next = parsed.ptr;
     }
     if (!std::isfinite(d) ||
         std::fabs(d) > static_cast<double>(std::numeric_limits<float>::max())) {
@@ -1099,7 +1211,7 @@ bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
       return false;
     }
     out.push_back(f);
-    pos += static_cast<size_t>(parsed.ptr - start);
+    pos += static_cast<size_t>(next - start);
     while (pos < body.size() &&
            std::isspace(static_cast<unsigned char>(body[pos]))) {
       ++pos;

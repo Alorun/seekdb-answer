@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <cmath>
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
@@ -262,7 +263,11 @@ inline size_t utf8Length(std::string_view s) {
 }
 
 inline std::string formatDouble(double v) {
-  char buf[64];
+  if (!std::isfinite(v)) return "0";
+  char buf[48];
+  auto r = std::to_chars(buf, buf + sizeof(buf), v,
+                         std::chars_format::general, 9);
+  if (r.ec == std::errc()) return std::string(buf, r.ptr);
   std::snprintf(buf, sizeof(buf), "%.9g", v);
   return std::string(buf);
 }

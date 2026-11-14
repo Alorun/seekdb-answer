@@ -90,6 +90,7 @@ class Executor {
   // response until flushSync() returns Ok.
   void setDeferSync(bool defer) { defer_sync_ = defer; }
   bool inTransaction() const { return active_; }
+  bool autocommit() const { return autocommit_; }
   // Build vector/IVF caches before the ready handshake.  Preparation is not
   // part of the timed query phase, but its memory/IO is counted, so this is
   // done once after recovery for existing large tables.
@@ -141,6 +142,7 @@ class Executor {
   Database& db_;
   ScanPool pool_;
   bool active_ = false;
+  bool autocommit_ = true;
   bool defer_sync_ = false;
   bool pending_sync_ = false;
   uint64_t txn_id_ = 0;

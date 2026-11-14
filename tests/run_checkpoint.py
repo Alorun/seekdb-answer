@@ -8,6 +8,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--bin', default='./build/minivectordb')
     ap.add_argument('--rows', type=int, default=10000)
+    ap.add_argument('--disk', action='store_true', help='force --memory-rows 0')
     args = ap.parse_args()
     data = tempfile.mkdtemp(prefix='mvdb_ckpt_data_')
     db = tempfile.mkdtemp(prefix='mvdb_ckpt_db_')
@@ -25,7 +26,10 @@ def main():
         line = p.stdout.readline()
         assert line, 'database exited before response'
         return json.loads(line)
-    p = start(('--checkpoint-bytes', '1'))
+    extra = ['--checkpoint-bytes', '1']
+    if args.disk:
+        extra += ['--memory-rows', '0']
+    p = start(tuple(extra))
     r = send(p, schema); assert r.get('ok'), r
     for b in batches:
         r = send(p, b); assert r.get('ok'), r
@@ -35,12 +39,18 @@ def main():
     assert 'checkpoint failed' not in err, err
     assert p.returncode == 0, (p.returncode, err)
     p = start()
-    r = send(p, queries[0]); assert r.get('ok') and len(r.get('rows', [])) == 10, r
+    r = send(p, 'SELECT id FROM docs ORDER BY id;')
+    assert r.get('ok'), r
+    count = len(r.get('rows', []))
+    assert count == args.rows, (count, args.rows)
+    r = send(p, queries[0])
+    assert r.get('ok') and len(r.get('rows', [])) == 10, r
     p.stdin.write(json.dumps({'op': 'shutdown'}) + '\n'); p.stdin.flush()
     p.stdout.readline(); p.wait()
     assert p.returncode == 0
     shutil.rmtree(data, ignore_errors=True); shutil.rmtree(db, ignore_errors=True)
-    print('checkpoint 10k + restart: PASS')
+    mode = 'disk' if args.disk else 'memory'
+    print(f'checkpoint rows={args.rows} mode={mode} restart_rows={count}: PASS')
     return 0
 
 if __name__ == '__main__':
