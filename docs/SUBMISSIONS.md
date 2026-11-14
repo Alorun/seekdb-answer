@@ -3,6 +3,22 @@
 One row per formal submission. A submission is a candidate only after the
 platform confirms all MySQL cases pass.
 
+## Current candidate (not formally submitted)
+
+| field | value |
+|---|---|
+| branch / commit | `2026-competition-round2` / `511b03a45c3d41a04fffeaedfa1b68671ef99997` |
+| code commit | `7c009b3e24a480f4de86ec76a6d6c5fdd06197c9` (material commit is its child) |
+| conversation | 52,258 bytes, sha256 `d5bdeeb080c175b7c0483390137fc859402dc24130b4d39d5a3dbbf584ae3825`, 25 units / raw 42.0 |
+| local gate | `release_gate.py --require-conversation` PASS (anonymous remote + Docker smoke) |
+| official public | protocol_check 20/20 (Docker tip image), public 20/20, marker 20/20 |
+| SQL edges | 158 checks x 2 modes, 0 failures |
+| recall | 5000x128 uniform/clustered exact oracle match; ann recall 1.0 |
+| crash/checkpoint | 240 crash iterations 0 failures; checkpoint 10k/50k/disk restart counts PASS |
+| local perf A/B | S3→current uniform write 0.5268→0.2442 s, query 0.1761→0.0490 s, RSS 14.4→12.4 MiB |
+| formal admission/perf | pending platform run for this commit |
+
+
 | slot | date/time | commit SHA | image digest | conversation sha256 / bytes | gate | precheck | formal result | admission | local E_write | local E_query | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | S1 | 2026-11-09 | eade40b445b9fa991be27375d4c6b58463b94803 |  | 0b9e9e71 / 8677 | PASS | not run | MySQL formal failed | fail | 0.49 s | 0.42 s | semicolon + no DML status; see agent/evidence/platform/2026-11-09.md |

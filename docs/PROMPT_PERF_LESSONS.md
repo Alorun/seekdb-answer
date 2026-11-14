@@ -94,6 +94,20 @@
 - B4.84MB、M14.0MB 已接近该实现稳定值；
 - 10k×128 的 q7 扫描已接近2核AVX2上限。
 
+## 4.4 2026-11-14 19:00 本轮 A/B（同一机器，taskset -c 0,2）
+
+- S3 `057126c01` → 当前 `7c009b3e2`，uniform 10k×128 / 1000 混合查询：
+  - write 0.5268 → 0.2442 s；query 0.1761 → 0.0490 s；VmHWM 14.4 → 12.4 MiB。
+- 同版本对，clustered（20 中心 ±0.35）：
+  - write 0.5689 → 0.2649 s；query 0.1914 → 0.1154 s；VmHWM 14.3 → 12.6 MiB。
+- 过滤/无过滤 500 条中位数（base → current）：39.0 → 33.6 us；72.6 → 53.3 us。
+- 单/双核 1000 查询：uniform 59.8 → 53.4 ms（1.12x）；clustered 126.2 → 118.3 ms（1.07x）。
+- Docker `--cpus=2 --memory=2g`：write 277.4 ms，q1000 124.6 ms，B 5.26 MB，memory.peak 12.9 MB。
+- ANN 独立基准（10k×128）：uniform exact 44.95 us → ann 37.78 us（1.19x，recall 1.0）；
+  clustered exact 49.40 us → 精确 IVF 8.42 us（5.87x，recall 1.0，build 39.9 ms，索引 0.078 MB）。
+- 结论：uniform 的 q7 扫描已接近 1.28 MB/查询的带宽下限，4-bit/2-bit/HNSW 都没有安全收益；
+  真正的下一步需要平台 T/B/M 分项，才能判断 AVX-512/数据布局是否值得再冒险。
+
 ## 5. 当前稳定结论
 
 - 性能：**E4448.644112**，有效；再往上需要平台 AVX-512 真正生效或重写存储布局，小改无安全空间。
