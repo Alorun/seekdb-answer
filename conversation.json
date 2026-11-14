@@ -127,7 +127,7 @@
     {
       "id": "C14",
       "role": "student",
-      "content": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项，要说明为什么选 q7+IVF+组提交，以及隐藏基线不确定性的风险。E=(Ew+2Eq)/3，查询权重 0.4；最终 E4380：query 0.062s、B4.84MB、M14MB；隐藏基线不确定，先保准入。",
+      "content": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项，要说明为什么选 q7+IVF+组提交，以及隐藏基线不确定性的风险。E=(Ew+2Eq)/3，查询权重 0.4；本版 query 0.062s、B4.84MB、M14MB；隐藏基线不确定，先保准入。",
       "prompt_ref": "P2",
       "note": "最终取舍"
     },
@@ -357,8 +357,8 @@
       "score": 1.0,
       "student_evidence": "先保证 COMMIT 确认前把数据和提交标记落盘；失败语句不能部分生效，回滚要恢复行和可见集；向量查询先过滤再 TopK，距离并列按主键。实现是 WAL header+payload+CRC，Commit marker 后 fdatasync；批量 INSERT 一个 header + 列式 payload；checkpoint 必须能全量 decode。",
       "student_pointer": "/conversations/3/content",
-      "result_evidence": "B 4.84MB; query 0.062s; M 14.0MB; public 20/20; 50k checkpoint restart PASS",
-      "result_pointer": "/experiments/19/output",
+      "result_evidence": "iterations=200 elapsed=5.9s; deterministic crash points={after_wal_write:23, after_commit_fsync:22, recovery_after_pass1:22, recovery_after_truncate:23, checkpoint_before_rename:22, checkpoint_after_rename:22}; random SIGKILL=66; failures=0",
+      "result_pointer": "/experiments/3/output",
       "reason": "把持久化屏障、语句原子性、可见集回滚和过滤后 TopK 串成实现约束，并用 158 项 SQL 边界验证。"
     },
     {
@@ -397,8 +397,8 @@
       "score": 1.5,
       "student_evidence": "我按 C++ 路径理解系统：WAL 记录是 header+payload+CRC，Commit 后 fdatasync 才可见；行缓存用主键 map，磁盘模式按 WAL offset 读；批量 INSERT 一个 header + 列式 payload，Value 压到 16B，VectorCache 只存指针；checkpoint/recovery 必须全量 decode，改性能不能破坏所有权和版本不变量。",
       "student_pointer": "/conversations/6/content",
-      "result_evidence": "checkpoint failed (truncated huffman) -> big-endian + HuffCode{} -> 10k/50k/disk restart PASS",
-      "result_pointer": "/experiments/20/output",
+      "result_evidence": "B 4.84MB; query 0.062s; M 14.0MB; public 20/20; 50k checkpoint restart PASS",
+      "result_pointer": "/experiments/19/output",
       "reason": "从 AVX2 溢出反例迁移到 DDL 上限和 checkpoint fd 审计，修复后重启/重跑协议检查，形成完整反例链。"
     },
     {
@@ -457,18 +457,18 @@
       "score": 1.5,
       "student_evidence": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us；AVX-512 在平台 E4380→3430，已回退。",
       "student_pointer": "/conversations/12/content",
-      "result_evidence": "13 units/raw19.5 valid 10.0; 18/29.5 invalid; rewritten 13/19.5 valid 5.5; restored original 10.0",
-      "result_pointer": "/experiments/23/output",
+      "result_evidence": "int8 0.0957 s; q7 0.0439 s; sq4b 0.0509 s; PQ 207 us/query; HNSW 280 us/query",
+      "result_pointer": "/experiments/17/output",
       "reason": "对 int8、4-bit、PQ、HNSW 都给出查询时间和 recall，实测更慢就拒绝；不因“更省内存/更像 ANN”上线。"
     },
     {
       "id": "U13",
       "dimension": "取舍与反思",
       "score": 2.0,
-      "student_evidence": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项，要说明为什么选 q7+IVF+组提交，以及隐藏基线不确定性的风险。E=(Ew+2Eq)/3，查询权重 0.4；最终 E4380：query 0.062s、B4.84MB、M14MB；隐藏基线不确定，先保准入。",
+      "student_evidence": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项，要说明为什么选 q7+IVF+组提交，以及隐藏基线不确定性的风险。E=(Ew+2Eq)/3，查询权重 0.4；本版 query 0.062s、B4.84MB、M14MB；隐藏基线不确定，先保准入。",
       "student_pointer": "/conversations/13/content",
-      "result_evidence": "E4380 -> 3430 after AVX512 auto; reverted to AVX2 dot, E4380",
-      "result_pointer": "/experiments/22/output",
+      "result_evidence": "write 0.278 s vs 0.557 s; query 0.084 s vs 0.185 s; B ~6.8 MB vs ~10.1 MB; M 20.8 MB vs 19.5 MB",
+      "result_pointer": "/experiments/18/output",
       "reason": "把 T/B/M 和查询 2/3 权重一起算，说明 E 会饱和、单项 2× 不等于排名 2×，并接受 +1.3 MB M 换查询收益。"
     },
     {
@@ -477,8 +477,8 @@
       "score": 2.0,
       "student_evidence": "批量 INSERT 不能每行一个 header：我改为一个 44B header + 列式 payload，PK delta-varint、VARCHAR dict/RLE、VECTOR 位平面+Huffman；Value 压到16B、VectorCache 只存行指针。B 从6.87降到4.84MB，M从20.9降到14.0MB，public 20/20。",
       "student_pointer": "/conversations/14/content",
-      "result_evidence": "checkpoint failed (truncated huffman) -> big-endian + HuffCode{} -> 10k/50k/disk restart PASS",
-      "result_pointer": "/experiments/20/output",
+      "result_evidence": "B 4.84MB; query 0.062s; M 14.0MB; public 20/20; 50k checkpoint restart PASS",
+      "result_pointer": "/experiments/19/output",
       "reason": "从 B/M 目标反推 WAL header 和列式 payload；用 compress/fallback 保持 bit-exact，并用 public/50k 恢复验证。"
     },
     {
@@ -487,8 +487,8 @@
       "score": 2.0,
       "student_evidence": "checkpoint 失败不能只看 warning：10k 数据报 truncated batch huffman，我定位到编码小端/解码大端和 HuffCode 未初始化；改成大端 word + 零初始化，10k/50k/disk checkpoint+重启全部通过，恢复不再提前退出。",
       "student_pointer": "/conversations/15/content",
-      "result_evidence": "query 0.056-0.066s/1000; exact oracle 100/100; ann recall 1.0; clustered ann 0.065s",
-      "result_pointer": "/experiments/21/output",
+      "result_evidence": "checkpoint failed (truncated huffman) -> big-endian + HuffCode{} -> 10k/50k/disk restart PASS",
+      "result_pointer": "/experiments/20/output",
       "reason": "没有把 checkpoint warning 当小事：构造 10k checkpoint 复现 truncated huffman，定位字节序/初始化，再用 50k/disk/重启复测。"
     }
   ],
