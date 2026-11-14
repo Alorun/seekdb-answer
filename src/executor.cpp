@@ -107,12 +107,6 @@ ScanPool::ScanPool() {
     }
   }
   usable_ = forced || found_pair;
-  if (usable_ && !forced && main_cpu_ >= 0) {
-    cpu_set_t one;
-    CPU_ZERO(&one);
-    CPU_SET(main_cpu_, &one);
-    ::sched_setaffinity(0, sizeof(one), &one);
-  }
 }
 
 
@@ -128,12 +122,6 @@ ScanPool::~ScanPool() {
 }
 
 void ScanPool::workerLoop() {
-  if (worker_cpu_ >= 0) {
-    cpu_set_t one;
-    CPU_ZERO(&one);
-    CPU_SET(worker_cpu_, &one);
-    ::sched_setaffinity(0, sizeof(one), &one);
-  }
   uint64_t seen = 0;
   for (;;) {
     uint64_t spins = 0;
@@ -811,11 +799,16 @@ bool q7Prefer512() {
 
 bool q7Runtime512() {
   static const bool use = [] {
-    return __builtin_cpu_supports("avx2") &&
-           __builtin_cpu_supports("fma") &&
-           __builtin_cpu_supports("avx512f") &&
-           __builtin_cpu_supports("avx512bw") &&
-           __builtin_cpu_supports("avx512vl") && q7Prefer512();
+    if (!(__builtin_cpu_supports("avx2") &&
+          __builtin_cpu_supports("fma") &&
+          __builtin_cpu_supports("avx512f") &&
+          __builtin_cpu_supports("avx512bw") &&
+          __builtin_cpu_supports("avx512vl"))) return false;
+    unsigned int eax, edx;
+    __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
+    // XCR0: SSE, AVX, opmask, ZMM_Hi256, Hi16_ZMM must all be enabled.
+    if ((eax & 0xE6) != 0xE6) return false;
+    return q7Prefer512();
   }();
   return use;
 }
