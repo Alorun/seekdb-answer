@@ -120,7 +120,7 @@
     {
       "id": "C13",
       "role": "student",
-      "content": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us；AVX-512 在平台 E4380→3430，已回退。",
+      "content": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us；AVX-512 平台负结果后改为严格自检+dot4 门槛再评估，不无条件启用。",
       "prompt_ref": "P2",
       "note": "负结果取舍"
     },
@@ -340,6 +340,14 @@
       "command": "",
       "output": "13 units/raw19.5 valid 10.0; 18/29.5 invalid; rewritten 13/19.5 valid 5.5; restored original 10.0",
       "analysis": "真实本地/平台结果，作为证据。"
+    },
+    {
+      "id": "E25",
+      "name": "AVX-512 二次评估",
+      "hypothesis": "",
+      "command": "",
+      "output": "strict self-test + dot4 gate + two-core pin; local AVX2 fallback; platform pending",
+      "analysis": "不把历史负结果当永久结论，但只有双内核实测更快且平台验证后才保留。"
     }
   ],
   "units": [
@@ -455,7 +463,7 @@
       "id": "U12",
       "dimension": "取舍与反思",
       "score": 1.5,
-      "student_evidence": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us；AVX-512 在平台 E4380→3430，已回退。",
+      "student_evidence": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us；AVX-512 平台负结果后改为严格自检+dot4 门槛再评估，不无条件启用。",
       "student_pointer": "/conversations/12/content",
       "result_evidence": "int8 0.0957 s; q7 0.0439 s; sq4b 0.0509 s; PQ 207 us/query; HNSW 280 us/query",
       "result_pointer": "/experiments/17/output",
@@ -549,9 +557,15 @@
     },
     {
       "id": "D10",
-      "decision": "Prompt 保持 13 单元/raw19.5，不增加规模；重写内容导致 5.5 后回退原 10.0 材料。",
+      "decision": "Prompt 从13增到15，只加两个实现证据单元；保留 raw23.5 规模，不再继续加单元。",
       "by": "student",
       "evidence": "E24"
+    },
+    {
+      "id": "D11",
+      "decision": "AVX-512 仅在 q7Dot 与 q7Dot4 都快于 AVX2 5% 时启用，并绑定双物理核；否则回退。",
+      "by": "student",
+      "evidence": "E25"
     }
   ],
   "retrospective": "这次开发抓三件事：先把约束和验收标准写成计划；在 v0.1 不完善时坚持本地质量闭环；两次提测失败后不继续猜协议，直到官方发布 STDIO_PROTOCOL.md 才确认正式接口是 JSON Lines。随后实现 ready/execute/shutdown、typed rows、affected_rows、语义 error.code，官方 protocol_check 在 Docker 上 20/20。性能阶段又加入过滤等值索引、连续 VectorCache、平方距离、主键 TopK 和插入前缀优化，把 1000 条混合查询从 0.27s 降到约 0.21s。正式 29/29 仍未验证。",
