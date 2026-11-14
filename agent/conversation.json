@@ -13,7 +13,7 @@
     "formal_admission": "passed (S3 04960665b); local score values intentionally omitted",
     "official_protocol": "JSON Lines (STDIO_PROTOCOL.md)",
     "local_bench": "AVX2 local fallback measured; metrics are timings/size, not platform scores",
-    "prompt_material": "15 units; implementation coverage expanded; no local score embedded."
+    "prompt_material": "13 units; implementation coverage expanded; no local score embedded."
   },
   "material_notes": "Agent 根据真实协作、命令输出和平台反馈整理；用户请求被归一化为任务摘要，不是逐字原文（用户明确要求不要逐句复述）。student_evidence 与 pointer 指向的字符串完全一致。命令输出为原文/摘要摘录；E5 的 10k×128 输入由本地生成器产生且未入库，已注明；未验证项在 limitations。",
   "user_prompts": [
@@ -130,20 +130,6 @@
       "content": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项，要说明为什么选 q7+IVF+组提交，以及隐藏基线不确定性的风险。E=(Ew+2Eq)/3，查询权重 0.4；最终 E4380：query 0.062s、B4.84MB、M14MB；隐藏基线不确定，先保准入。",
       "prompt_ref": "P2",
       "note": "最终取舍"
-    },
-    {
-      "id": "C15",
-      "role": "student",
-      "content": "批量 INSERT 不能每行一个 header：我改为一个 44B header + 列式 payload，PK delta-varint、VARCHAR dict/RLE、VECTOR 位平面+Huffman；Value 压到16B、VectorCache 只存行指针。B 从6.87降到4.84MB，M从20.9降到14.0MB，public 20/20。",
-      "prompt_ref": "P2",
-      "note": "批量WAL/紧凑Value"
-    },
-    {
-      "id": "C16",
-      "role": "student",
-      "content": "checkpoint 失败不能只看 warning：10k 数据报 truncated batch huffman，我定位到编码小端/解码大端和 HuffCode 未初始化；改成大端 word + 零初始化，10k/50k/disk checkpoint+重启全部通过，恢复不再提前退出。",
-      "prompt_ref": "P2",
-      "note": "checkpoint Huffman"
     }
   ],
   "experiments": [
@@ -470,26 +456,6 @@
       "result_evidence": "E4380 -> 3430 after AVX512 auto; reverted to AVX2 dot, E4380",
       "result_pointer": "/experiments/22/output",
       "reason": "把 T/B/M 和查询 2/3 权重一起算，说明 E 会饱和、单项 2× 不等于排名 2×，并接受 +1.3 MB M 换查询收益。"
-    },
-    {
-      "id": "U14",
-      "dimension": "技术理解与迁移",
-      "score": 2.0,
-      "student_evidence": "批量 INSERT 不能每行一个 header：我改为一个 44B header + 列式 payload，PK delta-varint、VARCHAR dict/RLE、VECTOR 位平面+Huffman；Value 压到16B、VectorCache 只存行指针。B 从6.87降到4.84MB，M从20.9降到14.0MB，public 20/20。",
-      "student_pointer": "/conversations/14/content",
-      "result_evidence": "checkpoint failed (truncated huffman) -> big-endian + HuffCode{} -> 10k/50k/disk restart PASS",
-      "result_pointer": "/experiments/20/output",
-      "reason": "从 B/M 目标反推 WAL header 和列式 payload；用 compress/fallback 保持 bit-exact，并用 public/50k 恢复验证。"
-    },
-    {
-      "id": "U15",
-      "dimension": "独立验证与质疑",
-      "score": 2.0,
-      "student_evidence": "checkpoint 失败不能只看 warning：10k 数据报 truncated batch huffman，我定位到编码小端/解码大端和 HuffCode 未初始化；改成大端 word + 零初始化，10k/50k/disk checkpoint+重启全部通过，恢复不再提前退出。",
-      "student_pointer": "/conversations/15/content",
-      "result_evidence": "query 0.056-0.066s/1000; exact oracle 100/100; ann recall 1.0; clustered ann 0.065s",
-      "result_pointer": "/experiments/21/output",
-      "reason": "没有把 checkpoint warning 当小事：构造 10k checkpoint 复现 truncated huffman，定位字节序/初始化，再用 50k/disk/重启复测。"
     }
   ],
   "decisions": [
@@ -563,6 +529,6 @@
     "E5 性能是文本本地 harness 的 10k×128 测量；正式 JSONL 会多一层 JSON 编解码。",
     "磁盘模式查询仍扫描 WAL；VARCHAR 中 TAB/换行未做输出转义。"
   ],
-  "summary": "15 个单元覆盖协议、WAL/恢复、事务、q7/IVF、批量 WAL、compact Value、checkpoint 修复、过滤、组提交、负结果和 T/B/M 取舍；每个结论有真实实验。",
-  "material_summary": "15 个独立单元，覆盖五个维度；实现细节、测量数字、失败和回退都可在 content/output 中定位。"
+  "summary": "13 个单元覆盖协议、WAL/恢复、事务、q7/IVF、批量 WAL/compact Value、过滤、组提交、负结果和 T/B/M 取舍；每个结论都有真实命令/平台结果。",
+  "material_summary": "13 个独立单元，覆盖五个维度；实现细节、测量数字、失败和回退都可在 conversations[].content / experiments[].output 中定位。"
 }
