@@ -342,6 +342,14 @@
       "command": "",
       "output": "TopK k<=64 fixed array; query 0.059-0.064s/1000; public 20/20; exact/ann recall 1.0",
       "analysis": "去掉每查询两次 small vector 分配；结果/并列顺序与 oracle 一致。"
+    },
+    {
+      "id": "E27",
+      "name": "ScanPool 关停 UAF 修复",
+      "hypothesis": "",
+      "command": "",
+      "output": "ASAN checkpoint/restart x3 PASS; official 20/20; public 20/20",
+      "analysis": "析构不再 ++seq，worker 调用 job 前检查 stop，避免 executeSelect 栈帧销毁后旧 lambda 再执行。"
     }
   ],
   "units": [
@@ -546,6 +554,12 @@
       "decision": "k<=64 的 TopK 用栈上固定数组，避免每次查询分配；k>64 仍用堆。",
       "by": "student",
       "evidence": "E26"
+    },
+    {
+      "id": "D13",
+      "decision": "ScanPool 析构只设 stop+notify，不递增 seq；worker 执行前检查 stop。",
+      "by": "student",
+      "evidence": "E27"
     }
   ],
   "retrospective": "这次开发抓三件事：先把协议/事务/向量/性能四层验收写成计划；v0.1 不完善时坚持本地闭环；两次提测失败后不猜协议，拿到 STDIO_PROTOCOL 后实现 ready/execute/shutdown、typed rows、affected_rows、error.code，官方 20/20。性能阶段先做 q7+连续 VectorCache+批量 WAL，再评估过滤索引/组提交/IVF；AVX-512 平台负结果后改为 XCR0+双内核 A/B+回退，不把微基准当结论。失败也记录：batch Huffman 字节序/初始化、prompt 18 单元越界、重写降到5.5；每次改动都跑 public/SQL/recall/crash/checkpoint/marker。",

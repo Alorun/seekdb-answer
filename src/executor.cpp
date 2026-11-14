@@ -115,7 +115,6 @@ ScanPool::~ScanPool() {
   {
     std::lock_guard<std::mutex> lk(mu_);
     stop_.store(true, std::memory_order_relaxed);
-    ++seq_;
   }
   cv_.notify_one();
   worker_.join();
@@ -140,6 +139,7 @@ void ScanPool::workerLoop() {
       }
     }
     seen = seq_.load(std::memory_order_acquire);
+    if (stop_.load(std::memory_order_relaxed)) return;
     try {
       job_();
     } catch (...) {

@@ -18,6 +18,7 @@
 | D9 | 2026-11-14 正式测评 | **性能结果无效/超出平台范围，本项不参与排名，整体0分**；prompt 12.5 | 当时版本含 AVX-512 + CPU 绑定 + 双核；最可能为平台 XCR0/ZMM 状态不可用导致 SIGILL，或 CPU 绑定与平台调度冲突/超时。 | 删除 `sched_setaffinity`；AVX-512 前检查 `xgetbv & 0xE6`；双内核实测门槛；失败自动 AVX2。 | 官方20、SQL、recall、crash、checkpoint、ASAN、preflight |
 | D10 | 2026-11-14 | 15 单元/raw23.5 平台仍 12.5，和13单元相同 | 增加单元数没有加分；反而接近18/29.5越界区。 | 回到13单元/raw19.5，改为补技术细节和反思。 | release gate、官方20 |
 | D11 | 2026-11-14 | prompt 中 U14/U15、U2/U6/U12/U13 的 result_pointer 与内容语义错位 | 批量WAL指向checkpoint、checkpoint指向query；负结果指向prompt教训；最终取舍指向fast query。 | 逐一改为 E20/E21/E4/E18/E19，并校验 evidence 与 output 精确一致。 | gate + 人工语义核对 |
+| D12 | 2026-11-14 | ASAN 下 checkpoint/重启/关停偶发 `stack-use-after-return`；正常构建偶发退出码非0 | `ScanPool::~ScanPool` 用 `++seq_` 唤醒 worker，worker 把旧 `job_`（捕获 executeSelect 栈上 left/right/q8）当新任务再执行一次，此时 executeSelect 已返回。 | 析构不再递增 seq，只设 stop+notify；worker 在调用 job_ 前检查 stop；ASAN 10k checkpoint/关停连续 3 次通过。 | ASAN official 20、checkpoint 10k、正常 public/crash |
 
 ## 2. Prompt 失败
 
