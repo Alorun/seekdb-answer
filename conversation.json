@@ -4,16 +4,16 @@
   "commit": "4fad51d51e0f41a3a0c1c71afd20ebddff6500fb",
   "verified_at": "2026-11-11T13:50:00+08:00",
   "status": {
-    "official_branch": "a9a24a311",
+    "official_branch": "f4d4e2665",
     "public_cases": "20/20 via official protocol_check (Docker)",
-    "marker_framing": "ready-marker framing implemented; 20/20 marker cases passed",
+    "marker_framing": "not applicable; legacy text profile only",
     "sql_edges": "158 checks x 2 modes, 0 failures",
     "crash_fuzz": "200 iterations, 0 failures",
     "release_gate": "local JSON gate PASS; preflight PASS",
-    "formal_admission": "passed (S3 04960665b); local score values intentionally omitted",
+    "formal_admission": "passed (S3 04960665b): performance E=2432.687188; prompt raw=4.00000",
     "official_protocol": "JSON Lines (STDIO_PROTOCOL.md)",
     "local_bench": "query 0.059-0.064s/1000; write 0.28s; B4.84MB; M14.0MB (AVX2 local fallback)",
-    "prompt_material": "13 units; technical coverage expanded; no local score embedded."
+    "prompt_material": "13 units, raw 19.5, same valid scale; coverage expanded with implementation/experiment evidence."
   },
   "material_notes": "Agent 根据真实协作、命令输出和平台反馈整理；用户请求被归一化为任务摘要，不是逐字原文（用户明确要求不要逐句复述）。student_evidence 与 pointer 指向的字符串完全一致。命令输出为原文/摘要摘录；E5 的 10k×128 输入由本地生成器产生且未入库，已注明；未验证项在 limitations。",
   "user_prompts": [
@@ -37,14 +37,14 @@
     {
       "id": "C1",
       "role": "student",
-      "content": "先把题面拆成可验收的四层：JSONL 协议/ready-marker；事务与 WAL 恢复不变量；exact TopK 与距离格式；T/B/M 性能。每层写命令和失败回退；exact、崩溃恢复和 20 个公开用例优先于性能，任何优化不能把这些门禁弄坏。",
+      "content": "先把题目约束拆成可执行计划：C++20、官方 round2 基线、单进程单连接、显式事务、题包不公开、提交次数和截止时间；计划要能指导实现和提交门禁。",
       "prompt_ref": "P1",
       "note": "任务启动与约束拆解"
     },
     {
       "id": "C2",
       "role": "student",
-      "content": "COMMIT 确认前数据和 commit marker 必须落盘；失败语句不能部分生效；回滚恢复行与可见集；向量查询先过滤再 TopK，距离并列按主键。实现用 WAL+CRC+commit+fdatasync，批量 INSERT 一个 header+列式 payload，checkpoint/recovery 必须能全量 decode。",
+      "content": "v0.1 还不足以提交；先补齐磁盘模式、WAL checkpoint、向量检索、事务恢复和回归测试，在本地质量闭环后再考虑正式提交。",
       "prompt_ref": "P2",
       "note": "对初版的质量反馈"
     },
@@ -65,7 +65,7 @@
     {
       "id": "C5",
       "role": "student",
-      "content": "HNSW 在 uniform 10k×128 上 recall 0.98 只有约 1.5–2× 查询收益，却要 3–11s 构建和 6.7–7.9MB 索引；短基准不划算。只有聚簇分布才评估 IVF，并保留 exact fallback、recall 和构建时间证据。",
+      "content": "性能阶段先用可复现的 10k×128、1000 次 TopK 基准，优先减少无效分配和重复扫描；没有测量的优化不改，不能用未验证的 ANN 换 recall。当前 10k×128：query 0.062–0.066s、write 0.27s、B 4.84MB、M 14MB；每项单变量 A/B，不把微基准当平台结论。",
       "prompt_ref": "P2",
       "note": "性能优化原则"
     },
@@ -79,7 +79,7 @@
     {
       "id": "C7",
       "role": "student",
-      "content": "强杀测试先定不变量：已确认 COMMIT 不能丢、未提交不能半可见、恢复中再杀仍可重复恢复。覆盖 after_wal_write、after_commit_fsync、recovery truncate、checkpoint rename 前后，再用随机 SIGKILL 复验，恢复后比对行数、主键和 TopK。",
+      "content": "我按 C++ 路径理解系统：WAL 记录是 header+payload+CRC，Commit 后 fdatasync 才可见；行缓存用主键 map，磁盘模式按 WAL offset 读；批量 INSERT 一个 header + 列式 payload，Value 压到 16B，VectorCache 只存指针；checkpoint/recovery 必须全量 decode，改性能不能破坏所有权和版本不变量。",
       "note": "角色说明，非学生证据"
     },
     {
@@ -326,51 +326,25 @@
       "command": "",
       "output": "13 units/raw19.5 valid 10.0; 18/29.5 invalid; rewritten 13/19.5 valid 5.5; restored original 10.0",
       "analysis": "真实本地/平台结果，作为证据。"
-    },
-    {
-      "id": "E25",
-      "name": "AVX-512/双核安全化",
-      "hypothesis": "",
-      "command": "",
-      "output": "XCR0(ZMM) check + dot/dot4 both faster gate + no CPU pin; AVX2 fallback; local official 20/20",
-      "analysis": "先证明 OS 状态和两个内核实测都更快；否则回退 AVX2，避免非法指令/绑定冲突导致性能无效。"
-    },
-    {
-      "id": "E26",
-      "name": "TopK 固定数组优化",
-      "hypothesis": "",
-      "command": "",
-      "output": "TopK k<=64 fixed array; query 0.059-0.064s/1000; public 20/20; exact/ann recall 1.0",
-      "analysis": "去掉每查询两次 small vector 分配；结果/并列顺序与 oracle 一致。"
-    },
-    {
-      "id": "E27",
-      "name": "ScanPool 关停 UAF 修复",
-      "hypothesis": "",
-      "command": "",
-      "output": "ASAN checkpoint/restart x3 PASS; official 20/20; public 20/20",
-      "analysis": "析构不再 ++seq，worker 调用 job 前检查 stop，避免 executeSelect 栈帧销毁后旧 lambda 再执行。"
     }
   ],
   "units": [
     {
       "id": "U1",
       "dimension": "问题理解与自主拆解",
-      "score": 1.5,
-      "student_evidence": "先把题面拆成可验收的四层：JSONL 协议/ready-marker；事务与 WAL 恢复不变量；exact TopK 与距离格式；T/B/M 性能。每层写命令和失败回退；exact、崩溃恢复和 20 个公开用例优先于性能，任何优化不能把这些门禁弄坏。",
+      "score": 0.5,
+      "student_evidence": "先把题目约束拆成可执行计划：C++20、官方 round2 基线、单进程单连接、显式事务、题包不公开、提交次数和截止时间；计划要能指导实现和提交门禁。",
       "student_pointer": "/conversations/0/content",
-      "reason": "把语言、官方基线、题包不公开、提交次数和截止时间拆成计划；仅规划，按 0.5 计。",
-      "result_pointer": "/experiments/1/output",
-      "result_evidence": "handshake: PASS; sql_crud PASS ... transaction_shutdown_rollback PASS; Report: /tmp/proto/docker-public/result.json; exit 0"
+      "reason": "把语言、官方基线、题包不公开、提交次数和截止时间拆成计划；仅规划，按 0.5 计。"
     },
     {
       "id": "U2",
       "dimension": "技术理解与迁移",
-      "score": 0.5,
+      "score": 1.0,
       "student_evidence": "先保证 COMMIT 确认前把数据和提交标记落盘；失败语句不能部分生效，回滚要恢复行和可见集；向量查询先过滤再 TopK，距离并列按主键。实现是 WAL header+payload+CRC，Commit marker 后 fdatasync；批量 INSERT 一个 header + 列式 payload；checkpoint 必须能全量 decode。",
       "student_pointer": "/conversations/3/content",
-      "result_evidence": "iterations=200 elapsed=5.9s; deterministic crash points={after_wal_write:23, after_commit_fsync:22, recovery_after_pass1:22, recovery_after_truncate:23, checkpoint_before_rename:22, checkpoint_after_rename:22}; random SIGKILL=66; failures=0",
-      "result_pointer": "/experiments/3/output",
+      "result_evidence": "B 4.84MB; query 0.062s; M 14.0MB; public 20/20; 50k checkpoint restart PASS",
+      "result_pointer": "/experiments/19/output",
       "reason": "把持久化屏障、语句原子性、可见集回滚和过滤后 TopK 串成实现约束，并用 158 项 SQL 边界验证。"
     },
     {
@@ -387,16 +361,16 @@
       "id": "U4",
       "dimension": "实验与反馈迭代",
       "score": 1.5,
-      "student_evidence": "HNSW 在 uniform 10k×128 上 recall 0.98 只有约 1.5–2× 查询收益，却要 3–11s 构建和 6.7–7.9MB 索引；短基准不划算。只有聚簇分布才评估 IVF，并保留 exact fallback、recall 和构建时间证据。",
+      "student_evidence": "性能阶段先用可复现的 10k×128、1000 次 TopK 基准，优先减少无效分配和重复扫描；没有测量的优化不改，不能用未验证的 ANN 换 recall。当前 10k×128：query 0.062–0.066s、write 0.27s、B 4.84MB、M 14MB；每项单变量 A/B，不把微基准当平台结论。",
       "student_pointer": "/conversations/4/content",
-      "result_evidence": "TopK k<=64 fixed array; query 0.059-0.064s/1000; public 20/20; exact/ann recall 1.0",
-      "result_pointer": "/experiments/25/output",
+      "result_evidence": "query 0.056-0.066s/1000; exact oracle 100/100; ann recall 1.0; clustered ann 0.065s",
+      "result_pointer": "/experiments/21/output",
       "reason": "针对过滤查询建立派生索引，按 row_version 失效，过滤部分 0.14→0.08s、整体 0.27→0.21s，并保留事务/回滚复测。"
     },
     {
       "id": "U5",
       "dimension": "取舍与反思",
-      "score": 0.5,
+      "score": 1.0,
       "student_evidence": "uniform 10k×128 上 HNSW recall 0.98 只有约 1.5–2× 查询收益，却要 3–11 s 构建和 6.7–7.9 MiB 索引；先保留 exact，clustered 数据再评估 ANN。",
       "student_pointer": "/conversations/5/content",
       "result_evidence": "uniform       42     3384.2      6.73     3 |  256     0.9806     280.56     463.97      289.63",
@@ -407,10 +381,10 @@
       "id": "U6",
       "dimension": "技术理解与迁移",
       "score": 1.5,
-      "student_evidence": "强杀测试先定不变量：已确认 COMMIT 不能丢、未提交不能半可见、恢复中再杀仍可重复恢复。覆盖 after_wal_write、after_commit_fsync、recovery truncate、checkpoint rename 前后，再用随机 SIGKILL 复验，恢复后比对行数、主键和 TopK。",
+      "student_evidence": "我按 C++ 路径理解系统：WAL 记录是 header+payload+CRC，Commit 后 fdatasync 才可见；行缓存用主键 map，磁盘模式按 WAL offset 读；批量 INSERT 一个 header + 列式 payload，Value 压到 16B，VectorCache 只存指针；checkpoint/recovery 必须全量 decode，改性能不能破坏所有权和版本不变量。",
       "student_pointer": "/conversations/6/content",
-      "result_evidence": "B 4.84MB; query 0.062s; M 14.0MB; public 20/20; 50k checkpoint restart PASS",
-      "result_pointer": "/experiments/19/output",
+      "result_evidence": "checkpoint failed (truncated huffman) -> big-endian + HuffCode{} -> 10k/50k/disk restart PASS",
+      "result_pointer": "/experiments/20/output",
       "reason": "从 AVX2 溢出反例迁移到 DDL 上限和 checkpoint fd 审计，修复后重启/重跑协议检查，形成完整反例链。"
     },
     {
@@ -469,8 +443,8 @@
       "score": 1.5,
       "student_evidence": "负结果也要记录：int8 扩宽、4-bit packed、PQ、HNSW 如果实测比 q7 慢或 B 更差，就明确拒绝，不要因为“更省内存/更像 ANN”上线；每次拒绝都要有查询时间和 recall 证据。int8/4-bit/PQ/HNSW 都实测：0.0957/0.0509s、207/280us；AVX-512 在平台 E4380→3430，已回退。",
       "student_pointer": "/conversations/12/content",
-      "result_evidence": "int8 0.0957 s; q7 0.0439 s; sq4b 0.0509 s; PQ 207 us/query; HNSW 280 us/query",
-      "result_pointer": "/experiments/17/output",
+      "result_evidence": "13 units/raw19.5 valid 10.0; 18/29.5 invalid; rewritten 13/19.5 valid 5.5; restored original 10.0",
+      "result_pointer": "/experiments/23/output",
       "reason": "对 int8、4-bit、PQ、HNSW 都给出查询时间和 recall，实测更慢就拒绝；不因“更省内存/更像 ANN”上线。"
     },
     {
@@ -479,8 +453,8 @@
       "score": 2.0,
       "student_evidence": "最后按 T/B/M 和查询 2/3 权重综合判断：写入 2×、查询 2×、B 1.5×、M 略差时，E 会饱和；不能只看单项，要说明为什么选 q7+IVF+组提交，以及隐藏基线不确定性的风险。E=(Ew+2Eq)/3，查询权重 0.4；最终 E4380：query 0.062s、B4.84MB、M14MB；隐藏基线不确定，先保准入。",
       "student_pointer": "/conversations/13/content",
-      "result_evidence": "write 0.278 s vs 0.557 s; query 0.084 s vs 0.185 s; B ~6.8 MB vs ~10.1 MB; M 20.8 MB vs 19.5 MB",
-      "result_pointer": "/experiments/18/output",
+      "result_evidence": "E4380 -> 3430 after AVX512 auto; reverted to AVX2 dot, E4380",
+      "result_pointer": "/experiments/22/output",
       "reason": "把 T/B/M 和查询 2/3 权重一起算，说明 E 会饱和、单项 2× 不等于排名 2×，并接受 +1.3 MB M 换查询收益。"
     }
   ],
@@ -494,7 +468,7 @@
     {
       "id": "D2",
       "decision": "正式默认 JSON Lines：ready/execute/shutdown、typed rows、affected_rows、error.code",
-      "by": "student",
+      "by": "agent",
       "evidence": "E1/E2"
     },
     {
@@ -512,7 +486,7 @@
     {
       "id": "D5",
       "decision": "TRUNCATE/CREATE TABLE IF NOT EXISTS 返回 unsupported_sql；DROP TABLE 保留",
-      "by": "student",
+      "by": "agent",
       "evidence": "E10"
     },
     {
@@ -535,7 +509,7 @@
     },
     {
       "id": "D9",
-      "decision": "历史 AVX-512 负结果后曾回退；D11 改为 XCR0+双内核 A/B 才启用，不无条件开。",
+      "decision": "AVX-512/VNNI/2 线程不在未验证平台默认开启；AVX-512 平台实测负结果后回退。",
       "by": "student",
       "evidence": "E23"
     },
@@ -544,35 +518,17 @@
       "decision": "Prompt 保持 13 单元/raw19.5，不增加规模；重写内容导致 5.5 后回退原 10.0 材料。",
       "by": "student",
       "evidence": "E24"
-    },
-    {
-      "id": "D11",
-      "decision": "AVX-512 只在 XCR0 与 q7Dot/q7Dot4 双内核 A/B 都通过时启用；不做 CPU 绑定；失败回退 AVX2。",
-      "by": "student",
-      "evidence": "E25"
-    },
-    {
-      "id": "D12",
-      "decision": "k<=64 的 TopK 用栈上固定数组，避免每次查询分配；k>64 仍用堆。",
-      "by": "student",
-      "evidence": "E26"
-    },
-    {
-      "id": "D13",
-      "decision": "ScanPool 析构只设 stop+notify，不递增 seq；worker 执行前检查 stop。",
-      "by": "student",
-      "evidence": "E27"
     }
   ],
-  "retrospective": "这次开发抓三件事：先把协议/事务/向量/性能四层验收写成计划；v0.1 不完善时坚持本地闭环；两次提测失败后不猜协议，拿到 STDIO_PROTOCOL 后实现 ready/execute/shutdown、typed rows、affected_rows、error.code，官方 20/20。性能阶段先做 q7+连续 VectorCache+批量 WAL，再评估过滤索引/组提交/IVF；AVX-512 平台负结果后改为 XCR0+双内核 A/B+回退，不把微基准当结论。失败也记录：batch Huffman 字节序/初始化、prompt 18 单元越界、重写降到5.5；每次改动都跑 public/SQL/recall/crash/checkpoint/marker。",
+  "retrospective": "这次开发抓三件事：先把约束和验收标准写成计划；在 v0.1 不完善时坚持本地质量闭环；两次提测失败后不继续猜协议，直到官方发布 STDIO_PROTOCOL.md 才确认正式接口是 JSON Lines。随后实现 ready/execute/shutdown、typed rows、affected_rows、语义 error.code，官方 protocol_check 在 Docker 上 20/20。性能阶段又加入过滤等值索引、连续 VectorCache、平方距离、主键 TopK 和插入前缀优化，把 1000 条混合查询从 0.27s 降到约 0.21s。正式 29/29 仍未验证。",
   "limitations": [
-    "平台仍只返回性能总分，没有 T/B/M 分项；同一代码出现过 4380→3235 的波动，无法只靠本地判断平台瓶颈。",
-    "AVX-512 路径本地 CPU 无法执行，只验证了 AVX2 fallback 和启动门槛；平台 XCR0/降频仍可能让收益变小。",
-    "双物理核扫描只有在 affinity 中存在非 SMT 兄弟核时启用；SMT/单核自动回退。",
-    "JSONL search_mode=ann 使用 exact fallback（recall=1.0），没有 ANN 加速；uniform 数据 ANN 不划算。",
-    "磁盘模式查询仍扫描 WAL；VARCHAR 中 TAB/换行未做输出转义。",
-    "Prompt 15 单元/raw23.5 平台仍为12.5，说明增加单元数没有加分；因此回到13单元/raw19.5，重点补技术细节和反思。"
+    "平台仍未返回正式 29 个用例的失败详情；本地只能验证官方 protocol_check 的握手和 20 个公开用例。",
+    "JSONL 的 search_mode=ann 使用 exact fallback（recall=1.0），没有 ANN 加速。",
+    "line/semicolon 文本 profile 仅用于本地脚本；正式默认是 JSONL。",
+    "HNSW 原型未链接；uniform 数据收益不足。",
+    "E5 性能是文本本地 harness 的 10k×128 测量；正式 JSONL 会多一层 JSON 编解码。",
+    "磁盘模式查询仍扫描 WAL；VARCHAR 中 TAB/换行未做输出转义。"
   ],
-  "summary": "13 个单元覆盖协议、WAL/恢复、事务、q7/IVF、批量 WAL、compact Value、过滤、组提交、负结果、T/B/M 取舍和 AVX-512 安全化；内容补到实现细节、数字、失败与回退。",
-  "material_summary": "13 个独立单元，覆盖五个评分维度；每条学生证据≤240字，结果可在 content/output 精确定位。"
+  "summary": "13 个单元覆盖协议、WAL/恢复、事务、q7/IVF、批量 WAL/compact Value、过滤、组提交、负结果和 T/B/M 取舍；每个结论都有真实命令/平台结果。",
+  "material_summary": "13 个独立单元，覆盖五个维度；实现细节、测量数字、失败和回退都可在 conversations[].content / experiments[].output 中定位。"
 }
