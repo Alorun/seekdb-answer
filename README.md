@@ -113,7 +113,10 @@ top-k results are merged.  On an SMT pair the pool falls back to one thread.
 
 All state is written under `--data-dir` (default `/data`). The WAL uses
 checksummed records and a commit marker; a commit acknowledges only after
-`fdatasync`. CRC32C uses the SSE4.2 instruction with a startup self-test
+`fdatasync`. Multi-row vectors use a lossless fixed-24 mode when every
+component round-trips bitwise through `m=round(|v|*1e6)` (10k x 128: WAL
+4.44 -> 3.54 MB); mixed/7-decimal/exponent batches fall back to the float32
+Huffman plane codec. CRC32C uses the SSE4.2 instruction with a startup self-test
 against the portable table implementation. Multiple multi-row INSERTs that
 arrive in one input burst append their commit markers first and share one
 `fdatasync`, with all responses released only after that sync. The WAL is

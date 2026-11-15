@@ -134,8 +134,10 @@ def check_conversation(path, required):
         print(f"warning: {path} missing (not required for this run)")
         return True
     size = os.path.getsize(path)
-    if size > 64 * 1024:
-        return fail(f"conversation.json is {size} bytes (>64 KiB)")
+    if size > 128 * 1024:
+        return fail(f"conversation.json is {size} bytes (>128 KiB, official cap)")
+    if size > 120 * 1024:
+        print(f"warning: conversation.json is {size} bytes (>120 KiB, cap 128 KiB)")
     try:
         text = open(path, "r", encoding="utf-8").read()
         data = json.loads(

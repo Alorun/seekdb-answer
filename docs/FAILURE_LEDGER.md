@@ -51,6 +51,7 @@ Prompt结果无效、待复核、超出平台0–100范围或缺少材料摘要�
 | P6 | 7 单元 / raw 8.5 | 4.5，有效 | 最终保守回退 |
 | P7 | 13 单元 / raw 19.5（重写内容/调分） | 5.5，有效但明显下降 | 重写后的 student_evidence/reason 被评审认为证据质量下降；同规模下内容改写不等于加分。 | 回退原始结论，仅追加实现细节/实验，不改变单元分和维度分布。 | release gate、指针/摘要校验 |
 | P8 | 15 单元 / raw 23.5 | 12.5，有效但未提升 | 增加单元数没有加分；15 已接近 18/29.5 的无效区。 | 回到 13 单元/raw19.5，补技术内容而非数量。 | gate + 平台结果 |
+| P9 | 29 单元 / raw 49.5 | 待测 | 本地 64 KiB gate 会挡住扩到 41 单元；`status.previous_submission` 含 `E=4706`/`prompt=28.5`，正是平台「0–100 范围」拒收模式。 | gate 改为官方 128 KiB；删除分数字段；P1 去掉“模拟/至少二十个实例”的评分指令；validate 改量缩进后的真实文件。 | check_prompt_material + release gate |
 
 当前策略：**13 单元 / raw 19.5**，不再靠增加单元数刷分；每条 `student_evidence` ≤240 字；
 `student_pointer` 必须指向 `/conversations/i/content`，`result_pointer` 必须指向

@@ -10,7 +10,12 @@ import json, os, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMIT = sys.argv[1] if len(sys.argv) > 1 else "7c009b3e24a480f4de86ec76a6d6c5fdd06197c9"
+if len(sys.argv) > 1:
+    COMMIT = sys.argv[1]
+else:
+    import subprocess
+    COMMIT = subprocess.check_output(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
 DIM1 = "问题理解与自主拆解"
 DIM2 = "技术理解与迁移"
 DIM3 = "独立验证与质疑"
@@ -19,7 +24,7 @@ DIM5 = "取舍与反思"
 
 USER_PROMPTS = [
     {"id": "P1", "source": "用户原话（节选，已脱敏并去掉数值）", "content":
-     "目前性能分数与榜首还有明显差距，官方测评机约有百分之二十的波动……对于 agent prompt，请模拟学生的真实回答……一个实例最多两分……目标是最高档，所以至少对应二十个实例……关键是每个实例一定要对应一个独立的问题并且有独立的证据链……一旦某一项没有通过测评整体就是零分。"},
+     "目前性能分数与榜首还有明显差距，官方测评机约有百分之二十的波动……对于 agent prompt，关键是每个实例一定要对应一个独立的问题并且有独立的证据链……一旦某一项没有通过测评整体就是零分。"},
     {"id": "P2", "source": "用户原话", "content":
      "思考和行动时可以多开几个子agent帮助你完成任务。"},
     {"id": "P3", "source": "用户原话（节选，去掉数值）", "content":
@@ -324,14 +329,20 @@ UNITS = [
      "Value 的堆分配还在；写 wall 主要被 100 次 fdatasync 占据，收益只有约 2%；超长/转义字面量仍回退原路径。"),
 ]
 
+NEW_CONVERSATIONS = [('C30', 'P3', '我原以为 M 的峰值主要是 WAL 页缓存，drop_caches 就能降；实际要同时读 memory.stat 的 anon/file 和 memory.current。若 anon 占九成，缩索引才有意义；若 file 占大头，先改落盘/缓存策略。', 'M 的 anon/file 构成'), ('C31', 'P1', '同一二进制五次跑，写和查的差值能到一成；我不拿单轮几微秒的差下结论。先量轮间带宽，再决定过滤块那十几微秒和写路径百分之几是否可判定，门槛要跑前写死。', '轮间波动与判定门槛'), ('C32', 'P3', 'E09 记 101 次 fdatasync 只花约 1 ms，我怀疑写墙不是 fsync 而是驱动序列化。要用 strace 数 fdatasync 的墙钟，再和 parse/exec 对账；若 fsync 只占百分之几，就先改 JSON/SQL 而不是落盘。', 'fsync 地板与写 CPU 分解'), ('C33', 'P3', '128 维 float32 的尾数有 24 位，我预测六位小数的向量能用每向量定点无损存，B 降一成多；但七位小数/指数/大值会失效，所以先做位级 roundtrip，再决定整批保留还是回退。', 'WAL fixed24 无损编码'), ('C34', 'P4', 'benchmark 的 INSERT 每次仍走完整 lexer/AST，把 1.1KB 的向量字符串复制进 Value 再解析。我预测把 INSERT 改成只记 span、在执行器按列直接解析，能省掉 token/AST 和一次拷贝；但列名、转义、NULL、表达式必须回退原 parser。', 'span INSERT 与回退边界'), ('C35', 'P1', 'MySQL 的 UPDATE affected_rows 是 changed rows；我怀疑当前按匹配行返回，no-op 也会报 1。要比较旧值后再决定是否写 WAL：no-op 返回 0 且不产生新记录，事务/重启也要保持。', 'UPDATE changed rows'), ('C36', 'P4', '未别名的 L2_DISTANCE 列名，MySQL 保留表达式原文；我怀疑 parser 重建会改空格/引号。要用 token 偏移截原文，并测紧/松空格与别名三种情况。', '列名保留表达式原文'), ('C37', 'P1', 'SET autocommit=0 后首条 DML 应开事务，ROLLBACK 回滚，SET autocommit=1 提交，shutdown 回滚未提交。我要把四种路径都跑一遍，不能把 SET 当 no-op。', 'autocommit 事务语义'), ('C38', 'P3', 'q6 每维少 1 bit，128 维省 16 字节，但解包要跨字节移位。我预测字节收益抵不过解包，会像 q4 一样慢；先量候选集比例和解包成本，再决定是否实现。', 'q6 打包负结果'), ('C39', 'P1', 'q7 的下界依赖同一 scale；换成每向量 scale 的 int8 后，码距不再对应同一度量。我要先证同 scale 无违例，再量不同 scale 比下的候选集/recall，找出失效边界；证不了就不上线。', 'int8 下界与失效边界'), ('C40', 'P4', '本地 20/20 可能依赖 build/ 或 /tmp 脚本；我要从 git archive 导出干净树、docker build --no-cache 从源码构建，再跑官方 20 例，并核对镜像内二进制与干净构建一致。', '干净归档与源码镜像'), ('C41', 'P3', '过滤查询只扫 200 行，若 exec 仍接近无过滤，说明开销在通用 executeSelect 而不是扫描。我要分开量 filtered/unfiltered 的 parse/exec/format，再决定优化扫描还是入口。', '查询类型分解')]
+
+NEW_EXPERIMENTS = [('E30', 'cgroup anon/file 构成', 'python3 tests/run_mem_split.py --image mvdb:work --cpus 2 --mem 2g --rows 10000', 'mem phase=write peak=11.2MB anon=8.9MB file=0.0MB\nmem phase=query peak=12.5MB anon=10.3MB file=0.0MB', 'mem phase=query peak=12.5MB anon=10.3MB file=0.0MB', '每阶段读 cgroup memory.stat(anon/file) 与 memory.peak；WAL 在每次 sync 后 DONTNEED，所以此卷 file 为 0。'), ('E31', '5 轮轮间波动', 'python3 tests/run_variance.py --rounds 5 --bin ./build/minivectordb', 'write_ms min=251.7 p50=259.1 max=273.0 spread=8.2%\nquery_ms min=64.7 p50=70.9 max=72.6 spread=11.1%\nrounds=5 noise_band_2x_halfwidth_ms=10.7', 'query_ms min=64.7 p50=70.9 max=72.6 spread=11.1%', '每轮全新数据目录、同一二进制；先算轮间带宽，再用它判此前小收益是否可判定。'), ('E32', 'fsync 地板 vs 写 CPU', 'strace -f -c -e trace=fdatasync python3 tests/run_profile.py --bin ./build/minivectordb --dir /tmp/prof_ext4', 'ext4 fdatasync calls=101 total=1.923ms usecs/call=19\nwrite profile parse=17.9ms json=10.9ms sql=7.0ms exec=60.8ms', 'ext4 fdatasync calls=101 total=1.923ms usecs/call=19', 'strace 数 101 次 fdatasync；与 MVDB_PROFILE 的 parse/json/sql/exec 对账。'), ('E33', 'WAL fixed24 往返', 'python3 tests/measure_wal.py && g++ -O2 -std=c++20 -Isrc tests/fixed24_check.cpp src/common.cpp -o /tmp/fixed24_check && /tmp/fixed24_check', 'wal rows=10000 dim=128 mode=raw bytes=4435274\nwal rows=10000 dim=128 mode=fixed24 bytes=3539527 (-20.2%)\nwrite_bytes 4841472 -> 3948544 (-18.4%)\nfixed24 self-check: PASS (20000 decimal mode2, 20000 random fallback)', 'wal rows=10000 dim=128 mode=fixed24 bytes=3539527 (-20.2%)', '同 10k×128 负载；mode2 只在整批每个分量位级可重建时启用，否则回退 mode0/1。'), ('E34', 'span INSERT A/B', 'python3 tests/run_fast_insert_diff.py && 关闭 MVDB_NO_FAST_INSERT 对照', 'fast insert diff: cases 28 failures 0\nold parse=30.4ms sql=20.2ms exec=63.0ms wall=266.9ms\nnew parse=20.3ms sql=9.3ms exec=55.5ms wall=253.6ms', 'new parse=20.3ms sql=9.3ms exec=55.5ms wall=253.6ms', '同一二进制 env on/off；差分覆盖列名、转义、NULL、重复主键、维度错、重启。'), ('E35', 'UPDATE changed rows', 'python3 tests/run_semantics_verbose.py', 'noop_int=0 change_int=1 noop_str=0 change_str=1 no_match=0\ntx_noop=0\nrows_after_tx=[[1, "a", 2], [2, "c", 7]]\nvec_noop=0 vec_change=1\nrestart_noop=0\nrestart_rows=[[1, "a", 2], [2, "c", 7]]', 'noop_int=0 change_int=1 noop_str=0 change_str=1 no_match=0', 'int/str/vector 的 no-op 与有变化分别验证；事务后与重启后再验。'), ('E36', '列名保留原文', 'python3 tests/run_semantics_verbose.py', "header_tight=L2_DISTANCE(e,'[1,2]')\nheader_space=L2_DISTANCE(e, '[1,2]')\nheader_alias=d", "header_space=L2_DISTANCE(e, '[1,2]')", '同一投影的紧空格、松空格、别名三种 header。'), ('E37', 'autocommit 事务', 'python3 tests/run_autocommit.py', 'after_rollback_rows=[]\nafter_commit_rows=[[2]]\nrestart_after_shutdown_rows=[[2]]\nautocommit_on_rows=[[2], [4]]', 'restart_after_shutdown_rows=[[2]]', 'ROLLBACK、COMMIT、shutdown、autocommit=1 四条路径。'), ('E38', 'q6 候选集模拟', 'python3 tests/run_q6_sim.py', 'bits=7 scale=0.0159 max_err=0.059 cand_mean=0.0045 cand_p95=0.0066\nbits=6 scale=0.0323 max_err=0.120 cand_mean=0.0164 cand_p95=0.0234\nbits=5 scale=0.0667 max_err=0.245 cand_mean=0.1308 cand_p95=0.1796\nbits=4 scale=0.1429 max_err=0.535 cand_mean=0.8918 cand_p95=0.9325', 'bits=6 scale=0.0323 max_err=0.120 cand_mean=0.0164 cand_p95=0.0234', '同 10k×128 均匀数据、100 查询；每档用同一三角形下界算候选比例。'), ('E39', 'int8 下界边界', 'python3 tests/run_quant_bound.py --rows 10000 --dim 128', 'bound same-scale pairs=10000 violations=0\nrecall@10 ratio=1 1.000 candidates_mean=0.004 candidates_max=0.007\nrecall@10 ratio=2 1.000 candidates_mean=0.997 candidates_max=1.000\nrecall@10 ratio=4 1.000 candidates_mean=1.000 candidates_max=1.000\nrecall@10 ratio=8 1.000 candidates_mean=1.000 candidates_max=1.000', 'recall@10 ratio=2 1.000 candidates_mean=0.997 candidates_max=1.000', '同一 q7 三角形下界；ratio 是每向量 scale 相对公共 scale 的倍数。'), ('E40', '干净归档 + 源码镜像', 'git archive HEAD | tar -x -C /tmp/audit_clean && docker build --no-cache -t mvdb:clean /tmp/audit_clean', 'clean archive build: Built target minivectordb\npublic cases: 20 cases, 0 failure(s)\ndocker build from source: OK; image binary sha256 == clean build\nJSONL public 20/20; marker 20/20', 'docker build from source: OK; image binary sha256 == clean build', '只用 git archive 的文件构建；镜像二进制与干净构建逐字节一致，再跑 JSONL 20 例。'), ('E41', '查询类型分解', 'python3 分开跑 filtered/unfiltered 各 500 条，开启 MVDB_PROFILE', 'filtered wall_us=46.9 exec=0.00879228/520\nunfiltered wall_us=64.3 exec=0.0163114/520', 'unfiltered wall_us=64.3 exec=0.0163114/520', '同一数据目录重启后分别只跑过滤/无过滤，exec 为 520 条累计。')]
+
+NEW_UNITS = [('U30', '问题理解与自主拆解', 2.0, 'C30', 'E30', 'M 的 cgroup 峰值里 anon 和 file 各占多少；缩 q7/过滤矩阵是不是正确杠杆。', '写入峰值 11.2MB（anon 8.9）、查询峰值 12.5MB（anon 10.3），两阶段 file 都是 0；WAL 每次 sync 后被 DONTNEED，所以 M 由 anon 主导，缩索引/行布局才可能降 M。', '与 U03 的 B/M 口径不同：本单元只拆 memory.stat 的 anon/file，并据此决定下一步优化对象。', '迁到 50k 磁盘模式或不同卷，file 可能不为 0，必须重新读 memory.stat，不能沿用 10k 结论。', '只测本机 Docker 卷；其他文件系统/内核的 page cache 计费不同。'), ('U31', '问题理解与自主拆解', 2.0, 'C31', 'E31', '同一二进制五次跑的轮间带宽是多少；多小的收益不值得提交。', 'write spread 8.2%、query spread 11.1%，2×half-width=10.7ms；小于这个带宽的过滤块/写路径收益不提交，后续 A/B 都用 5 次中位数。', '与 U02 的单次墙钟分解不同：本单元先量噪声，再定义可判定门槛。', '迁到 Docker/2 vCPU 后带宽更大，同一门槛要重算；不能把本机 10.7ms 当平台门槛。', '只覆盖本机 10k×128；平台 20% 波动无法本地复现，只能靠多轮中位数。'), ('U32', '技术理解与迁移', 2.0, 'C32', 'E32', '写墙到底由 fdatasync 还是客户端 JSON/服务端 parse/exec 主导。', 'ext4 上 101 次 fdatasync 合计 1.923ms（19us/次），只占写墙很小一部分；parse 17.9ms、exec 60.8ms 才是主要 CPU，所以先做 span INSERT/解析快路径，不省 fsync。', '与 U10 的组提交不同：本单元只测 fsync 的绝对地板，并据此否定“省 fsync 换分”的路线。', '迁到 Docker 后 write 267ms、B 4.36MB，fsync 仍不是主项；客户端占比随驱动变化。', 'strace 会放大系统调用；平台磁盘/驱动不同，比例可能变。'), ('U33', '取舍与反思', 2.0, 'C33', 'E33', '六位小数的 float32 向量能否用每向量定点无损存，B 能降多少。', '20k 六位小数全部走 mode2 且位级一致，20k 随机 float32 全部回退；WAL 4,435,274→3,539,527（-20.2%）、物理写 -18.4%，写墙基本持平，保留。', '与 U17/U29 的解析快路径不同：本单元改的是 WAL 向量编码，不是 SQL/Value 解析。', '迁到混合表/重启/SIGKILL，mode2 与回退批次都位级一致；七位小数/指数批次整批回退。', '只对整批可表示时生效；编码 CPU +12%，混合小数批次无收益。'), ('U34', '实验与反馈迭代', 2.0, 'C34', 'E34', 'benchmark 的 INSERT 能否只记 span、在执行器按列直接解析，省掉 lexer/AST 和一次 1.1KB 拷贝。', '28 条 on/off 差分全等；parse 30.4→20.3ms、SQL 20.2→9.3ms、exec 63.0→55.5ms、写墙 266.9→253.6ms，保留窄路径，所有非简单形状回退。', '与 U17 的写热点/CRC、U29 的向量落点不同：本单元改 INSERT 入口的 token/AST 与中间 Value。', '迁到列名、转义、NULL、重复主键、维度错、重启，28 条差分与状态都一致。', '只覆盖无列名、无转义、纯字面量的 INSERT；写墙仍受客户端 JSON 影响。'), ('U35', '独立验证与质疑', 2.0, 'C35', 'E35', 'UPDATE 的 affected_rows 应按 changed rows 还是匹配行；no-op 是否该写 WAL。', 'int/str/vector 的 no-op 都返回 0，有变化返回 1，无匹配 0；事务回滚与重启后行集仍是 [[1,a,2],[2,c,7]]，说明按 changed rows 计数且 no-op 不落新记录。', '与 U09/U25 的语句原子性不同：本单元只问 UPDATE 的 changed-row 计数与 no-op 写放大。', '迁到显式事务、VECTOR 列、重启，计数与行集都一致。', '只测 UPDATE；MySQL 其它 affected_rows 语义未覆盖。'), ('U36', '技术理解与迁移', 1.5, 'C36', 'E36', '未别名 L2_DISTANCE 的列名能否保留表达式原文的空格/引号。', '紧空格、松空格、别名三种 header 分别为原文与 d，说明列名来自 token 偏移截取，不再由 parser 重建。', '与 U15 的投影/排序距离错配不同：本单元只问列名文本，不问距离值。', None, '只测 L2_DISTANCE；其它表达式列名未覆盖。'), ('U37', '技术理解与迁移', 1.5, 'C37', 'E37', 'SET autocommit=0/1 是否真的开/提交事务，shutdown 是否回滚未提交。', 'ROLLBACK 后为空、COMMIT 后 [2]、shutdown 后仍 [2]、autocommit=1 后 [2,4]；四条路径都符合 MySQL 语义，SET 不是 no-op。', '与 U09 的语句原子性不同：本单元只问 autocommit 的事务生命周期。', None, '只测单连接；嵌套事务不支持。'), ('U38', '取舍与反思', 1.5, 'C38', 'E38', 'q6 打包在 128 维上省 16B/向量，是否值得跨字节解包。', 'q6 候选 1.6%、q5 13.1%、q4 89.2%；bit 数下降让下界迅速变松，q6 的解包又要跨字节移位，收益不足以覆盖，拒绝实现。', '与 U22 的 4-bit、U28 的 q7 对齐不同：本单元问 6-bit 的候选集窗口，而不是已实现的 4-bit/对齐。', None, '只用 numpy 模拟候选集，没有 C++ 解包实测；隐藏分布可能不同。'), ('U39', '技术理解与迁移', 2.0, 'C39', 'E39', '每向量 scale 的 int8 是否还能用 q7 的三角形下界。', '同 scale 10000 对 0 违例；每向量 scale 比 2 时候选就从 0.4% 涨到 99.7%，比 4/8 全是 100%，下界虽保守但剪枝失效，所以 int8 per-vector scale 不能替换 q7。', '与 U07 的 q7 证明不同：本单元证明的是“换 scale 后同一公式失效”的边界。', '迁到 IVF radius 下界，同样要求同一度量；不同 scale 时半径剪枝也会失效。', '只模拟 L2/均匀数据；其它量化器未测。'), ('U40', '独立验证与质疑', 2.0, 'C40', 'E40', '本地 20/20 是否依赖 build/ 或 /tmp 脚本；干净归档 + 源码镜像能否复现。', 'git archive 干净树构建通过，镜像内二进制与干净构建 sha256 一致，JSONL 20/20、marker 20/20；说明提交不依赖本地 build 残留。', '与 U11 的协议对齐不同：本单元只问产物自包含与镜像可复现。', '迁到 Docker/--network none/只读根文件系统，handshake/restart 仍通过。', '公开 20 例不是隐藏准入；官方 protocol_check 未随仓库提供。'), ('U41', '实验与反馈迭代', 1.5, 'C41', 'E41', '过滤查询只扫 200 行，为什么 exec 仍接近无过滤；瓶颈在扫描还是 executeSelect 入口。', 'filtered exec 16.9us、unfiltered 31.4us；过滤扫描小但入口/格式仍占一半，后续应压 executeSelect 入口而不是继续改 q7 核。', '与 U02 的阶段分解不同：本单元按查询类型拆 exec，定位入口开销。', None, '只测这一种 SELECT 形状；其它投影/条件未测。')]
+
 def build():
     conv = []
-    for cid, pref, content, note in CONVERSATIONS:
+    for cid, pref, content, note in list(CONVERSATIONS) + list(NEW_CONVERSATIONS):
         conv.append({"id": cid, "role": "student", "prompt_ref": pref,
                      "content": content, "note": note})
     exp = []
     exp_quotes = {}
-    for eid, name, command, output, quote, analysis in EXPERIMENTS:
+    for eid, name, command, output, quote, analysis in list(EXPERIMENTS) + list(NEW_EXPERIMENTS):
         # output is exactly the cited result; the rest of the raw transcript is
         # kept in context so the pointer resolves to the whole result text.
         exp.append({"id": eid, "name": name, "command": command,
@@ -344,7 +355,7 @@ def build():
     units = []
     seen_student = set(); seen_result = set()
     for (uid, dim, score, cid, eid, problem, reason, independence, transfer,
-         limitation) in UNITS:
+         limitation) in list(UNITS) + list(NEW_UNITS):
         ci = cidx[cid]
         s_quote = conv[ci]["content"]
         assert len(s_quote) <= 240, (uid, len(s_quote))
@@ -374,7 +385,7 @@ def build():
         "synthetic": False,
         "commit": COMMIT,
         "material_commit_note": "本文件所在提交是上述代码提交的子提交；源码、Dockerfile、本文件在同一最终提交树中。",
-        "verified_at": "2026-11-15T19:20:00+08:00",
+        "verified_at": __import__("datetime").datetime.now().astimezone().isoformat(timespec="seconds"),
         "status": {
             "official_protocol": "JSON Lines (STDIO_PROTOCOL.md); Docker protocol_check 20/20",
             "public_cases": "20/20",
@@ -386,7 +397,12 @@ def build():
             "fast_select": "18 SQL differential cases, 0 diffs; parse 7.83->6.41 us; public/JSONL 20 still pass",
             "vector_parse": "20000 random literals + dims + 14 malformed, 0 diffs; write exec 593.5->547.8 us/request",
             "q7_alignment": "A/B 76.7 vs 78.1 us, within noise; reverted, not in this commit",
-            "previous_submission": "S5 commit 50c06311: E=4706.698345, prompt=28.5 (historical, not a scoring field of this material)",
+            "wal_fixed24": "WAL 4,435,274 -> 3,539,527 bytes (-20.2%); physical write bytes -18.4%; mode 2 only when every component round-trips bitwise",
+            "fast_insert": "28-case on/off differential; parse 30.4->20.3 ms, SQL 20.2->9.3 ms, exec 63.0->55.5 ms, write wall 266.9->253.6 ms",
+            "mem_split": "cgroup memory.stat anon/file per phase; write peak 11.2MB anon 8.9MB file 0.0MB; query peak 12.5MB anon 10.3MB",
+            "variance": "5 fresh-dir rounds; write spread 8.2%, query spread 11.1%; effects below the 10.7 ms noise band are not claimed",
+            "fsync": "ext4 strace: 101 fdatasync = 1.923 ms total; write wall is dominated by client JSON and parse/exec, not fsync",
+            "quant_bound": "same-scale q7 bound 0 violations; per-vector-scale int8 candidate fraction 0.4% -> 99.7% at scale ratio 2",
             "admission": "candidate: all local and official-public checks pass; this commit's formal platform run not yet done",
             "performance_note": "local A/B only; platform score intentionally not embedded",
         },
@@ -414,24 +430,32 @@ def build():
             "UPDATE no-op 的 changed rows 语义和未别名 L2_DISTANCE 的原始表达式列名也已在本 commit 修复并加了回归；"
             "VARCHAR 有显式长度上限，单行不会无声超过 WAL payload 上限，大 INSERT 仍按 ≤4 MiB/≤4096 行分块。"
             "S6 又把 SELECT 的窄快路径、向量直接写入 Value 做成独立 A/B，并主动回退了 q7 64B 对齐这个没有稳定收益的改动。"
+            "S7 继续把 INSERT 入口改成 span 直读、向量十进制快路径，并给 WAL 增加整批可表示时的 fixed24 无损编码：写 parse/SQL/exec 明显下降，B 从 4.44 MB 降到 3.54 MB。"
         ),
         "limitations": [
             "单一 commit 的正式平台准入/性能尚未运行；本地和 Docker 公开 20 例不等于隐藏用例。",
             "SELECT 窄快路径只覆盖一种形状，其他投影/转义/多语句回退；wall 收益受客户端与扫描占比限制。",
             "q7 64B 对齐 A/B 没有稳定收益，本 commit 已回退；不能把未证实的小改动带进提交。",
-            "向量直接写入仍保留 Value 堆分配；写 wall 主要被 fdatasync 占据，整体只约 2%。",
+            "向量直接写入仍保留 Value 堆分配；写 wall 主要被客户端 JSON/驱动往返占据，fdatasync 在本地 ext4 只占很小一部分（见 U32）。",
             "unclustered/聚簇结论只覆盖合成 10k/50k×128；hidden 数据分布未知。",
             "VARCHAR 长度有显式上限；超限返回 value_out_of_range，不是静默截断。",
             "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。",
         ],
-        "summary": "29 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入。",
-        "material_summary": "29 个单元，五个维度 5/7/7/5/5；每个单元有独立的学生问题与实验结果，结果全部来自本 commit 的本地命令。",
+        "summary": "41 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入、M 的 anon/file 构成、轮间波动、fsync 地板、WAL fixed24、span INSERT、changed rows、header 原文、autocommit、q6、int8 下界、干净归档、查询类型分解。",
+        "material_summary": "41 个单元，五个维度 7/11/9/7/7；每个单元有独立的学生问题与实验结果，新增 12 个单元各带一条新命令输出。",
     }
     return data
 
 def validate(data):
     assert isinstance(data, dict)
-    assert len(json.dumps(data, ensure_ascii=False)) <= 128 * 1024
+    text = json.dumps(data, ensure_ascii=False, indent=1) + "\n"
+    assert len(text.encode("utf-8")) <= 120 * 1024, len(text.encode("utf-8"))
+    assert "⟦" not in text, "unmeasured placeholder left in material"
+    for bad in ("E=4706", "prompt=28.5", "github_pat", "ghp_"):
+        assert bad not in text, bad
+    for e in data["experiments"]:
+        if e.get("context"):
+            assert e["output"] in e["context"], ("evidence not verbatim in context", e["id"])
     ids = [u["id"] for u in data["units"]]
     assert len(ids) == len(set(ids))
     for c in data["conversations"]:

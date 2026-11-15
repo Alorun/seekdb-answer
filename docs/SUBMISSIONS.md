@@ -7,16 +7,16 @@ platform confirms all MySQL cases pass.
 
 | field | value |
 |---|---|
-| branch / commit | `2026-competition-round2` / `8289a36dcf63cbf9f50e4b1ae5694af82a289480` |
-| code commit | `6fbc5ee2cca23b810b46ebae1250134b25a810d7` (material commit `042e3c28` is its child) |
-| conversation | 55,396 bytes, sha256 `1b4255a15a184b51e1be0bf411129becba5699a489b4af8375a676841b7fa97f`, 26 units / raw 44.0 |
-| local gate | `release_gate.py --require-conversation` PASS (anonymous remote + Docker smoke) |
+| branch / commit | `2026-competition-round2` / `7ee37514a` (`106c6834b` fast parser/INSERT, `2287143e8` WAL fixed24, `7ee37514a` id echo) |
+| code commit | `7ee37514a`; the material commit is its child |
+| conversation | 87,736 bytes, sha256 `1f52941fd97be41ab374c657a6ba69e45e441d81ec081493ce99e924b3ed9c01`, 41 units / raw 71.5 |
+| local gate | pending final `release_gate.py --require-conversation` after the material commit |
 | official public | protocol_check 20/20 (Docker tip image), public 20/20, marker 20/20 |
 | SQL edges | 158 checks x 2 modes, 0 failures |
 | recall | 5000x128 uniform/clustered exact oracle match; ann recall 1.0 |
-| crash/checkpoint | 240 crash iterations 0 failures; checkpoint 10k/50k/disk restart counts PASS |
-| local perf A/B | S3→current uniform write 0.5268→0.2442 s, query 0.1761→0.0490 s, RSS 14.4→12.4 MiB; clustered ann server exec 40.5→19.2 µs, Docker q1000 159.3→116.8 ms (old HEAD clustered ann 203.3 ms), recall 1.0; choose ann for the benchmark config if the form allows |
-| formal admission/perf | S6 pending; S5 historical: E=4706.698345; prompt=28.500000 |
+| crash/checkpoint | 200 crash iterations 0 failures; checkpoint 10k/50k/disk restart counts PASS; fixed24 mixed restart PASS |
+| local perf A/B | Docker 2 CPU/2 GiB, 10k x 128: B 5.26→4.36 MB (-17%), write 290→267 ms (-8%), q1000 183→165 ms; WAL 4,435,274→3,539,527 bytes (-20.2%); fast INSERT parse 30.4→20.3 ms, SQL 20.2→9.3 ms, exec 63.0→55.5 ms |
+| formal admission/perf | S7 pending; S5 historical: E=4706.698345; prompt=28.500000 |
 
 
 | slot | date/time | commit SHA | image digest | conversation sha256 / bytes | gate | precheck | formal result | admission | local E_write | local E_query | notes |
@@ -27,8 +27,8 @@ platform confirms all MySQL cases pass.
 | S3 | 2026-11-10 | 04960665bfde08bfc4e0b2a5720af5896cd7f6f6 |  | b3857e97 / 16055 | PASS | not run | admission PASS; E=2432.687188; prompt=4.00000 | pass | 0.15 s | 0.27 s | JSONL protocol; top performance 4237.889320, top prompt 8.0 |
 | S4 | 2026-11-11 | 46150c520d2a9a9c24e83b75fac7b11a4f0289a5 |  | d695151e / 42378 | PASS | not run | local: write 0.286 s, query 0.099 s vs S3 baseline 0.583/0.201; device B ~6.8 MB; prompt raw 41.5 (24 units) | not run | 0.286 s | 0.099 s | v4.0 q7 exact + group commit |
 | S5 | 2026-11-15 | 50c06311c596df07a72ffe811649d4bc09fd6e6d |  | 1b4255a1 / 55396 | PASS | PASS (platform) | E=4706.698345; prompt=28.500000 | pass | 0.244 s | 0.049 s | q7 IVF + exact/semantics; 26 units; top prompt 67; next: 40+ units |
-| S6 | 2026-11-15 | 8289a36dcf63cbf9f50e4b1ae5694af82a289480 |  | 26a55471 / 63898 | PASS | not run | local A/B only: fast SELECT parse 7.83→6.41 µs; direct vector write exec 593.5→547.8 µs/req; q7 alignment reverted | not run | 0.233 s | 0.080 s | 29 units/raw 49.5; material commit is this slot; next formal submit |
-| S7 |  |  |  |  |  |  |  |  |  |  |  |
+| S6 | 2026-11-15 | 8289a36dcf63cbf9f50e4b1ae5694af82a289480 |  | 26a55471 / 63898 | PASS | not run | local A/B only: fast SELECT parse 7.83→6.41 µs; direct vector write exec 593.5→547.8 µs/req; q7 alignment reverted | not run | 0.233 s | 0.080 s | 29 units/raw 49.5; material commit is this slot |
+| S7 | 2026-11-15 | 7ee37514a |  | 1f52941 / 87736 | pending | not run | local only: WAL -20.2%, Docker B 4.36 MB, write 267 ms, q1000 165 ms; fast INSERT write CPU -12%; all local suites PASS | not run | 0.267 s | 0.165 s | 41 units/raw 71.5; material commit is the child of this row |
 | S8 |  |  |  |  |  |  |  |  |  |  |  |
 | S9 |  |  |  |  |  |  |  |  |  |  |  |
 | S10 |  |  |  |  |  |  |  |  |  |  |  |
