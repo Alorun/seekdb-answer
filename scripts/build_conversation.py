@@ -55,6 +55,9 @@ CONVERSATIONS = [
     ("C24", "P4", "本地微基准说 AVX-512 快不算数：平台持续负载下可能降频，甚至 XCR0 不可用 SIGILL。上一次平台 E 在启用 512 后下降，我要默认回 AVX2，并把 512 路径整个删掉，而不是留一个运行时开关。", "AVX-512 平台回退"),
     ("C25", "P1", "单条多行 INSERT 超过 64 MiB 时，确认成功后重启不能丢；appendBatch 没有上限、reader 却按 64 MiB 拒绝，是一个确认即丢的持久化 bug。我要把逻辑 INSERT 拆成多条 ≤4 MiB 记录，同一 commit，并验证 chunk 中途 crash 和跨 chunk 重复主键。", "大 INSERT 分块持久化"),
     ("C26", "P3", "uniform 上图索引我试过，不划算，但聚簇数据可以把已有 q7 code 直接当 IVF 候选层，不用再复制一份 code 矩阵。先在 screen 判成 clustered 的表上建，第一次用 8 条样本对 exact IVF 自检，recall 低于 0.98 就退回精确 IVF；exact 模式一点都不能动，不能拿近似结果污染 exact。", "q7 IVF 候选层与自检回退"),
+    ("C27", "P4", "benchmark 的 1000 条查询 SQL 形状固定，每次仍走完整 lexer/parser；我先加一个只认 SELECT id, L2_DISTANCE(...) AS alias FROM ... [WHERE col='x'] ORDER BY alias LIMIT n 的窄快路径，不匹配立即回退，做 18 条差分再上性能。", "SELECT 窄快路径与回退"),
+    ("C28", "P4", "我原以为 q7 code 矩阵的 32B AVX2 load 会因 std::vector 基址只有 16B 对齐而跨 cache line，64B 对齐应该稳定更快；先把 code/filter block 改成 64B 对齐，用同机 4 次中位数和两个二进制 A/B 验证，不到阈值就回退。", "q7 对齐的负结果"),
+    ("C29", "P3", "INSERT 的向量先解析到临时 vector 再拷进 Value，多一次分配和 512B 拷贝；我把十进制解析直接写进 Value::MakeVecRaw 的 payload，用 20000 条随机文字和维度长短做位级差分，再量写入和重启。", "向量直接写入 Value"),
 ]
 
 EXPERIMENTS = [
@@ -158,6 +161,18 @@ EXPERIMENTS = [
      "exact wall=70.3us exec=40.5us parse=4.3 format=2.4\nann wall=47.0us exec=19.2us parse=4.6 format=2.4\ninitial: ann recall mean=1.0000 min=1.0000\nafter_dml: ann recall mean=1.0000 min=1.0000\nafter_restart: ann recall mean=1.0000 min=1.0000\nDocker exact q1000=159.3ms\nDocker ann q1000=116.8ms\nold HEAD 3a5c782a clustered exact q1000=187.9ms\nold HEAD 3a5c782a clustered ann q1000=203.3ms",
      "ann wall=47.0us exec=19.2us parse=4.6 format=2.4",
      "nlist=64/nprobe=6/pool=24；首次 8 条样本对 exact IVF 自检，recall<0.98 回退；exact 模式不动。"),
+    ("E26", "fast SELECT 窄快路径 A/B", "python3 tests/run_perf_details.py --mode query --reps 4",
+     "mode=query on wall=80.5 parse=6.41 exec=37.21\nmode=query off wall=80.6 parse=7.83 exec=36.58\nmedian query on wall=80.5 parse=6.41 exec=37.21\nmedian query off wall=80.6 parse=7.83 exec=36.58\nfast select diff: cases 18 failures 0",
+     "median query on wall=80.5 parse=6.41 exec=37.21",
+     "同机 10k×128、500 filtered + 500 unfiltered 交替；4 次中位数；MVDB_NO_FAST_SELECT 关掉快路径对照；18 条 SQL 差分。"),
+    ("E27", "q7 64B 对齐 A/B（负结果）", "python3 tests/run_perf_details.py --mode q7 --bin-a <6fbc5ee2-build> --bin-b <aligned-build> --reps 4",
+     "mode=q7 a wall=76.7 parse=7.45 exec=35.77\nmode=q7 b wall=78.1 parse=7.72 exec=35.61\nmedian q7 a wall=76.7 parse=7.45 exec=35.77\nmedian q7 b wall=78.1 parse=7.72 exec=35.61",
+     "median q7 b wall=78.1 parse=7.72 exec=35.61",
+     "a=6fbc5ee2 未对齐，b=加 64B 对齐；同机 10k×128、fast SELECT 关闭、4 次中位数。对齐没有更快，差异在噪声内，代码已回退。"),
+    ("E28", "向量直接写入 Value A/B", "python3 tests/run_perf_details.py --mode write --reps 4; g++ -std=c++20 -O2 -I src tests/parse_vector_into_test.cpp src/common.cpp -o /tmp/vp && /tmp/vp",
+     "median write direct wall=233.0 parse=229.5 exec=547.8\nmedian write old wall=238.6 parse=227.4 exec=593.5\nvector parse check: 20000 random + dims + malformed, failures=0",
+     "median write direct wall=233.0 parse=229.5 exec=547.8",
+     "direct=parseVectorLiteralInto 直接写 Value payload；old=临时 vector + MakeVec 拷贝；100 批×100 行，4 次中位数；20000 条随机文字/维度/malformed 位级差分。"),
 ]
 
 UNITS = [
@@ -289,6 +304,24 @@ UNITS = [
      "只讲 q7 IVF 候选层与自检回退；与 U08 的 IVF screen、U21 的 ANN 方案基准不同链。",
      "从 uniform 迁移到 clustered：uniform 仍走 q7 exact，clustered 走 q7 IVF；exact 模式不受影响。",
      "自检只有 8 条样本，hidden 分布不同可能回退；ann 只用于 k≤24；build 约 40 ms/0.078 MB。"),
+    ("U27", DIM2, 2.0, "C27", "E26",
+     "benchmark 的 1000 条固定 SELECT 是否值得绕过完整 lexer/parser，以及如何保证不改变 SQL 语义。",
+     "只加一个匹配 SELECT id, L2_DISTANCE(...) AS alias FROM t [WHERE c='x'] ORDER BY alias LIMIT n 的窄入口；18 条差分（过滤/大小写/空格/DESC/别名/非法向量/维度错/ORDER BY 表达式/投影错配）全等；4 次中位数 parse 7.83→6.41 µs，wall 在同一次里 80.6→80.5（被客户端/扫描淹没），filtered 的 parse 占比更高。",
+     "与 U02 的查询墙钟分解、U17 的写路径 parser 不同：本单元只改 SELECT 入口与回退，不动执行器。",
+     "从 benchmark 的无过滤/过滤查询迁移到公开 vector case 的 AS distance、任意表/列/别名；非法向量、维度错、ORDER BY 表达式和投影错配仍由原 parser/执行器给出原结果。",
+     "只覆盖这一种 SELECT 形状；列名、转义、注释、多语句、其他投影全部回退；wall 收益受客户端/扫描占比限制，不能按 parse 的 18% 线性外推。"),
+    ("U28", DIM4, 1.5, "C28", "E27",
+     "q7 code/filter block 的 16B 基址是否让 32B AVX2 load 跨 cache line，64B 对齐是否稳定更快。",
+     "把 code/filter block 改成 64B 对齐后，同机 4 次中位数 wall 76.7→78.1 µs；差异落在噪声里，不能证明对齐更快。",
+     "与 U22 的 4-bit、U24 的 AVX-512、U23 的过滤块内存不同：本单元只改变量基址对齐，不改算法或数据量。",
+     None,
+     "4 次 A/B 的波动约 3-8%；对齐没有稳定收益，最终回退，不把未证实的 1-2% 带进提交。"),
+    ("U29", DIM3, 2.0, "C29", "E28",
+     "INSERT/UPDATE 的向量字面量能否跳过临时 vector 和第二次拷贝，直接写进 Value 的 payload。",
+     "新增 parseVectorLiteralInto，解析直接写进 Value::MakeVecRaw 的缓冲区；20000 条随机文字（1-256 维）+14 个 malformed +维度长短差分全 0；写 100 批×100 行 exec 593.5→547.8 µs/请求（-7.7%），wall 238.6→233.0 ms（-2.3%）；public/JSONL/过滤/语义/重启全过。",
+     "与 U17 的写热点/CRC、U25 的大 INSERT 分块不同：本单元只改向量字面量的落点，不改 WAL 或分块。",
+     "同一 convertValue 路径覆盖 INSERT 和 UPDATE 的 VECTOR 列；WAL 重启、过滤差分、维度错和 malformed 字面量仍走原错误/恢复链。",
+     "Value 的堆分配还在；写 wall 主要被 100 次 fdatasync 占据，收益只有约 2%；超长/转义字面量仍回退原路径。"),
 ]
 
 def build():
@@ -341,7 +374,7 @@ def build():
         "synthetic": False,
         "commit": COMMIT,
         "material_commit_note": "本文件所在提交是上述代码提交的子提交；源码、Dockerfile、本文件在同一最终提交树中。",
-        "verified_at": "2026-11-14T19:05:00+08:00",
+        "verified_at": "2026-11-15T19:20:00+08:00",
         "status": {
             "official_protocol": "JSON Lines (STDIO_PROTOCOL.md); Docker protocol_check 20/20",
             "public_cases": "20/20",
@@ -350,11 +383,15 @@ def build():
             "checkpoint": "10k/50k memory + 50k disk; restart row counts verified",
             "recall": "5000x128 uniform/clustered, exact oracle match, ann recall 1.0",
             "sql_semantics": "UPDATE counts changed rows (no-op=0); unaliased L2_DISTANCE header preserves the original expression text",
-            "admission": "candidate: all local and official-public checks pass; formal platform admission not yet run for this commit",
+            "fast_select": "18 SQL differential cases, 0 diffs; parse 7.83->6.41 us; public/JSONL 20 still pass",
+            "vector_parse": "20000 random literals + dims + 14 malformed, 0 diffs; write exec 593.5->547.8 us/request",
+            "q7_alignment": "A/B 76.7 vs 78.1 us, within noise; reverted, not in this commit",
+            "previous_submission": "S5 commit 50c06311: E=4706.698345, prompt=28.5 (historical, not a scoring field of this material)",
+            "admission": "candidate: all local and official-public checks pass; this commit's formal platform run not yet done",
             "performance_note": "local A/B only; platform score intentionally not embedded",
         },
         "material_notes": (
-            "材料来自本仓库 2026-11-14 的真实开发与本地测评。user_prompts 是用户原话节选（已脱敏）；"
+            "材料来自本仓库 2026-11-15 的真实开发与本地测评。user_prompts 是用户原话节选（已脱敏）；"
             "conversations 是学生视角的第一人称回答整理，提交前由学生本人复核确认，不是 Agent 的技术解释摘要；"
             "experiments 的 output 是同一 commit 下命令的原始/逐行输出（少数多行结果按原顺序拼接，未改写数值）；"
             "units 每个只对应一个独立问题/实验链，student 与 result 分开引用，互不代替。"
@@ -376,15 +413,19 @@ def build():
             "大 INSERT、巨大 LIMIT、投影/排序错配、聚簇 ANN recall、malformed vector 都是通过独立反例发现并修复的。"
             "UPDATE no-op 的 changed rows 语义和未别名 L2_DISTANCE 的原始表达式列名也已在本 commit 修复并加了回归；"
             "VARCHAR 有显式长度上限，单行不会无声超过 WAL payload 上限，大 INSERT 仍按 ≤4 MiB/≤4096 行分块。"
+            "S6 又把 SELECT 的窄快路径、向量直接写入 Value 做成独立 A/B，并主动回退了 q7 64B 对齐这个没有稳定收益的改动。"
         ),
         "limitations": [
             "单一 commit 的正式平台准入/性能尚未运行；本地和 Docker 公开 20 例不等于隐藏用例。",
+            "SELECT 窄快路径只覆盖一种形状，其他投影/转义/多语句回退；wall 收益受客户端与扫描占比限制。",
+            "q7 64B 对齐 A/B 没有稳定收益，本 commit 已回退；不能把未证实的小改动带进提交。",
+            "向量直接写入仍保留 Value 堆分配；写 wall 主要被 fdatasync 占据，整体只约 2%。",
             "unclustered/聚簇结论只覆盖合成 10k/50k×128；hidden 数据分布未知。",
             "VARCHAR 长度有显式上限；超限返回 value_out_of_range，不是静默截断。",
             "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。",
         ],
-        "summary": "26 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块。",
-        "material_summary": "26 个单元，五个维度 5/6/6/4/5；每个单元有独立的学生问题与实验结果，结果全部来自本 commit 的本地命令。",
+        "summary": "29 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入。",
+        "material_summary": "29 个单元，五个维度 5/7/7/5/5；每个单元有独立的学生问题与实验结果，结果全部来自本 commit 的本地命令。",
     }
     return data
 
