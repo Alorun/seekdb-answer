@@ -390,7 +390,7 @@ def build():
             "official_protocol": "JSON Lines (STDIO_PROTOCOL.md); Docker protocol_check 20/20",
             "public_cases": "20/20",
             "sql_edges": "158 checks x 2 modes, 0 failures",
-            "crash_fuzz": "240 iterations (memory+disk), 0 failures",
+            "crash_fuzz": "200 iterations (memory+disk) on this commit, 0 failures",
             "checkpoint": "10k/50k memory + 50k disk; restart row counts verified",
             "recall": "5000x128 uniform/clustered, exact oracle match, ann recall 1.0",
             "sql_semantics": "UPDATE counts changed rows (no-op=0); unaliased L2_DISTANCE header preserves the original expression text",
