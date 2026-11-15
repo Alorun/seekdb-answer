@@ -7,8 +7,8 @@ platform confirms all MySQL cases pass.
 
 | field | value |
 |---|---|
-| branch / commit | `2026-competition-round2` / `6fbc5ee2cca23b810b46ebae1250134b25a810d7` |
-| code commit | `6fbc5ee2cca23b810b46ebae1250134b25a810d7` (material commit is its child) |
+| branch / commit | `2026-competition-round2` / `042e3c28070016005b997f5825572ee284cb9953` |
+| code commit | `6fbc5ee2cca23b810b46ebae1250134b25a810d7` (material commit `042e3c28` is its child) |
 | conversation | 55,396 bytes, sha256 `1b4255a15a184b51e1be0bf411129becba5699a489b4af8375a676841b7fa97f`, 26 units / raw 44.0 |
 | local gate | `release_gate.py --require-conversation` PASS (anonymous remote + Docker smoke) |
 | official public | protocol_check 20/20 (Docker tip image), public 20/20, marker 20/20 |
