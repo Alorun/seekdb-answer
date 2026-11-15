@@ -416,7 +416,8 @@ bool decodeRow(const Schema& schema, const char* data, size_t size, Row& out,
 //   per non-PK/non-VECTOR column in schema order:
 //     BIGINT:    u8 mode (0 zigzag varint, 1 raw i64)
 //     VARCHAR:   u8 mode (0 dictionary, 1 plain front-coded/RLE)
-//   VECTOR:      u8 mode (0 raw float32 stream, 1 Huffman high byte + 3 planes)
+//   VECTOR:      u8 mode (0 raw float32 stream, 1 Huffman high byte + 3 planes,
+//                          2 fixed24 sign+millionths: Huffman high byte + 2 planes)
 bool encodeInsertBatch(const Schema& schema, const std::vector<Row>& rows,
                        std::string& out, std::string& err);
 // Calls fn(pk, row) for every row in file order.  A false return from fn stops

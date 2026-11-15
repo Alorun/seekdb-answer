@@ -615,12 +615,42 @@ bool readPkBlock(BatchReader& r, size_t count, std::vector<int64_t>& pks,
   return true;
 }
 
+// Fixed-point 24-bit vector mode ("fixed24").  Decimal literals with at most
+// six fractional digits are exactly representable as an integer number of
+// millionths; the encoder keeps the 24-bit magnitude plus a sign bit and
+// reconstructs the float as float(m) / 1e6f.  It accepts a component only when
+// that reconstruction is bitwise identical, so the mode is lossless by
+// construction; any mismatch falls back to the regular float32 codec.
+constexpr double kFixed24Scale = 1e6;
+constexpr double kFixed24Max = static_cast<double>(0x7FFFFFu) / kFixed24Scale;
+
+float fixed24Value(uint32_t magnitude, bool negative) {
+  // magnitude <= 0x7FFFFF is exact in float32, so this division is the
+  // correctly rounded exact rational and needs no wider intermediate.
+  float f = static_cast<float>(magnitude) / 1e6f;
+  return negative ? -f : f;
+}
+
 bool encodeVectorBlock(const Schema& schema, const std::vector<Row>& rows, int col,
                        size_t dim, std::string& out, std::string& err) {
   (void)schema;
   const size_t n = rows.size() * dim;
   std::vector<uint32_t> bits(n);
   uint32_t hist[256] = {};
+  // Mode 2 is attempted in the same pass as the regular block collection:
+  // 24-bit fixed point (sign + millionths).  It is used only when every
+  // component round-trips bitwise and its Huffman-coded high bytes do not
+  // expand past n raw bytes; otherwise the whole batch uses mode 1/0 below.
+  bool fixed_ok = n > 0;
+  std::vector<uint8_t> hi24;
+  std::vector<uint8_t> mid24;
+  std::vector<uint8_t> low24;
+  uint32_t hist24[256] = {};
+  if (fixed_ok) {
+    hi24.resize(n);
+    mid24.resize(n);
+    low24.resize(n);
+  }
   size_t k = 0;
   for (const Row& row : rows) {
     std::span<const float> v = row.values[static_cast<size_t>(col)].vec();
@@ -629,10 +659,95 @@ bool encodeVectorBlock(const Schema& schema, const std::vector<Row>& rows, int c
       return false;
     }
     for (float f : v) {
+      const size_t i = k++;
       uint32_t b = 0;
       std::memcpy(&b, &f, sizeof(b));
-      bits[k++] = b;
+      bits[i] = b;
       ++hist[b >> 24];
+      if (!fixed_ok) continue;
+      const bool negative = (b >> 31) != 0;
+      const double magnitude = std::fabs(static_cast<double>(f));
+      if (!(magnitude <= kFixed24Max)) {
+        fixed_ok = false;
+        continue;
+      }
+      // magnitude is non-negative and bounded by kFixed24Max, so x + 0.5 is
+      // exact in double and truncation is llround()'s half-away-from-zero
+      // result without the libm call.
+      const long long m =
+          static_cast<long long>(magnitude * kFixed24Scale + 0.5);
+      if (m < 0 || m > 0x7FFFFF) {
+        fixed_ok = false;
+        continue;
+      }
+      const uint32_t mag = static_cast<uint32_t>(m);
+      float rec = fixed24Value(mag, negative);
+      uint32_t rec_bits = 0;
+      std::memcpy(&rec_bits, &rec, sizeof(rec_bits));
+      if (rec_bits != b) {
+        fixed_ok = false;
+        continue;
+      }
+      hi24[i] = static_cast<uint8_t>((negative ? 0x80u : 0u) | ((mag >> 16) & 0x7Fu));
+      mid24[i] = static_cast<uint8_t>((mag >> 8) & 0xFFu);
+      low24[i] = static_cast<uint8_t>(mag & 0xFFu);
+      ++hist24[hi24[i]];
+    }
+  }
+
+  if (fixed_ok) {
+    HuffCode hc24{};
+    if (buildHuffman(hist24, hc24)) {
+      uint64_t total = 256ull * 8 + 4;
+      for (int s = 0; s < 256; ++s) {
+        if (hist24[s]) total += static_cast<uint64_t>(hist24[s]) * hc24.len[s];
+      }
+      if (total < static_cast<uint64_t>(n) * 8) {
+        out.push_back(2);
+        for (int s = 0; s < 256; ++s) out.push_back(static_cast<char>(hc24.len[s]));
+        const size_t size_pos = out.size();
+        out.append(4, '\0');
+        const size_t start = out.size();
+        uint64_t acc = 0;
+        int nbits = 0;
+        for (size_t i = 0; i < n; ++i) {
+          const uint8_t hi = hi24[i];
+          const int len = hc24.len[hi];
+          acc = (acc << len) | hc24.code[hi];
+          nbits += len;
+          if (nbits >= 32) {
+            nbits -= 32;
+            uint32_t word = static_cast<uint32_t>(acc >> nbits);
+            out.push_back(static_cast<char>((word >> 24) & 0xFF));
+            out.push_back(static_cast<char>((word >> 16) & 0xFF));
+            out.push_back(static_cast<char>((word >> 8) & 0xFF));
+            out.push_back(static_cast<char>(word & 0xFF));
+            acc &= (nbits == 0) ? 0ull : ((1ull << nbits) - 1ull);
+          }
+        }
+        while (nbits >= 8) {
+          nbits -= 8;
+          out.push_back(static_cast<char>((acc >> nbits) & 0xFF));
+        }
+        if (nbits > 0) out.push_back(static_cast<char>((acc << (8 - nbits)) & 0xFF));
+        const size_t coded = out.size() - start;
+        if (coded > 0xFFFFFFFFull) {
+          err = "batch huffman block too large";
+          return false;
+        }
+        for (int i = 0; i < 4; ++i) {
+          out[size_pos + static_cast<size_t>(i)] =
+              static_cast<char>((coded >> (8 * i)) & 0xFF);
+        }
+        const size_t base = out.size();
+        out.resize(base + n * 2);
+        char* dst = out.data() + base;
+        for (size_t i = 0; i < n; ++i) {
+          dst[i] = static_cast<char>(mid24[i]);
+          dst[i + n] = static_cast<char>(low24[i]);
+        }
+        return true;
+      }
     }
   }
 
@@ -840,6 +955,67 @@ bool decodeVectorBlock(BatchReader& r, const Schema& schema, int col, size_t cou
       }
       rows[i].values[static_cast<size_t>(col)] = Value::MakeVec(std::move(v));
     }
+    return true;
+  }
+  if (mode == 2) {
+    uint8_t lens[256];
+    for (int s = 0; s < 256; ++s) lens[s] = r.u8();
+    uint32_t coded = r.u32();
+    if (!r.ok || coded > r.size - r.pos) {
+      err = "truncated batch vector stream";
+      return false;
+    }
+    HuffDec hd;
+    if (!buildHuffDec(lens, hd)) {
+      err = "corrupt batch huffman table";
+      return false;
+    }
+    std::vector<uint8_t> hi(n);
+    ByteBitReader br{reinterpret_cast<const uint8_t*>(r.data + r.pos), coded};
+    for (size_t i = 0; i < n; ++i) {
+      uint32_t code = 0;
+      int sym = -1;
+      for (int len = 1; len <= hd.maxlen; ++len) {
+        int bit = br.take(1);
+        if (!br.ok) {
+          err = "truncated batch huffman stream";
+          return false;
+        }
+        code = (code << 1) | static_cast<uint32_t>(bit);
+        uint32_t first = hd.first_code[len];
+        if (code >= first && code - first < hd.count[len]) {
+          sym = hd.syms[hd.first_index[len] + (code - first)];
+          break;
+        }
+      }
+      if (sym < 0) {
+        err = "corrupt batch huffman symbol";
+        return false;
+      }
+      hi[i] = static_cast<uint8_t>(sym);
+    }
+    r.pos += coded;
+    if (!r.need(n * 2)) {
+      err = "truncated batch vector fixed24 planes";
+      return false;
+    }
+    const char* planes = r.data + r.pos;
+    for (size_t i = 0; i < count; ++i) {
+      std::vector<float> v(dim);
+      for (size_t j = 0; j < dim; ++j) {
+        size_t idx = i * dim + j;
+        const bool negative = (hi[idx] & 0x80u) != 0;
+        const uint32_t mag = (static_cast<uint32_t>(hi[idx] & 0x7Fu) << 16) |
+                             (static_cast<uint32_t>(
+                                  static_cast<uint8_t>(planes[idx]))
+                              << 8) |
+                             static_cast<uint32_t>(
+                                 static_cast<uint8_t>(planes[idx + n]));
+        v[j] = fixed24Value(mag, negative);
+      }
+      rows[i].values[static_cast<size_t>(col)] = Value::MakeVec(std::move(v));
+    }
+    r.pos += n * 2;
     return true;
   }
   if (mode != 1) {
