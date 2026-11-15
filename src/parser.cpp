@@ -1,6 +1,9 @@
 #include "parser.h"
 
 #include <cctype>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 
 namespace mvdb {
@@ -806,7 +809,148 @@ class Parser {
 
 }  // namespace
 
+// Narrow fast path for the benchmark's hot SELECT shape:
+//   SELECT id, L2_DISTANCE(<col>, '<vec>') AS <alias> FROM <table>
+//     [WHERE <col> = '<value>'] ORDER BY <alias> [ASC|DESC] LIMIT <n>;
+// Anything else falls back to the generic lexer/parser.  The AST is the same
+// shape the generic parser produces, so execution semantics are unchanged.
+bool tryFastSelect(std::string_view s, Statement& out) {
+  size_t i = 0;
+  auto skip = [&] {
+    while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+  };
+  auto kw = [&](const char* k) {
+    skip();
+    const size_t n = std::strlen(k);
+    if (i + n > s.size()) return false;
+    for (size_t j = 0; j < n; ++j) {
+      if (std::tolower(static_cast<unsigned char>(s[i + j])) !=
+          std::tolower(static_cast<unsigned char>(k[j]))) {
+        return false;
+      }
+    }
+    const size_t e = i + n;
+    if (e < s.size()) {
+      const unsigned char c = static_cast<unsigned char>(s[e]);
+      if (std::isalnum(c) || c == '_') return false;
+    }
+    i = e;
+    return true;
+  };
+  auto punct = [&](char c) {
+    skip();
+    if (i < s.size() && s[i] == c) {
+      ++i;
+      return true;
+    }
+    return false;
+  };
+  auto ident = [&](std::string& v) {
+    skip();
+    const size_t b = i;
+    if (i >= s.size()) return false;
+    const unsigned char c0 = static_cast<unsigned char>(s[i]);
+    if (!(std::isalpha(c0) || c0 == '_')) return false;
+    ++i;
+    while (i < s.size()) {
+      const unsigned char c = static_cast<unsigned char>(s[i]);
+      if (!(std::isalnum(c) || c == '_')) break;
+      ++i;
+    }
+    v.assign(s.substr(b, i - b));
+    return true;
+  };
+  auto quoted = [&](std::string& v) {
+    skip();
+    if (i >= s.size() || s[i] != '\'') return false;
+    ++i;
+    const size_t b = i;
+    while (i < s.size()) {
+      const char c = s[i];
+      if (c == '\\') return false;  // escapes not handled on the fast path
+      if (c == '\'') {
+        v.assign(s.substr(b, i - b));
+        ++i;
+        return true;
+      }
+      ++i;
+    }
+    return false;
+  };
+
+  Statement stmt;
+  stmt.kind = Statement::Kind::Select;
+  SelectStmt& sel = stmt.select;
+  if (!kw("SELECT")) return false;
+  std::string first;
+  if (!ident(first) || !iequals(first, "id")) return false;
+  if (!punct(',')) return false;
+  skip();
+  const size_t expr_start = i;
+  if (!kw("L2_DISTANCE") || !punct('(')) return false;
+  SelectItem dist;
+  dist.kind = SelectItem::Kind::Distance;
+  if (!ident(dist.column) || !punct(',') || !quoted(dist.vector_text) ||
+      !punct(')')) {
+    return false;
+  }
+  dist.text = std::string(s.substr(expr_start, i - expr_start));
+  if (!kw("AS")) return false;
+  if (!ident(dist.alias) || dist.alias.empty()) return false;
+  SelectItem id_col;
+  id_col.kind = SelectItem::Kind::Column;
+  id_col.column = "id";
+  id_col.text = "id";
+  sel.items.push_back(std::move(id_col));
+  sel.items.push_back(std::move(dist));
+  if (!kw("FROM") || !ident(sel.table)) return false;
+  if (kw("WHERE")) {
+    Condition cond;
+    std::string val;
+    if (!ident(cond.column) || !punct('=') || !quoted(val)) return false;
+    cond.op = "=";
+    cond.value = Value::MakeStr(val);
+    sel.where.push_back(std::move(cond));
+  }
+  if (!kw("ORDER") || !kw("BY")) return false;
+  OrderItem ord;
+  if (!ident(ord.column)) return false;
+  if (!iequals(ord.column, sel.items[1].alias)) return false;
+  if (kw("DESC")) {
+    ord.desc = true;
+  } else {
+    (void)kw("ASC");
+  }
+  sel.order.push_back(std::move(ord));
+  if (!kw("LIMIT")) return false;
+  skip();
+  const size_t ds = i;
+  uint64_t lim = 0;
+  while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) {
+    if (lim > (UINT64_MAX - 9) / 10) return false;
+    lim = lim * 10 + static_cast<uint64_t>(s[i] - '0');
+    ++i;
+  }
+  if (i == ds) return false;
+  sel.has_limit = true;
+  sel.limit = lim;
+  skip();
+  if (i < s.size() && s[i] == ';') ++i;
+  skip();
+  if (i != s.size()) return false;
+  out = std::move(stmt);
+  return true;
+}
+
 ParseResult parseStatement(const std::string& input) {
+  static const bool fast_select_enabled =
+      std::getenv("MVDB_NO_FAST_SELECT") == nullptr;
+  if (fast_select_enabled) {
+    Statement fast;
+    if (tryFastSelect(input, fast)) {
+      return ParseResult::MakeOk(std::move(fast), input.size());
+    }
+  }
   Lexer lexer(input);
   std::vector<Token> tokens = lexer.run();
   bool only_empty = true;

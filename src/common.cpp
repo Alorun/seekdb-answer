@@ -1148,9 +1148,9 @@ bool parseSimpleDecimal(const char* begin, const char* end, const char*& next,
 }
 }  // namespace
 
-bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
-                        std::string& err) {
-  out.clear();
+template <class Sink>
+bool parseVectorLiteralImpl(std::string_view text, size_t cap, Sink&& sink,
+                            size_t& count, std::string& err) {
   // Parse in place: the SQL literal and every JSON request vector are already
   // owned by a token, so trimming and slicing into fresh std::strings only
   // copied ~700 bytes per query (and per row on bulk INSERT).
@@ -1163,7 +1163,6 @@ bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
     return false;
   }
   std::string_view body = s.substr(1, s.size() - 2);
-  out.reserve(std::count(body.begin(), body.end(), ',') + 1);
   size_t pos = 0;
   while (pos < body.size()) {
     while (pos < body.size() &&
@@ -1210,7 +1209,8 @@ bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
       err = "vector value overflows float32";
       return false;
     }
-    out.push_back(f);
+    sink(f, count);
+    ++count;
     pos += static_cast<size_t>(next - start);
     while (pos < body.size() &&
            std::isspace(static_cast<unsigned char>(body[pos]))) {
@@ -1234,7 +1234,32 @@ bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
       }
     }
   }
+  (void)cap;
   return true;
+}
+
+bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
+                        std::string& err) {
+  out.clear();
+  size_t sb = 0, se = text.size();
+  while (sb < se && std::isspace(static_cast<unsigned char>(text[sb]))) ++sb;
+  while (se > sb && std::isspace(static_cast<unsigned char>(text[se - 1]))) --se;
+  out.reserve(std::count(text.begin() + sb, text.begin() + se, ',') + 1);
+  size_t count = 0;
+  return parseVectorLiteralImpl(
+      text, std::numeric_limits<size_t>::max(),
+      [&](float f, size_t) { out.push_back(f); }, count, err);
+}
+
+bool parseVectorLiteralInto(std::string_view text, float* out, size_t cap,
+                            size_t& count, std::string& err) {
+  count = 0;
+  return parseVectorLiteralImpl(
+      text, cap,
+      [&](float f, size_t n) {
+        if (n < cap) out[n] = f;
+      },
+      count, err);
 }
 
 }  // namespace mvdb

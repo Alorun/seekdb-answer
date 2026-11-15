@@ -107,6 +107,17 @@ class Value {
   static Value MakeVec(const std::vector<float>& x) {
     return MakeVec(x.data(), x.size());
   }
+  // Allocate a VECTOR Value whose payload is filled in place by the caller.
+  // `mutableVecData()` is valid until the Value is moved/copied/destroyed.
+  static Value MakeVecRaw(size_t n) {
+    Value v;
+    v.type = Type::Vec;
+    v.own = 1;
+    v.len = static_cast<uint32_t>(n);
+    v.vp = n ? new float[n] : nullptr;
+    return v;
+  }
+  float* mutableVecData() { return type == Type::Vec ? vp : nullptr; }
   static Value MakeVec(std::vector<float>&& x) {
     return MakeVec(x.data(), x.size());
   }
@@ -425,6 +436,12 @@ bool decodeIndex(const std::string& payload, std::string& name,
 // Parse a vector literal such as "[1, 0.5, -2]" into float32 values.
 bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
                         std::string& err);
+// Same grammar, but writes directly into a caller-owned buffer of `cap`
+// floats.  `count` receives the number of values in the literal; callers
+// compare it with cap to report a dimension mismatch.  Used by INSERT/UPDATE
+// to avoid the temporary vector plus the second copy into the Value.
+bool parseVectorLiteralInto(std::string_view text, float* out, size_t cap,
+                            size_t& count, std::string& err);
 
 // Parse a decimal integer with overflow checking.
 bool parseBigInt(std::string_view text, int64_t& out, std::string& err);

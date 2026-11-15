@@ -1465,6 +1465,25 @@ Status convertValue(const Column& col, const Value& input, Value& out) {
         return Status::Error(Err::kInvalidValue,
                              "expected vector literal string for column " + col.name);
       }
+      static const bool direct =
+          std::getenv("MVDB_NO_DIRECT_VEC") == nullptr;
+      if (direct) {
+        Value raw = Value::MakeVecRaw(col.length);
+        size_t count = 0;
+        std::string err;
+        if (!parseVectorLiteralInto(input.str(), raw.mutableVecData(),
+                                    col.length, count, err)) {
+          return Status::Error(Err::kInvalidValue, err);
+        }
+        if (count != col.length) {
+          return Status::Error(Err::kInvalidValue,
+                               "vector dimension mismatch for column " + col.name +
+                                   ": expected " + std::to_string(col.length) +
+                                   ", got " + std::to_string(count));
+        }
+        out = std::move(raw);
+        return Status::Ok();
+      }
       std::vector<float> v;
       std::string err;
       if (!parseVectorLiteral(input.str(), v, err)) {
