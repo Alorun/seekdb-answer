@@ -7,7 +7,7 @@ platform confirms all MySQL cases pass.
 
 | field | value |
 |---|---|
-| branch / commit | `2026-competition-round2` / `042e3c28070016005b997f5825572ee284cb9953` |
+| branch / commit | `2026-competition-round2` / `50c06311c596df07a72ffe811649d4bc09fd6e6d` |
 | code commit | `6fbc5ee2cca23b810b46ebae1250134b25a810d7` (material commit `042e3c28` is its child) |
 | conversation | 55,396 bytes, sha256 `1b4255a15a184b51e1be0bf411129becba5699a489b4af8375a676841b7fa97f`, 26 units / raw 44.0 |
 | local gate | `release_gate.py --require-conversation` PASS (anonymous remote + Docker smoke) |
@@ -16,7 +16,7 @@ platform confirms all MySQL cases pass.
 | recall | 5000x128 uniform/clustered exact oracle match; ann recall 1.0 |
 | crash/checkpoint | 240 crash iterations 0 failures; checkpoint 10k/50k/disk restart counts PASS |
 | local perf A/B | S3→current uniform write 0.5268→0.2442 s, query 0.1761→0.0490 s, RSS 14.4→12.4 MiB; clustered ann server exec 40.5→19.2 µs, Docker q1000 159.3→116.8 ms (old HEAD clustered ann 203.3 ms), recall 1.0; choose ann for the benchmark config if the form allows |
-| formal admission/perf | pending platform run for this commit |
+| formal admission/perf | S5: E=4706.698345; prompt=28.500000; admission PASS; rank/score pending |
 
 
 | slot | date/time | commit SHA | image digest | conversation sha256 / bytes | gate | precheck | formal result | admission | local E_write | local E_query | notes |
@@ -26,7 +26,7 @@ platform confirms all MySQL cases pass.
 
 | S3 | 2026-11-10 | 04960665bfde08bfc4e0b2a5720af5896cd7f6f6 |  | b3857e97 / 16055 | PASS | not run | admission PASS; E=2432.687188; prompt=4.00000 | pass | 0.15 s | 0.27 s | JSONL protocol; top performance 4237.889320, top prompt 8.0 |
 | S4 | 2026-11-11 | 46150c520d2a9a9c24e83b75fac7b11a4f0289a5 |  | d695151e / 42378 | PASS | not run | local: write 0.286 s, query 0.099 s vs S3 baseline 0.583/0.201; device B ~6.8 MB; prompt raw 41.5 (24 units) | not run | 0.286 s | 0.099 s | v4.0 q7 exact + group commit |
-| S5 |  |  |  |  |  |  |  |  |  |  |  |
+| S5 | 2026-11-15 | 50c06311c596df07a72ffe811649d4bc09fd6e6d |  | 1b4255a1 / 55396 | PASS | PASS (platform) | E=4706.698345; prompt=28.500000 | pass | 0.244 s | 0.049 s | q7 IVF + exact/semantics; 26 units; top prompt 67; next: 40+ units |
 | S6 |  |  |  |  |  |  |  |  |  |  |  |
 | S7 |  |  |  |  |  |  |  |  |  |  |  |
 | S8 |  |  |  |  |  |  |  |  |  |  |  |
