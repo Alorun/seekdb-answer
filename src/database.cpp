@@ -828,7 +828,13 @@ Status Database::loadSmallTables() {
   });
   if (!scan.ok()) return scan;
   for (auto& up : tables_) ++up->row_version;
-  return row_status;
+  // Recovery mmaps and faults the whole WAL; those clean pages would remain
+  // charged to cgroup memory.peak.  Every in-memory row is now materialised,
+  // so drop them (disk-mode tables make this a no-op because their scans
+  // re-read the log).
+  Status out = row_status;
+  if (out.ok()) maybeDropWalCache();
+  return out;
 }
 
 }  // namespace mvdb
