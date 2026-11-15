@@ -542,7 +542,7 @@ class TopK {
 
  private:
   size_t k_;
-  std::array<RawHit, 64> small_buf_{};
+  std::array<RawHit, 64> small_buf_;  // only [0, small_size_) is read
   size_t small_size_ = 0;
   std::priority_queue<RawHit, std::vector<RawHit>, RawWorse> heap_;
 };
@@ -726,7 +726,10 @@ __attribute__((target("avx2,fma"))) void scanQ7BlockExact(
   const int8_t* qcodes = qq.codes.data();
   const int32_t* pv = qc.pv.data();
   const int32_t cq = qq.cq;
-  std::vector<int32_t> dq(n);
+  // Reuse a per-thread scratch buffer: value-initializing 20 KB of int32
+  // per query was pure overhead, and the q7 pass writes every element.
+  static thread_local std::vector<int32_t> dq;
+  if (dq.size() < n) dq.resize(n);
   TopK qtop(k);
   size_t i = 0;
   for (; i + 4 <= n; i += 4) {
@@ -759,8 +762,9 @@ __attribute__((target("avx2,fma"))) void scanQ7BlockExact(
                      2.0 * E * inv;
     thr2 = t * t * (1.0 + 1e-6) + 1e-12;
   }
-  std::vector<uint32_t> pool;
-  pool.reserve(64);
+  static thread_local std::vector<uint32_t> pool;
+  pool.clear();
+  if (pool.capacity() < 64) pool.reserve(64);
   for (size_t j = 0; j < n; ++j) {
     if (static_cast<double>(dq[j]) <= thr2) pool.push_back(static_cast<uint32_t>(j));
   }
@@ -857,7 +861,8 @@ __attribute__((target("avx2,fma"))) void scanQ7ExactRange(
   out.clear();
   if (k == 0 || begin >= end) return;
   const size_t n = end - begin;
-  std::vector<int32_t> dq(n);
+  static thread_local std::vector<int32_t> dq;
+  if (dq.size() < n) dq.resize(n);
   const int8_t* qcodes = qq.codes.data();
   const int32_t cq = qq.cq;
   double dk = std::numeric_limits<double>::infinity();
@@ -885,8 +890,9 @@ __attribute__((target("avx2,fma"))) void scanQ7ExactRange(
     const double t = std::sqrt(std::max(0.0, dk)) + 2.0 * E * inv;
     thr2 = t * t * (1.0 + 1e-6) + 1e-12;
   }
-  std::vector<uint32_t> pool;
-  pool.reserve(128);
+  static thread_local std::vector<uint32_t> pool;
+  pool.clear();
+  if (pool.capacity() < 128) pool.reserve(128);
   for (size_t j = 0; j < n; ++j) {
     if (static_cast<double>(dq[j]) <= thr2) {
       pool.push_back(static_cast<uint32_t>(j));

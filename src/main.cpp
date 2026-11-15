@@ -173,8 +173,20 @@ bool parseArgs(int argc, char** argv, Options& opt) {
 }
 
 void writeOut(const std::string& s) {
-  std::cout.write(s.data(), static_cast<std::streamsize>(s.size()));
-  std::cout.flush();
+  // Direct write: std::cout + sync_with_stdio adds a lock and a second
+  // buffer copy on the one-request/one-response hot path.  A partial write is
+  // retried; EINTR is retried too.
+  const char* p = s.data();
+  size_t n = s.size();
+  while (n > 0) {
+    const ssize_t w = ::write(STDOUT_FILENO, p, n);
+    if (w < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    p += static_cast<size_t>(w);
+    n -= static_cast<size_t>(w);
+  }
 }
 
 std::string semanticError(const mvdb::Status& st) {
