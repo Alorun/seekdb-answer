@@ -52,6 +52,17 @@
 | B | 5.26 MB | WAL payload 4.44 + 头/CRC/页 ~0.8；原始向量 5.12 |
 | M | 13.4 MB | 向量 5.12 + q8 1.28 + filter block 1.28 + rows/map ~1.6 + locations 0.5 + 进程 ~4.2 |
 
+## 先做零代码实验：性能配置切 ann
+
+代码已经内置 q7 IVF ann：uniform 的 ann 就是 exact q7 路径（无损失）；clustered 的 ann
+server exec 19.2 µs vs exact 40.9 µs，initial/UPDATE+DELETE/restart recall 均 1.0。
+S5 是 exact 配置（E=4706.698345）；如果平台允许在提交配置里选 ann，且性能正确性只按
+Recall@10 ≥0.95 检查，**切 ann 是最大的一次单次收益**，uniform 数据下也不会变慢。
+
+- 风险：功能用例仍按各自请求的 `search_mode`；ann 配置只影响性能 benchmark。
+- 如果官方把 exact 作为硬性配置/性能按 exact 校验，回退 exact。
+- 操作：下一次正式提交把查询模式设为 `ann`，只比较 E；不升或回退就继续下面的细节优化。
+
 ## 可挖的细节（按优先级）
 
 | # | 优化 | 预期 | 风险 | 说明 |
