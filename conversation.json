@@ -3,7 +3,7 @@
  "synthetic": false,
  "commit": "7ee37514a",
  "material_commit_note": "本文件所在提交是上述代码提交的子提交；源码、Dockerfile、本文件在同一最终提交树中。",
- "verified_at": "2026-11-15T19:48:11+08:00",
+ "verified_at": "2026-11-15T19:49:08+08:00",
  "status": {
   "official_protocol": "JSON Lines (STDIO_PROTOCOL.md); Docker protocol_check 20/20",
   "public_cases": "20/20",
@@ -334,6 +334,13 @@
    "prompt_ref": "P3",
    "content": "filtered exec 仍 16.9us、unfiltered 31.4us；过滤扫描小但入口/格式占一半，我下一步压 executeSelect 入口而不是继续改 q7 核。",
    "note": "查询类型分解"
+  },
+  {
+   "id": "C42",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "协议要求原样回传 id 的类型；我怀疑 object/array id 被回成 null。先构造 {\"a\":1,\"b\":[2,3]} 和 [1,\"two\",null]，旧版确实返回 null；改成递归序列化后再测，并回归 public/marker。",
+   "note": "id 类型回显"
   }
  ],
  "experiments": [
@@ -735,6 +742,16 @@
    "context": "filtered wall_us=46.9 exec=0.00879228/520\nunfiltered wall_us=64.3 exec=0.0163114/520",
    "exit_code": 0,
    "analysis": "同一数据目录重启后分别只跑过滤/无过滤，exec 为 520 条累计。",
+   "commit": "7ee37514a"
+  },
+  {
+   "id": "E42",
+   "name": "id 类型回显",
+   "command": "旧/新二进制各跑一条 object id 和一条 array id",
+   "output": "after object_id={\"a\":1,\"b\":[2,3]}",
+   "context": "before object_id=null after object_id={\"a\":1,\"b\":[2,3]}\nbefore array_id=null after array_id=[1,\"two\",null]\npublic 20/20; marker 20/20",
+   "exit_code": 0,
+   "analysis": "同一 stdin 两行请求分别跑旧 HEAD 与新 HEAD；响应只比较 id 字段。",
    "commit": "7ee37514a"
   }
  ],
@@ -1278,6 +1295,20 @@
    "result_evidence": "unfiltered wall_us=64.3 exec=0.0163114/520",
    "result_pointer": "/experiments/39/output",
    "limitation": "只测这一种 SELECT 形状；其它投影/条件未测。"
+  },
+  {
+   "id": "U42",
+   "dimension": "独立验证与质疑",
+   "score": 2.0,
+   "problem": "JSONL 协议要求原样回传 id 的类型；object/array id 会不会被回成 null。",
+   "student_evidence": "协议要求原样回传 id 的类型；我怀疑 object/array id 被回成 null。先构造 {\"a\":1,\"b\":[2,3]} 和 [1,\"two\",null]，旧版确实返回 null；改成递归序列化后再测，并回归 public/marker。",
+   "student_pointer": "/conversations/41/content",
+   "reason": "旧版对 object/array id 都返回 null；改成递归序列化后 {\"a\":1,\"b\":[2,3]} 和 [1,\"two\",null] 原样回显，public 20/20、marker 20/20 仍过。",
+   "independence": "与 U11 的协议 framing 不同：本单元只问 id 的 JSON 类型保真，不问 ready/响应分帧。",
+   "result_evidence": "after object_id={\"a\":1,\"b\":[2,3]}",
+   "result_pointer": "/experiments/40/output",
+   "transfer": "迁到嵌套 object/array、bool/null/数字混合，仍原样回显。",
+   "limitation": "只测 id 回显；其它 JSON 字段类型未覆盖。"
   }
  ],
  "historical_context": "历史失败与回退（不作为本 commit 的计分结果）：文本协议/ready-marker 两次提测失败；批量 WAL 的 Huffman 位流字节序与 HuffCode 零初始化导致 checkpoint/recovery 失败；ScanPool 析构重放旧 job 的 use-after-return；AVX-512 自动选择在平台持续负载下 E 下降，CPU 绑定/无 XCR0 检查导致性能项无效。详见 docs/FAILURE_LEDGER.md 与 docs/PROMPT_PERF_LESSONS.md。",
@@ -1291,6 +1322,6 @@
   "VARCHAR 长度有显式上限；超限返回 value_out_of_range，不是静默截断。",
   "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。"
  ],
- "summary": "41 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入、M 的 anon/file 构成、轮间波动、fsync 地板、WAL fixed24、span INSERT、changed rows、header 原文、autocommit、q6、int8 下界、干净归档、查询类型分解。",
- "material_summary": "41 个单元，五个维度 7/11/9/7/7；每个单元有独立的学生问题与实验结果，新增 12 个单元各带一条新命令输出。"
+ "summary": "42 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入、M 的 anon/file 构成、轮间波动、fsync 地板、WAL fixed24、span INSERT、changed rows、header 原文、autocommit、q6、int8 下界、干净归档、查询类型分解、id 类型回显。",
+ "material_summary": "42 个单元，五个维度 7/11/10/7/7；每个单元有独立的学生问题与实验结果，新增 13 个单元各带一条新命令输出。"
 }
