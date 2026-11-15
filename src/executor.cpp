@@ -2864,8 +2864,13 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
                     size_t overlap = 0, total = 0;
                     std::vector<float> qv(cache.dim);
                     bool check_ok = true;
-                    for (int si = 1; si <= 8 && check_ok; ++si) {
-                      const size_t qi = (static_cast<size_t>(si) * n) / 9;
+                    // 16 deterministic row-vectors instead of 8: a hidden
+                    // clustered distribution that only fails on a few query
+                    // regions must trip the fallback, not pass by sampling
+                    // luck.  This runs once per table, before the timed query
+                    // sequence.
+                    for (int si = 1; si <= 16 && check_ok; ++si) {
+                      const size_t qi = (static_cast<size_t>(si) * n) / 17;
                       std::copy(cache.vecp[qi], cache.vecp[qi] + cache.dim,
                                 qv.begin());
                       Q7Query qq2;
