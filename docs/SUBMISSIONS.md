@@ -30,7 +30,7 @@ platform confirms all MySQL cases pass.
 | S6 | 2026-11-15 | 8289a36dcf63cbf9f50e4b1ae5694af82a289480 |  | 26a55471 / 63898 | PASS | not run | local A/B only: fast SELECT parse 7.83→6.41 µs; direct vector write exec 593.5→547.8 µs/req; q7 alignment reverted | not run | 0.233 s | 0.080 s | 29 units/raw 49.5; material commit is this slot |
 | S7 | 2026-11-15 | d581a9512 |  | f0a7421 / 84549 | PASS | PASS | **E=4661.397672; prompt=45.500000; admission PASS** | pass | 0.273 s | 0.176 s | 40 units/raw 70.5; prompt 28.5->45.5 |
 | S8 | 2026-11-15 | 1879550a7 |  | f0a7421 / 84549 | PASS | not run | local only: ORDER BY alias reuses projection query (server exec 18.9->15.6 us/query); WAL cache dropped after recovery (restart M_peak 15.22->13.41 MB); official protocol_check 20/20 | not run | 0.273 s | 0.176 s | 40 units/raw 70.5 unchanged; S7 prompt 45.5 preserved |
-| S9 |  |  |  |  |  |  |  |  |  |  |  |
+| S9 | 2026-11-15 | 47561eff6 |  | f0a7421 / 84549 | PASS | not run | ann self-check widened to 16 samples; clustered 10k exact 79.4 ms vs ann 59.3 ms (-25.3%), recall 1.0 initial/DML/restart; official protocol 20/20; exact default unchanged | not run | 0.273 s | 0.059 s (ann) | performance config must select ann; material unchanged |
 | S10 |  |  |  |  |  |  |  |  |  |  |  |
 | S11 |  |  |  |  |  |  |  |  |  |  |  |
 | S12 |  |  |  |  |  |  |  |  |  |  |  |
