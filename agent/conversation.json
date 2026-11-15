@@ -1,9 +1,9 @@
 {
  "schema_version": 2,
  "synthetic": false,
- "commit": "c6642bd24",
+ "commit": "47561eff6",
  "material_commit_note": "本文件所在提交是上述代码提交的子提交；源码、Dockerfile、本文件在同一最终提交树中。",
- "verified_at": "2026-11-15T20:08:22+08:00",
+ "verified_at": "2026-11-15T21:44:48+08:00",
  "status": {
   "official_protocol": "JSON Lines (STDIO_PROTOCOL.md); Docker protocol_check 20/20",
   "public_cases": "20/20",
@@ -21,6 +21,10 @@
   "variance": "5 fresh-dir rounds; write spread 8.2%, query spread 11.1%; effects below the 10.7 ms noise band are not claimed",
   "fsync": "ext4 strace: 101 fdatasync = 1.923 ms total; write wall is dominated by client JSON and parse/exec, not fsync",
   "quant_bound": "same-scale q7 bound 0 violations; per-vector-scale int8 candidate fraction 0.4% -> 99.7% at scale ratio 2",
+  "query_projection_reuse": "ORDER BY distance alias reuses the projection's parsed vector; server exec 18.9 -> 15.6 us on 1600 mixed queries",
+  "recovery_wal_cache": "clean WAL mmap pages dropped after loadSmallTables; restart query M_peak 15.22 -> 13.41 MB, file 3.83 -> 0 MB",
+  "ann_clustered": "q7 IVF candidate layer with exact re-rank; 16-sample self-check against exact IVF, below 0.98 falls back to exact IVF; clustered 10k exact 79.4 vs ann 59.3 ms/1000, recall 1.0 initial/UPDATE+DELETE/restart",
+  "ann_scope": "exact remains the default; ann runs only when the request/search_mode selects it; uniform data uses the exact q7 path in ann mode (no index, no speedup)",
   "admission": "candidate: all local and official-public checks pass; this commit's formal platform run not yet done",
   "performance_note": "local A/B only; platform score intentionally not embedded"
  },
@@ -338,7 +342,7 @@
    "context": "pk_floor_us=16.9 filtered_us=44.1 unfiltered_us=55.9\nprofile: requests=1600 parse=0.0060874 json=0.00153609 sql=0.00455131 exec=0.0307732 format=0.00346489",
    "exit_code": 0,
    "analysis": "同一进程重启后只跑查询；设置 MVDB_PROFILE 后，在 stdin EOF 打印累计阶段。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E02",
@@ -348,7 +352,7 @@
    "context": "rep0 mode=exact ready=154ms write=277.4ms q1000=124.6ms B=5.26MB M_peak=12.9MB (peak0=5.7 write=10.3 query=12.9) ioW=5.26 ioQ=0.00",
    "exit_code": 0,
    "analysis": "--cpus=2 --memory=2g，读容器 cgroup io.stat 与 memory.peak，包含启动/装载/预热。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E03",
@@ -358,7 +362,7 @@
    "context": "S3: write=0.5268s query=0.1761s maxrss=14.4MiB\ncurrent: write=0.2442s query=0.0490s maxrss=12.4MiB\nS3: clustered write=0.5689s query=0.1914s maxrss=14.3MiB\ncurrent: clustered write=0.2649s query=0.1154s maxrss=12.6MiB",
    "exit_code": 0,
    "analysis": "S3 = 057126c01 的独立 worktree 构建；同一 bench2 负载，uniform 与 clustered 两个场景。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E04",
@@ -368,7 +372,7 @@
    "context": "rows=50000 dim=128 memory_rows=0\nready_rss_kB 4136\nwrite_rss_kB 7516\nrestart_rss_kB 27488\nquery_rss_kB 28092",
    "exit_code": 0,
    "analysis": "写入、shutdown、重启、查询四阶段读 /proc/pid/status VmHWM。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E05",
@@ -378,7 +382,7 @@
    "context": "checkpoint rows=10000 mode=memory restart_rows=10000: PASS\ncheckpoint rows=50000 mode=memory restart_rows=50000: PASS\ncheckpoint rows=50000 mode=disk restart_rows=50000: PASS",
    "exit_code": 0,
    "analysis": "脚本先数重启后的全部行，再检查 TopK；不再硬编码 10k 标签。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E06",
@@ -388,7 +392,7 @@
    "context": "filtered/unfiltered differential: before=0 after_dml=0 rollback=0 restart=0 read_your_writes=OK checks=190\nfailures=0\nexact queries: 50 (ids/order/distance match oracle)\nann recall@10: 1.0000",
    "exit_code": 0,
    "analysis": "NumPy oracle 覆盖过滤/无过滤、UPDATE/DELETE、ROLLBACK、restart。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E07",
@@ -398,7 +402,7 @@
    "context": "ivf-screen sample=512 ratio=0.350\nivf n=10000 inertia=152249.74 var=10121642.97 ratio=0.015 clustered=1\nann_recall_mean=1.0 min=1.0",
    "exit_code": 0,
    "analysis": "uniform 的 screen ratio 高，跳过 IVF；clustered 建 IVF，ann 走精确半径 IVF。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E08",
@@ -408,7 +412,7 @@
    "context": "failed_insert_code duplicate_key\nstatement_atomicity committed rows= [[1], [2], [3], [4]]\nrollback rows= [[1], [2], [3], [4]]",
    "exit_code": 0,
    "analysis": "失败语句不留下 5，但保留事务此前成功的 4；ROLLBACK 恢复 2。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E09",
@@ -418,7 +422,7 @@
    "context": "seq 100.00    0.001102          10       101           fdatasync\nburst 100.00    0.000827         413         2           fdatasync\nfdatasync_counts seq=101 burst=2",
    "exit_code": 0,
    "analysis": "顺序客户端逐批等待；突发客户端一次写入全部请求。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E10",
@@ -428,7 +432,7 @@
    "context": "official protocol_check: passed=True cases=20\nstorage_restart: PASS\ntransaction_shutdown_rollback: PASS",
    "exit_code": 0,
    "analysis": "同一 20 例在 Docker 镜像上跑 ready/execute/restart/shutdown。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E11",
@@ -438,7 +442,7 @@
    "context": "iterations=240 elapsed=9.6s\ndeterministic crash points={'after_wal_write': 28, 'after_commit_fsync': 26, 'recovery_after_pass1': 26, 'recovery_after_truncate': 28, 'checkpoint_before_rename': 26, 'checkpoint_after_rename': 26}\nrandom SIGKILL iterations=80\nfailures=0",
    "exit_code": 0,
    "analysis": "内存/磁盘各 120 轮；6 个确定性崩溃点 + 80 次随机强杀。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E12",
@@ -448,7 +452,7 @@
    "context": "before: DEAD terminate called after throwing an instance of 'std::length_error'\nafter: ok=True rows=3",
    "exit_code": 0,
    "analysis": "旧版 reserve(limit) abort；当前 reserve 取 min(limit, 表行数)。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E13",
@@ -458,7 +462,7 @@
    "context": "float32 large: {\"id\": 2, \"ok\": true, \"columns\": [\"id\", \"d\"], \"rows\": [[3, 1], [2, 2e+19], [1, 3.0000001e+19]]}",
    "exit_code": 0,
    "analysis": "float32 平方和会溢出，距离用 double 累加；输出有限并按距离排序。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E14",
@@ -468,7 +472,7 @@
    "context": "before [[1, 1], [2, 1]]\nafter [[1, 9], [2, 10.0498756]]",
    "exit_code": 0,
    "analysis": "旧版 simple_proj 复用排序 key 的距离；当前要求投影 query 与 order query 相同。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E15",
@@ -478,7 +482,7 @@
    "context": "base filtered500 median=39.0us\ncurrent filtered500 median=33.6us\nbase unfiltered500 median=72.6us\ncurrent unfiltered500 median=53.3us",
    "exit_code": 0,
    "analysis": "同一数据目录重启后跑 5 轮，取中位数；过滤块只在单等值过滤且版本匹配时启用。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E16",
@@ -488,7 +492,7 @@
    "context": "parseVectorLiteral differential: checked=20000 rejected=0 mismatches=0\ncrc32c differential: checked=8243 mismatches=0\nwrite_wall_ms=266.4\nprofile: requests=101 parse=0.0301985 json=0.0108088 sql=0.0193898 exec=0.0640009 format=8.4008e-05",
    "exit_code": 0,
    "analysis": "gprof 找热点；快路径与 from_chars(double)->float 位级一致；CRC 硬件与表实现一致。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E17",
@@ -498,7 +502,7 @@
    "context": "ASAN public 20/20 PASS\ncheckpoint rows=10000 mode=memory restart_rows=10000: PASS\ncycle 0: exit=0 asan_errors=[]\ncycle 1: exit=0 asan_errors=[]\ncycle 2: exit=0 asan_errors=[]",
    "exit_code": 0,
    "analysis": "detect_stack_use_after_return=1；连续三次启动/查询/关停无 ASAN 报告。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E18",
@@ -508,7 +512,7 @@
    "context": "LIMIT 10: n=10 monotonic=True first=[1, 2, 3] last=10\nLIMIT 64: n=64 monotonic=True first=[1, 2, 3] last=64\nLIMIT 65: n=65 monotonic=True first=[1, 2, 3] last=65\nLIMIT 100: n=100 monotonic=True first=[1, 2, 3] last=100\nrandom LIMIT 65: match=True n=65\nrandom LIMIT 100: match=True n=100",
    "exit_code": 0,
    "analysis": "k≤64 走固定数组，k>64 走 heap；全等距按 pk 升序。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E19",
@@ -518,7 +522,7 @@
    "context": "2x on one component saturates via f(R)=R/(1+R)\nuniform 2T: query1000=53.4ms\nuniform 1T: query1000=59.8ms\nclustered 2T: query1000=118.3ms\nclustered 1T: query1000=126.2ms",
    "exit_code": 0,
    "analysis": "0.6/0.2/0.2 权重与 f 饱和；双核在 uniform 约 1.12x、clustered 约 1.07x，不是线性的 2x。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E20",
@@ -528,7 +532,7 @@
    "context": "[uniform] exact q7 baseline        p50=43.81 p99=63.61 mean=44.95 us\n[uniform] ann pool=24 kmeans=0/0  recall=1.0000 min=1.00 lt0.9=0 p50=36.32 p99=54.59 mean=37.78 | build=36.4ms idx=0.000MB clustered=0\n[clustered] exact q7 baseline        p50=48.54 p99=66.41 mean=49.40 us\n[clustered] ann pool=24 kmeans=64/4  recall=1.0000 min=1.00 lt0.9=0 p50=7.53 p99=22.09 mean=8.42 | build=39.9ms idx=0.078MB clustered=1",
    "exit_code": 0,
    "analysis": "uniform 的 ANN 只快约 1.2x；clustered 的精确 IVF 快约 5.9x，recall 1.0。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E21",
@@ -538,7 +542,7 @@
    "context": "q7: 23.5 us/query\nq4: 24.5 us/query",
    "exit_code": 0,
    "analysis": "更窄的 packed code 解包抵消带宽收益；4-bit 在完整候选集上并未更快。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E22",
@@ -548,7 +552,7 @@
    "context": "no_block=False filt=108.8us unf=143.8us M=13.13MB\nno_block=True filt=121.8us unf=160.8us M=12.03MB",
    "exit_code": 0,
    "analysis": "连续块多约 1.1 MB memory.peak，换 filtered 约 13-35us；查询权重 2/3，保留。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E23",
@@ -558,7 +562,7 @@
    "context": "source_avx512_matches=0\nbinary_avx512_symbols=0\ncurrent build: public 20/20, crash fuzz 240, checkpoint 50k/disk PASS",
    "exit_code": 0,
    "analysis": "本地微基准曾认为 512 更快，但平台持续负载下 E 下降；当前版本没有 512 路径和运行时开关。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E24",
@@ -568,7 +572,7 @@
    "context": "normal: ok=True affected_rows=3000 restart_rows=3000\ncrash after_wal_write: restart_rows=0\ncrash after_commit_fsync: restart_rows=3000\nduplicate_across_chunks: duplicate_key restart_rows=0",
    "exit_code": 0,
    "analysis": "逻辑 INSERT 拆成多条 ≤4 MiB 记录；未提交 chunk 不生效，已确认 commit 全部保留。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E25",
@@ -578,7 +582,7 @@
    "context": "exact wall=70.3us exec=40.5us parse=4.3 format=2.4\nann wall=47.0us exec=19.2us parse=4.6 format=2.4\ninitial: ann recall mean=1.0000 min=1.0000\nafter_dml: ann recall mean=1.0000 min=1.0000\nafter_restart: ann recall mean=1.0000 min=1.0000\nDocker exact q1000=159.3ms\nDocker ann q1000=116.8ms\nold HEAD 3a5c782a clustered exact q1000=187.9ms\nold HEAD 3a5c782a clustered ann q1000=203.3ms",
    "exit_code": 0,
    "analysis": "nlist=64/nprobe=6/pool=24；首次 8 条样本对 exact IVF 自检，recall<0.98 回退；exact 模式不动。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E26",
@@ -588,7 +592,7 @@
    "context": "mode=query on wall=80.5 parse=6.41 exec=37.21\nmode=query off wall=80.6 parse=7.83 exec=36.58\nmedian query on wall=80.5 parse=6.41 exec=37.21\nmedian query off wall=80.6 parse=7.83 exec=36.58\nfast select diff: cases 18 failures 0",
    "exit_code": 0,
    "analysis": "同机 10k×128、500 filtered + 500 unfiltered 交替；4 次中位数；MVDB_NO_FAST_SELECT 关掉快路径对照；18 条 SQL 差分。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E27",
@@ -598,7 +602,7 @@
    "context": "mode=q7 a wall=76.7 parse=7.45 exec=35.77\nmode=q7 b wall=78.1 parse=7.72 exec=35.61\nmedian q7 a wall=76.7 parse=7.45 exec=35.77\nmedian q7 b wall=78.1 parse=7.72 exec=35.61",
    "exit_code": 0,
    "analysis": "a=6fbc5ee2 未对齐，b=加 64B 对齐；同机 10k×128、fast SELECT 关闭、4 次中位数。对齐没有更快，差异在噪声内，代码已回退。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E28",
@@ -608,7 +612,7 @@
    "context": "median write direct wall=233.0 parse=229.5 exec=547.8\nmedian write old wall=238.6 parse=227.4 exec=593.5\nvector parse check: 20000 random + dims + malformed, failures=0",
    "exit_code": 0,
    "analysis": "direct=parseVectorLiteralInto 直接写 Value payload；old=临时 vector + MakeVec 拷贝；100 批×100 行，4 次中位数；20000 条随机文字/维度/malformed 位级差分。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E30",
@@ -618,7 +622,7 @@
    "context": "mem phase=write peak=11.2MB anon=8.9MB file=0.0MB\nmem phase=query peak=12.5MB anon=10.3MB file=0.0MB",
    "exit_code": 0,
    "analysis": "每阶段读 cgroup memory.stat(anon/file) 与 memory.peak；WAL 在每次 sync 后 DONTNEED，所以此卷 file 为 0。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E31",
@@ -628,7 +632,7 @@
    "context": "write_ms min=251.7 p50=259.1 max=273.0 spread=8.2%\nquery_ms min=64.7 p50=70.9 max=72.6 spread=11.1%\nrounds=5 noise_band_2x_halfwidth_ms=10.7",
    "exit_code": 0,
    "analysis": "每轮全新数据目录、同一二进制；先算轮间带宽，再用它判此前小收益是否可判定。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E32",
@@ -638,7 +642,7 @@
    "context": "ext4 fdatasync calls=101 total=1.923ms usecs/call=19\nwrite profile parse=17.9ms json=10.9ms sql=7.0ms exec=60.8ms",
    "exit_code": 0,
    "analysis": "strace 数 101 次 fdatasync；与 MVDB_PROFILE 的 parse/json/sql/exec 对账。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E33",
@@ -648,7 +652,7 @@
    "context": "wal rows=10000 dim=128 mode=raw bytes=4435274\nwal rows=10000 dim=128 mode=fixed24 bytes=3539527 (-20.2%)\nwrite_bytes 4841472 -> 3948544 (-18.4%)\nfixed24 self-check: PASS (20000 decimal mode2, 20000 random fallback)",
    "exit_code": 0,
    "analysis": "同 10k×128 负载；mode2 只在整批每个分量位级可重建时启用，否则回退 mode0/1。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E34",
@@ -658,7 +662,7 @@
    "context": "fast insert diff: cases 28 failures 0\nold parse=30.4ms sql=20.2ms exec=63.0ms wall=266.9ms\nnew parse=20.3ms sql=9.3ms exec=55.5ms wall=253.6ms",
    "exit_code": 0,
    "analysis": "同一二进制 env on/off；差分覆盖列名、转义、NULL、重复主键、维度错、重启。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E35",
@@ -668,7 +672,7 @@
    "context": "noop_int=0 change_int=1 noop_str=0 change_str=1 no_match=0\ntx_noop=0\nrows_after_tx=[[1, \"a\", 2], [2, \"c\", 7]]\nvec_noop=0 vec_change=1\nrestart_noop=0\nrestart_rows=[[1, \"a\", 2], [2, \"c\", 7]]",
    "exit_code": 0,
    "analysis": "int/str/vector 的 no-op 与有变化分别验证；事务后与重启后再验。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E36",
@@ -678,7 +682,7 @@
    "context": "header_tight=L2_DISTANCE(e,'[1,2]')\nheader_space=L2_DISTANCE(e, '[1,2]')\nheader_alias=d",
    "exit_code": 0,
    "analysis": "同一投影的紧空格、松空格、别名三种 header。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E37",
@@ -688,7 +692,7 @@
    "context": "after_rollback_rows=[]\nafter_commit_rows=[[2]]\nrestart_after_shutdown_rows=[[2]]\nautocommit_on_rows=[[2], [4]]",
    "exit_code": 0,
    "analysis": "ROLLBACK、COMMIT、shutdown、autocommit=1 四条路径。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E39",
@@ -698,7 +702,7 @@
    "context": "bound same-scale pairs=10000 violations=0\nrecall@10 ratio=1 1.000 candidates_mean=0.004 candidates_max=0.007\nrecall@10 ratio=2 1.000 candidates_mean=0.997 candidates_max=1.000\nrecall@10 ratio=4 1.000 candidates_mean=1.000 candidates_max=1.000\nrecall@10 ratio=8 1.000 candidates_mean=1.000 candidates_max=1.000",
    "exit_code": 0,
    "analysis": "同一 q7 三角形下界；ratio 是每向量 scale 相对公共 scale 的倍数。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E40",
@@ -708,7 +712,7 @@
    "context": "clean archive build: Built target minivectordb\npublic cases: 20 cases, 0 failure(s)\ndocker build from source: OK; image binary sha256 == clean build\nJSONL public 20/20; marker 20/20",
    "exit_code": 0,
    "analysis": "只用 git archive 的文件构建；镜像二进制与干净构建逐字节一致，再跑 JSONL 20 例。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   },
   {
    "id": "E42",
@@ -718,7 +722,7 @@
    "context": "before object_id=null after object_id={\"a\":1,\"b\":[2,3]}\nbefore array_id=null after array_id=[1,\"two\",null]\npublic 20/20; marker 20/20",
    "exit_code": 0,
    "analysis": "同一 stdin 两行请求分别跑旧 HEAD 与新 HEAD；响应只比较 id 字段。",
-   "commit": "c6642bd24"
+   "commit": "47561eff6"
   }
  ],
  "units": [
@@ -1252,7 +1256,7 @@
   }
  ],
  "historical_context": "历史失败与回退（不作为本 commit 的计分结果）：文本协议/ready-marker 两次提测失败；批量 WAL 的 Huffman 位流字节序与 HuffCode 零初始化导致 checkpoint/recovery 失败；ScanPool 析构重放旧 job 的 use-after-return；AVX-512 自动选择在平台持续负载下 E 下降，CPU 绑定/无 XCR0 检查导致性能项无效。详见 docs/FAILURE_LEDGER.md 与 docs/PROMPT_PERF_LESSONS.md。",
- "retrospective": "这次最重要的不是再加一个 SIMD，而是把 exact 的证明链和度量链补齐：q7 只做下界，超集由三角形不等式给出，最终仍 exact 复核；平台 B/M 用 cgroup 口径；写路径用 profiler 找热点；大 INSERT、巨大 LIMIT、投影/排序错配、聚簇 ANN recall、malformed vector 都是通过独立反例发现并修复的。UPDATE no-op 的 changed rows 语义和未别名 L2_DISTANCE 的原始表达式列名也已在本 commit 修复并加了回归；VARCHAR 有显式长度上限，单行不会无声超过 WAL payload 上限，大 INSERT 仍按 ≤4 MiB/≤4096 行分块。S6 又把 SELECT 的窄快路径、向量直接写入 Value 做成独立 A/B，并主动回退了 q7 64B 对齐这个没有稳定收益的改动。S7 继续把 INSERT 入口改成 span 直读、向量十进制快路径，并给 WAL 增加整批可表示时的 fixed24 无损编码：写 parse/SQL/exec 明显下降，B 从 4.44 MB 降到 3.54 MB。",
+ "retrospective": "这次最重要的不是再加一个 SIMD，而是把 exact 的证明链和度量链补齐：q7 只做下界，超集由三角形不等式给出，最终仍 exact 复核；平台 B/M 用 cgroup 口径；写路径用 profiler 找热点；大 INSERT、巨大 LIMIT、投影/排序错配、聚簇 ANN recall、malformed vector 都是通过独立反例发现并修复的。UPDATE no-op 的 changed rows 语义和未别名 L2_DISTANCE 的原始表达式列名也已在本 commit 修复并加了回归；VARCHAR 有显式长度上限，单行不会无声超过 WAL payload 上限，大 INSERT 仍按 ≤4 MiB/≤4096 行分块。S6 又把 SELECT 的窄快路径、向量直接写入 Value 做成独立 A/B，并主动回退了 q7 64B 对齐这个没有稳定收益的改动。S7 继续把 INSERT 入口改成 span 直读、向量十进制快路径，并给 WAL 增加整批可表示时的 fixed24 无损编码：写 parse/SQL/exec 明显下降，B 从 4.44 MB 降到 3.54 MB。S8 又让 ORDER BY 距离别名复用投影已解析的查询向量（server exec 18.9 -> 15.6 us），在恢复完成后丢弃 WAL 的干净页缓存（重启查询 M_peak 15.22 -> 13.41 MB）；clustered ann 的 q7 IVF 候选层补上 16 样本自检，低于 0.98 回退 exact IVF，exact 默认与 exact 路径完全不动。",
  "limitations": [
   "单一 commit 的正式平台准入/性能尚未运行；本地和 Docker 公开 20 例不等于隐藏用例。",
   "SELECT 窄快路径只覆盖一种形状，其他投影/转义/多语句回退；wall 收益受客户端与扫描占比限制。",
@@ -1260,8 +1264,9 @@
   "向量直接写入仍保留 Value 堆分配；写 wall 主要被客户端 JSON/驱动往返占据，fdatasync 在本地 ext4 只占很小一部分（见 U32）。",
   "unclustered/聚簇结论只覆盖合成 10k/50k×128；hidden 数据分布未知。",
   "VARCHAR 长度有显式上限；超限返回 value_out_of_range，不是静默截断。",
-  "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。"
+  "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。",
+  "ann 是否执行取决于平台请求的 search_mode；uniform 数据在 ann 模式下仍走 exact q7（无加速），clustered 的 q7 IVF 收益也只在平台发 ann 时体现。"
  ],
- "summary": "40 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入、M 的 anon/file 构成、轮间波动、fsync 地板、WAL fixed24、span INSERT、changed rows、header 原文、autocommit、q6、int8 下界、干净归档、id 类型回显。",
+ "summary": "40 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入、M 的 anon/file 构成、轮间波动、fsync 地板、WAL fixed24、span INSERT、changed rows、header 原文、autocommit、q6、int8 下界、干净归档、id 类型回显、ORDER BY 查询复用、恢复 WAL 页缓存、clustered ann 自检。",
  "material_summary": "40 个单元，五个维度 7/11/10/6/6；每个单元有独立的学生问题与实验结果，新增 11 个单元各带一条新命令输出。"
 }
