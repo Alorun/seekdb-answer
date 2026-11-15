@@ -15,7 +15,7 @@ platform confirms all MySQL cases pass.
 | SQL edges | 158 checks x 2 modes, 0 failures |
 | recall | 5000x128 uniform/clustered exact oracle match; ann recall 1.0 |
 | crash/checkpoint | 200 crash iterations 0 failures; checkpoint 10k/50k/disk restart counts PASS; fixed24 mixed restart PASS |
-| local perf A/B | Docker 2 CPU/2 GiB, 10k x 128: B 5.26→4.36 MB (-17%), write ~290→276 ms, q1000 ~184→177 ms, M 13.4 MB; interleaved query A/B 69.0→63.4 ms; WAL 4,435,274→3,539,527 bytes (-20.2%); fast INSERT parse 30.4→20.3 ms, SQL 20.2→9.3 ms, exec 63.0→55.5 ms |
+| local perf A/B | Docker 2 CPU/2 GiB, 10k x 128: B 5.26→4.36 MB (-17.1%), write 288.5→273.3 ms (-5.3%), q1000 179.1→176.1 ms (-1.7%), M 13.77→13.62 MB (-1.1%) in 5x interleaved S5/current Docker A/B; host query A/B 69.0→63.4 ms; WAL 4,435,274→3,539,527 bytes (-20.2%); fast INSERT parse 30.4→20.3 ms, SQL 20.2→9.3 ms, exec 63.0→55.5 ms |
 | formal admission/perf | S7 pending; S5 historical: E=4706.698345; prompt=28.500000 |
 
 
