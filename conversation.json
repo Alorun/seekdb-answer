@@ -3,7 +3,7 @@
  "synthetic": false,
  "commit": "c6642bd24",
  "material_commit_note": "本文件所在提交是上述代码提交的子提交；源码、Dockerfile、本文件在同一最终提交树中。",
- "verified_at": "2026-11-15T19:57:52+08:00",
+ "verified_at": "2026-11-15T20:08:22+08:00",
  "status": {
   "official_protocol": "JSON Lines (STDIO_PROTOCOL.md); Docker protocol_check 20/20",
   "public_cases": "20/20",
@@ -308,13 +308,6 @@
    "note": "autocommit 事务语义"
   },
   {
-   "id": "C38",
-   "role": "student",
-   "prompt_ref": "P3",
-   "content": "q6 候选只有 1.6%，但 q5 已到 13.1%、q4 到 89.2%，窗口太窄；我判定 6-bit 解包不划算，不实现。",
-   "note": "q6 打包负结果"
-  },
-  {
    "id": "C39",
    "role": "student",
    "prompt_ref": "P1",
@@ -327,13 +320,6 @@
    "prompt_ref": "P4",
    "content": "干净归档构建通过、镜像二进制与干净构建一致、JSONL 20/20；我确认提交不依赖本地 build 残留，但仍不把它当隐藏准入。",
    "note": "干净归档与源码镜像"
-  },
-  {
-   "id": "C41",
-   "role": "student",
-   "prompt_ref": "P3",
-   "content": "filtered exec 仍 16.9us、unfiltered 31.4us；过滤扫描小但入口/格式占一半，我下一步压 executeSelect 入口而不是继续改 q7 核。",
-   "note": "查询类型分解"
   },
   {
    "id": "C42",
@@ -705,16 +691,6 @@
    "commit": "c6642bd24"
   },
   {
-   "id": "E38",
-   "name": "q6 候选集模拟",
-   "command": "python3 tests/run_q6_sim.py",
-   "output": "bits=6 scale=0.0323 max_err=0.120 cand_mean=0.0164 cand_p95=0.0234",
-   "context": "bits=7 scale=0.0159 max_err=0.059 cand_mean=0.0045 cand_p95=0.0066\nbits=6 scale=0.0323 max_err=0.120 cand_mean=0.0164 cand_p95=0.0234\nbits=5 scale=0.0667 max_err=0.245 cand_mean=0.1308 cand_p95=0.1796\nbits=4 scale=0.1429 max_err=0.535 cand_mean=0.8918 cand_p95=0.9325",
-   "exit_code": 0,
-   "analysis": "同 10k×128 均匀数据、100 查询；每档用同一三角形下界算候选比例。",
-   "commit": "c6642bd24"
-  },
-  {
    "id": "E39",
    "name": "int8 下界边界",
    "command": "python3 tests/run_quant_bound.py --rows 10000 --dim 128",
@@ -732,16 +708,6 @@
    "context": "clean archive build: Built target minivectordb\npublic cases: 20 cases, 0 failure(s)\ndocker build from source: OK; image binary sha256 == clean build\nJSONL public 20/20; marker 20/20",
    "exit_code": 0,
    "analysis": "只用 git archive 的文件构建；镜像二进制与干净构建逐字节一致，再跑 JSONL 20 例。",
-   "commit": "c6642bd24"
-  },
-  {
-   "id": "E41",
-   "name": "查询类型分解",
-   "command": "python3 分开跑 filtered/unfiltered 各 500 条，开启 MVDB_PROFILE",
-   "output": "unfiltered wall_us=64.3 exec=0.0163114/520",
-   "context": "filtered wall_us=46.9 exec=0.00879228/520\nunfiltered wall_us=64.3 exec=0.0163114/520",
-   "exit_code": 0,
-   "analysis": "同一数据目录重启后分别只跑过滤/无过滤，exec 为 520 条累计。",
    "commit": "c6642bd24"
   },
   {
@@ -1243,29 +1209,16 @@
    "limitation": "只测单连接；嵌套事务不支持。"
   },
   {
-   "id": "U38",
-   "dimension": "取舍与反思",
-   "score": 1.5,
-   "problem": "q6 打包在 128 维上省 16B/向量，是否值得跨字节解包。",
-   "student_evidence": "q6 候选只有 1.6%，但 q5 已到 13.1%、q4 到 89.2%，窗口太窄；我判定 6-bit 解包不划算，不实现。",
-   "student_pointer": "/conversations/37/content",
-   "reason": "q6 候选 1.6%、q5 13.1%、q4 89.2%；bit 数下降让下界迅速变松，q6 的解包又要跨字节移位，收益不足以覆盖，拒绝实现。",
-   "independence": "与 U22 的 4-bit、U28 的 q7 对齐不同：本单元问 6-bit 的候选集窗口，而不是已实现的 4-bit/对齐。",
-   "result_evidence": "bits=6 scale=0.0323 max_err=0.120 cand_mean=0.0164 cand_p95=0.0234",
-   "result_pointer": "/experiments/36/output",
-   "limitation": "只用 numpy 模拟候选集，没有 C++ 解包实测；隐藏分布可能不同。"
-  },
-  {
    "id": "U39",
    "dimension": "技术理解与迁移",
    "score": 2.0,
    "problem": "每向量 scale 的 int8 是否还能用 q7 的三角形下界。",
    "student_evidence": "同 scale 10000 对 0 违例，但每向量 scale 比 2 时候选从 0.4% 涨到 99.7%；我判定 int8 per-vector scale 不能替换 q7。",
-   "student_pointer": "/conversations/38/content",
+   "student_pointer": "/conversations/37/content",
    "reason": "同 scale 10000 对 0 违例；每向量 scale 比 2 时候选就从 0.4% 涨到 99.7%，比 4/8 全是 100%，下界虽保守但剪枝失效，所以 int8 per-vector scale 不能替换 q7。",
    "independence": "与 U07 的 q7 证明不同：本单元证明的是“换 scale 后同一公式失效”的边界。",
    "result_evidence": "recall@10 ratio=2 1.000 candidates_mean=0.997 candidates_max=1.000",
-   "result_pointer": "/experiments/37/output",
+   "result_pointer": "/experiments/36/output",
    "transfer": "迁到 IVF radius 下界，同样要求同一度量；不同 scale 时半径剪枝也会失效。",
    "limitation": "只模拟 L2/均匀数据；其它量化器未测。"
   },
@@ -1275,26 +1228,13 @@
    "score": 2.0,
    "problem": "本地 20/20 是否依赖 build/ 或 /tmp 脚本；干净归档 + 源码镜像能否复现。",
    "student_evidence": "干净归档构建通过、镜像二进制与干净构建一致、JSONL 20/20；我确认提交不依赖本地 build 残留，但仍不把它当隐藏准入。",
-   "student_pointer": "/conversations/39/content",
+   "student_pointer": "/conversations/38/content",
    "reason": "git archive 干净树构建通过，镜像内二进制与干净构建 sha256 一致，JSONL 20/20、marker 20/20；说明提交不依赖本地 build 残留。",
    "independence": "与 U11 的协议对齐不同：本单元只问产物自包含与镜像可复现。",
    "result_evidence": "docker build from source: OK; image binary sha256 == clean build",
-   "result_pointer": "/experiments/38/output",
+   "result_pointer": "/experiments/37/output",
    "transfer": "迁到 Docker/--network none/只读根文件系统，handshake/restart 仍通过。",
    "limitation": "公开 20 例不是隐藏准入；官方 protocol_check 未随仓库提供。"
-  },
-  {
-   "id": "U41",
-   "dimension": "实验与反馈迭代",
-   "score": 1.5,
-   "problem": "过滤查询只扫 200 行，为什么 exec 仍接近无过滤；瓶颈在扫描还是 executeSelect 入口。",
-   "student_evidence": "filtered exec 仍 16.9us、unfiltered 31.4us；过滤扫描小但入口/格式占一半，我下一步压 executeSelect 入口而不是继续改 q7 核。",
-   "student_pointer": "/conversations/40/content",
-   "reason": "filtered exec 16.9us、unfiltered 31.4us；过滤扫描小但入口/格式仍占一半，后续应压 executeSelect 入口而不是继续改 q7 核。",
-   "independence": "与 U02 的阶段分解不同：本单元按查询类型拆 exec，定位入口开销。",
-   "result_evidence": "unfiltered wall_us=64.3 exec=0.0163114/520",
-   "result_pointer": "/experiments/39/output",
-   "limitation": "只测这一种 SELECT 形状；其它投影/条件未测。"
   },
   {
    "id": "U42",
@@ -1302,11 +1242,11 @@
    "score": 2.0,
    "problem": "JSONL 协议要求原样回传 id 的类型；object/array id 会不会被回成 null。",
    "student_evidence": "协议要求原样回传 id 的类型；我怀疑 object/array id 被回成 null。先构造 {\"a\":1,\"b\":[2,3]} 和 [1,\"two\",null]，旧版确实返回 null；改成递归序列化后再测，并回归 public/marker。",
-   "student_pointer": "/conversations/41/content",
+   "student_pointer": "/conversations/39/content",
    "reason": "旧版对 object/array id 都返回 null；改成递归序列化后 {\"a\":1,\"b\":[2,3]} 和 [1,\"two\",null] 原样回显，public 20/20、marker 20/20 仍过。",
    "independence": "与 U11 的协议 framing 不同：本单元只问 id 的 JSON 类型保真，不问 ready/响应分帧。",
    "result_evidence": "after object_id={\"a\":1,\"b\":[2,3]}",
-   "result_pointer": "/experiments/40/output",
+   "result_pointer": "/experiments/38/output",
    "transfer": "迁到嵌套 object/array、bool/null/数字混合，仍原样回显。",
    "limitation": "只测 id 回显；其它 JSON 字段类型未覆盖。"
   }
@@ -1322,6 +1262,6 @@
   "VARCHAR 长度有显式上限；超限返回 value_out_of_range，不是静默截断。",
   "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。"
  ],
- "summary": "42 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入、M 的 anon/file 构成、轮间波动、fsync 地板、WAL fixed24、span INSERT、changed rows、header 原文、autocommit、q6、int8 下界、干净归档、查询类型分解、id 类型回显。",
- "material_summary": "42 个单元，五个维度 7/11/10/7/7；每个单元有独立的学生问题与实验结果，新增 13 个单元各带一条新命令输出。"
+ "summary": "40 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入、M 的 anon/file 构成、轮间波动、fsync 地板、WAL fixed24、span INSERT、changed rows、header 原文、autocommit、q6、int8 下界、干净归档、id 类型回显。",
+ "material_summary": "40 个单元，五个维度 7/11/10/6/6；每个单元有独立的学生问题与实验结果，新增 11 个单元各带一条新命令输出。"
 }
