@@ -7,8 +7,8 @@ platform confirms all MySQL cases pass.
 
 | field | value |
 |---|---|
-| branch / commit | `2026-competition-round2` / `d581a9512` (`106c6834b` fast parser/INSERT, `2287143e8` WAL fixed24, `7ee37514a` id echo, `c6642bd24` query scratch/write micro-opts; `9e730a3b9` material/docs) |
-| code commit | `c6642bd24`; the material commit is its child |
+| branch / commit | `2026-competition-round2` / `1879550a7` (`106c6834b` fast parser/INSERT, `2287143e8` WAL fixed24, `7ee37514a` id echo, `c6642bd24` query scratch/write, `1879550a7` ORDER BY parse reuse + recovery WAL cache drop) |
+| code commit | `1879550a7`; the material file is inherited unchanged from S7 (40 units/84,549 B) |
 | conversation | 84,549 bytes, sha256 `f0a7421e04ee8b896b4516cff4caafcd69f659e49e34d986bac254cf0cff625b`, 40 units / raw 70.5 |
 | local gate | PASS: `release_gate.py --require-conversation` (anonymous remote, Docker build + smoke); independent clean-room audit GO |
 | official public | protocol_check 20/20 (Docker tip image), public 20/20, marker 20/20 |
@@ -16,7 +16,7 @@ platform confirms all MySQL cases pass.
 | recall | 5000x128 uniform/clustered exact oracle match; ann recall 1.0 |
 | crash/checkpoint | 200 crash iterations 0 failures; checkpoint 10k/50k/disk restart counts PASS; fixed24 mixed restart PASS |
 | local perf A/B | Docker 2 CPU/2 GiB, 10k x 128: B 5.26→4.36 MB (-17.1%), write 288.5→273.3 ms (-5.3%), q1000 179.1→176.1 ms (-1.7%), M 13.77→13.62 MB (-1.1%) in 5x interleaved S5/current Docker A/B; host query A/B 69.0→63.4 ms; WAL 4,435,274→3,539,527 bytes (-20.2%); fast INSERT parse 30.4→20.3 ms, SQL 20.2→9.3 ms, exec 63.0→55.5 ms |
-| formal admission/perf | S7 pending; S5 historical: E=4706.698345; prompt=28.500000 |
+| formal admission/perf | S7: E=4661.397672, prompt=45.500000, admission PASS. S8 pending (query parse reuse + recovery WAL cache drop; material unchanged). |
 
 
 | slot | date/time | commit SHA | image digest | conversation sha256 / bytes | gate | precheck | formal result | admission | local E_write | local E_query | notes |
@@ -28,8 +28,8 @@ platform confirms all MySQL cases pass.
 | S4 | 2026-11-11 | 46150c520d2a9a9c24e83b75fac7b11a4f0289a5 |  | d695151e / 42378 | PASS | not run | local: write 0.286 s, query 0.099 s vs S3 baseline 0.583/0.201; device B ~6.8 MB; prompt raw 41.5 (24 units) | not run | 0.286 s | 0.099 s | v4.0 q7 exact + group commit |
 | S5 | 2026-11-15 | 50c06311c596df07a72ffe811649d4bc09fd6e6d |  | 1b4255a1 / 55396 | PASS | PASS (platform) | E=4706.698345; prompt=28.500000 | pass | 0.244 s | 0.049 s | q7 IVF + exact/semantics; 26 units; top prompt 67; next: 40+ units |
 | S6 | 2026-11-15 | 8289a36dcf63cbf9f50e4b1ae5694af82a289480 |  | 26a55471 / 63898 | PASS | not run | local A/B only: fast SELECT parse 7.83→6.41 µs; direct vector write exec 593.5→547.8 µs/req; q7 alignment reverted | not run | 0.233 s | 0.080 s | 29 units/raw 49.5; material commit is this slot |
-| S7 | 2026-11-15 | d581a9512 |  | f0a7421 / 84549 | PASS | not run | local only: WAL -20.2%, Docker B 4.36 MB, 5x interleaved write 273.3 ms, q1000 176.1 ms; fast INSERT write CPU -12%; all local suites PASS | not run | 0.267 s | 0.165 s | 40 units/raw 70.5; material commit is the child of this row |
-| S8 |  |  |  |  |  |  |  |  |  |  |  |
+| S7 | 2026-11-15 | d581a9512 |  | f0a7421 / 84549 | PASS | PASS | **E=4661.397672; prompt=45.500000; admission PASS** | pass | 0.273 s | 0.176 s | 40 units/raw 70.5; prompt 28.5->45.5 |
+| S8 | 2026-11-15 | 1879550a7 |  | f0a7421 / 84549 | PASS | not run | local only: ORDER BY alias reuses projection query (server exec 18.9->15.6 us/query); WAL cache dropped after recovery (restart M_peak 15.22->13.41 MB); official protocol_check 20/20 | not run | 0.273 s | 0.176 s | 40 units/raw 70.5 unchanged; S7 prompt 45.5 preserved |
 | S9 |  |  |  |  |  |  |  |  |  |  |  |
 | S10 |  |  |  |  |  |  |  |  |  |  |  |
 | S11 |  |  |  |  |  |  |  |  |  |  |  |
