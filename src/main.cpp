@@ -439,6 +439,26 @@ std::string jsonId(const mvdb::jsonl::Value& id) {
   }
   if (id.type == Value::Type::Null) return "null";
   if (id.type == Value::Type::Bool) return id.b ? "true" : "false";
+  if (id.type == Value::Type::Array) {
+    std::string out = "[";
+    for (size_t i = 0; i < id.array.size(); ++i) {
+      if (i) out.push_back(',');
+      out += jsonId(id.array[i]);
+    }
+    out.push_back(']');
+    return out;
+  }
+  if (id.type == Value::Type::Object) {
+    std::string out = "{";
+    for (size_t i = 0; i < id.object.size(); ++i) {
+      if (i) out.push_back(',');
+      out += mvdb::jsonl::quote(id.object[i].first);
+      out.push_back(':');
+      out += jsonId(id.object[i].second);
+    }
+    out.push_back('}');
+    return out;
+  }
   return "null";
 }
 
