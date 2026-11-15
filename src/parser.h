@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "common.h"
@@ -39,10 +40,19 @@ struct SelectStmt {
   uint64_t limit = 0;
 };
 
+struct RawCell {
+  std::string_view text;  // quoted: bytes between the quotes; bare: the token
+  bool quoted = false;
+};
+
 struct InsertStmt {
   std::string table;
   std::vector<std::string> columns;  // empty = all columns
   std::vector<std::vector<Value>> rows;
+  // Fast path for `INSERT INTO t VALUES (...),(...);` with only quoted
+  // strings and integer literals.  The views point into the statement text,
+  // which outlives execution.  When non-empty, `rows` is unused.
+  std::vector<std::vector<RawCell>> raw_rows;
 };
 
 struct CreateTableStmt {
@@ -143,6 +153,6 @@ struct ParseResult {
 
 // Parse one statement from the beginning of `input`. If the input ends in the
 // middle of a statement, returns NeedMore so the caller can read more bytes.
-ParseResult parseStatement(const std::string& input);
+ParseResult parseStatement(std::string_view input);
 
 }  // namespace mvdb

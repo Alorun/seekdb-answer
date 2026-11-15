@@ -1851,6 +1851,60 @@ Status Executor::collectMatchingPks(Table& table,
   return row_status;
 }
 
+// Convert a fast-path INSERT cell with exactly the typing convertValue()
+// expects: BIGINT only from a bare integer, VARCHAR/VECTOR only from a quoted
+// string.  The fast SELECT/INSERT parsers reject escapes, so the quoted bytes
+// are already the lexer's unescaped value.
+Status convertRawCell(const Column& col, const RawCell& cell, Value& out) {
+  if (col.type == ColumnType::BigInt) {
+    if (cell.quoted) {
+      return Status::Error(Err::kInvalidValue,
+                           "expected BIGINT value for column " + col.name);
+    }
+    int64_t v = 0;
+    std::string err;
+    if (!parseBigInt(cell.text, v, err)) {
+      return Status::Error(Err::kInvalidValue,
+                           err.empty() ? "invalid BIGINT literal" : err);
+    }
+    out = Value::MakeInt(v);
+    return Status::Ok();
+  }
+  if (!cell.quoted) {
+    if (col.type == ColumnType::Varchar) {
+      return Status::Error(Err::kInvalidValue,
+                           "expected VARCHAR value for column " + col.name);
+    }
+    return Status::Error(Err::kInvalidValue,
+                         "expected vector literal string for column " + col.name);
+  }
+  if (col.type == ColumnType::Varchar) {
+    if (utf8Length(cell.text) > col.length) {
+      return Status::Error(Err::kDataTooLong,
+                           "value too long for VARCHAR(" +
+                               std::to_string(col.length) + ") column " +
+                               col.name);
+    }
+    out = Value::MakeStr(cell.text);
+    return Status::Ok();
+  }
+  Value raw = Value::MakeVecRaw(col.length);
+  size_t count = 0;
+  std::string err;
+  if (!parseVectorLiteralInto(cell.text, raw.mutableVecData(), col.length,
+                              count, err)) {
+    return Status::Error(Err::kInvalidValue, err);
+  }
+  if (count != col.length) {
+    return Status::Error(Err::kInvalidValue,
+                         "vector dimension mismatch for column " + col.name +
+                             ": expected " + std::to_string(col.length) +
+                             ", got " + std::to_string(count));
+  }
+  out = std::move(raw);
+  return Status::Ok();
+}
+
 Status Executor::executeInsert(const InsertStmt& stmt) {
   Table* table = db_.findTable(stmt.table);
   if (!table) {
@@ -1884,32 +1938,59 @@ Status Executor::executeInsert(const InsertStmt& stmt) {
     }
   }
 
+  const bool raw_mode = !stmt.raw_rows.empty();
+  const size_t input_rows = raw_mode ? stmt.raw_rows.size() : stmt.rows.size();
   std::vector<Row> rows;
-  rows.reserve(stmt.rows.size());
+  rows.reserve(input_rows);
   std::unordered_set<int64_t> batch_pks;
-  batch_pks.reserve(stmt.rows.size() * 2 + 1);
-  for (const auto& raw : stmt.rows) {
-    if (raw.size() != col_map.size()) {
-      return Status::Error(Err::kColumnCount,
-                           "column count mismatch: expected " +
-                               std::to_string(col_map.size()) + ", got " +
-                               std::to_string(raw.size()));
-    }
-    Row row;
-    row.values.resize(schema.columns.size());
-    for (size_t i = 0; i < raw.size(); ++i) {
-      const Column& col = schema.columns[col_map[i]];
-      Value converted;
-      Status st = convertValue(col, raw[i], converted);
-      if (!st.ok()) return st;
-      row.values[col_map[i]] = std::move(converted);
-    }
+  batch_pks.reserve(input_rows * 2 + 1);
+  auto finish_row = [&](Row&& row) -> Status {
     const int64_t pk = row.values[static_cast<size_t>(schema.pk_index)].i;
     if (table->locations.count(pk) || !batch_pks.insert(pk).second) {
       return Status::Error(Err::kDuplicateKey,
                            "duplicate primary key: " + std::to_string(pk));
     }
     rows.push_back(std::move(row));
+    return Status::Ok();
+  };
+  if (raw_mode) {
+    for (const auto& raw : stmt.raw_rows) {
+      if (raw.size() != col_map.size()) {
+        return Status::Error(Err::kColumnCount,
+                             "column count mismatch: expected " +
+                                 std::to_string(col_map.size()) + ", got " +
+                                 std::to_string(raw.size()));
+      }
+      Row row;
+      row.values.resize(schema.columns.size());
+      for (size_t i = 0; i < raw.size(); ++i) {
+        Status st = convertRawCell(schema.columns[col_map[i]], raw[i],
+                                   row.values[col_map[i]]);
+        if (!st.ok()) return st;
+      }
+      Status st = finish_row(std::move(row));
+      if (!st.ok()) return st;
+    }
+  } else {
+    for (const auto& raw : stmt.rows) {
+      if (raw.size() != col_map.size()) {
+        return Status::Error(Err::kColumnCount,
+                             "column count mismatch: expected " +
+                                 std::to_string(col_map.size()) + ", got " +
+                                 std::to_string(raw.size()));
+      }
+      Row row;
+      row.values.resize(schema.columns.size());
+      for (size_t i = 0; i < raw.size(); ++i) {
+        const Column& col = schema.columns[col_map[i]];
+        Value converted;
+        Status st = convertValue(col, raw[i], converted);
+        if (!st.ok()) return st;
+        row.values[col_map[i]] = std::move(converted);
+      }
+      Status st = finish_row(std::move(row));
+      if (!st.ok()) return st;
+    }
   }
   if (rows.empty()) return Status::Ok();
 
@@ -3090,7 +3171,11 @@ Status Executor::execute(const Statement& stmt, ExecResult& out) {
       Status st = Status::Ok();
       if (stmt.kind == Statement::Kind::Insert) {
         st = executeInsert(stmt.insert);
-        if (st.ok()) out.affected = stmt.insert.rows.size();
+        if (st.ok()) {
+          out.affected = stmt.insert.raw_rows.empty()
+                             ? stmt.insert.rows.size()
+                             : stmt.insert.raw_rows.size();
+        }
       } else if (stmt.kind == Statement::Kind::Update) {
         st = executeUpdate(stmt.update, out);
       } else {

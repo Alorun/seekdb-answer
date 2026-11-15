@@ -27,7 +27,7 @@ struct Token {
 
 class Lexer {
  public:
-  explicit Lexer(const std::string& input) : input_(input) {}
+  explicit Lexer(std::string_view input) : input_(input) {}
 
   std::vector<Token> run() {
     std::vector<Token> out;
@@ -266,7 +266,7 @@ class Lexer {
   }
 
  private:
-  const std::string& input_;
+  std::string_view input_;
 };
 
 class Parser {
@@ -942,12 +942,127 @@ bool tryFastSelect(std::string_view s, Statement& out) {
   return true;
 }
 
-ParseResult parseStatement(const std::string& input) {
+
+// Narrow fast path for `INSERT INTO <table> VALUES (<int>|<string>,...),...;`.
+// It records only spans into the statement text; the executor converts them
+// with the same convertValue() used by the generic AST path.  Any column list,
+// escape sequence, expression, bare vector, NULL, or trailing token falls back
+// to the generic lexer/parser, so semantics and error messages stay there.
+bool tryFastInsert(std::string_view s, Statement& out) {
+  size_t i = 0;
+  auto skip = [&] {
+    while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+  };
+  auto kw = [&](const char* k) {
+    skip();
+    const size_t n = std::strlen(k);
+    if (i + n > s.size()) return false;
+    for (size_t j = 0; j < n; ++j) {
+      if (std::tolower(static_cast<unsigned char>(s[i + j])) !=
+          std::tolower(static_cast<unsigned char>(k[j]))) {
+        return false;
+      }
+    }
+    const size_t e = i + n;
+    if (e < s.size()) {
+      const unsigned char c = static_cast<unsigned char>(s[e]);
+      if (std::isalnum(c) || c == '_') return false;
+    }
+    i = e;
+    return true;
+  };
+  auto ident = [&](std::string& v) {
+    skip();
+    const size_t b = i;
+    if (i >= s.size()) return false;
+    const unsigned char c0 = static_cast<unsigned char>(s[i]);
+    if (!(std::isalpha(c0) || c0 == '_')) return false;
+    ++i;
+    while (i < s.size()) {
+      const unsigned char c = static_cast<unsigned char>(s[i]);
+      if (!(std::isalnum(c) || c == '_')) break;
+      ++i;
+    }
+    v.assign(s.substr(b, i - b));
+    return true;
+  };
+
+  Statement stmt;
+  stmt.kind = Statement::Kind::Insert;
+  InsertStmt& ins = stmt.insert;
+  if (!kw("INSERT") || !kw("INTO") || !ident(ins.table)) return false;
+  if (!kw("VALUES")) return false;  // a column list falls back to the parser
+  while (true) {
+    skip();
+    if (i >= s.size() || s[i] != '(') return false;
+    ++i;
+    std::vector<RawCell> row;
+    while (true) {
+      skip();
+      if (i >= s.size()) return false;
+      RawCell cell;
+      if (s[i] == '\'') {
+        ++i;
+        const size_t b = i;
+        while (i < s.size() && s[i] != '\'') {
+          if (s[i] == '\\') return false;  // escapes use the generic lexer
+          ++i;
+        }
+        if (i >= s.size()) return false;
+        cell.text = s.substr(b, i - b);
+        cell.quoted = true;
+        ++i;
+      } else {
+        const size_t b = i;
+        if (s[i] == '-') ++i;
+        const size_t digits = i;
+        while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) ++i;
+        if (i == digits) return false;  // NULL/expression/bare vector/etc.
+        cell.text = s.substr(b, i - b);
+        cell.quoted = false;
+      }
+      row.push_back(cell);
+      skip();
+      if (i < s.size() && s[i] == ',') {
+        ++i;
+        continue;
+      }
+      if (i < s.size() && s[i] == ')') {
+        ++i;
+        break;
+      }
+      return false;
+    }
+    ins.raw_rows.push_back(std::move(row));
+    skip();
+    if (i < s.size() && s[i] == ',') {
+      ++i;
+      continue;
+    }
+    break;
+  }
+  skip();
+  if (i < s.size() && s[i] == ';') ++i;
+  skip();
+  if (i != s.size()) return false;
+  out = std::move(stmt);
+  return true;
+}
+
+ParseResult parseStatement(std::string_view input) {
   static const bool fast_select_enabled =
       std::getenv("MVDB_NO_FAST_SELECT") == nullptr;
   if (fast_select_enabled) {
     Statement fast;
     if (tryFastSelect(input, fast)) {
+      return ParseResult::MakeOk(std::move(fast), input.size());
+    }
+  }
+  static const bool fast_insert_enabled =
+      std::getenv("MVDB_NO_FAST_INSERT") == nullptr;
+  if (fast_insert_enabled) {
+    Statement fast;
+    if (tryFastInsert(input, fast)) {
       return ParseResult::MakeOk(std::move(fast), input.size());
     }
   }
