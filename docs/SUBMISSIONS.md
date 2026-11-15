@@ -9,7 +9,7 @@ platform confirms all MySQL cases pass.
 |---|---|
 | branch / commit | `2026-competition-round2` / `7ee37514a` (`106c6834b` fast parser/INSERT, `2287143e8` WAL fixed24, `7ee37514a` id echo) |
 | code commit | `7ee37514a`; the material commit is its child |
-| conversation | 87,736 bytes, sha256 `1f52941fd97be41ab374c657a6ba69e45e441d81ec081493ce99e924b3ed9c01`, 41 units / raw 71.5 |
+| conversation | 86,064 bytes, sha256 `2cd4a52c8d2e79579b74dbb0fead788e8c3c46eae2c362f4d82d55a7817471cb`, 41 units / raw 71.5 |
 | local gate | pending final `release_gate.py --require-conversation` after the material commit |
 | official public | protocol_check 20/20 (Docker tip image), public 20/20, marker 20/20 |
 | SQL edges | 158 checks x 2 modes, 0 failures |
@@ -28,7 +28,7 @@ platform confirms all MySQL cases pass.
 | S4 | 2026-11-11 | 46150c520d2a9a9c24e83b75fac7b11a4f0289a5 |  | d695151e / 42378 | PASS | not run | local: write 0.286 s, query 0.099 s vs S3 baseline 0.583/0.201; device B ~6.8 MB; prompt raw 41.5 (24 units) | not run | 0.286 s | 0.099 s | v4.0 q7 exact + group commit |
 | S5 | 2026-11-15 | 50c06311c596df07a72ffe811649d4bc09fd6e6d |  | 1b4255a1 / 55396 | PASS | PASS (platform) | E=4706.698345; prompt=28.500000 | pass | 0.244 s | 0.049 s | q7 IVF + exact/semantics; 26 units; top prompt 67; next: 40+ units |
 | S6 | 2026-11-15 | 8289a36dcf63cbf9f50e4b1ae5694af82a289480 |  | 26a55471 / 63898 | PASS | not run | local A/B only: fast SELECT parse 7.83→6.41 µs; direct vector write exec 593.5→547.8 µs/req; q7 alignment reverted | not run | 0.233 s | 0.080 s | 29 units/raw 49.5; material commit is this slot |
-| S7 | 2026-11-15 | 7ee37514a |  | 1f52941 / 87736 | pending | not run | local only: WAL -20.2%, Docker B 4.36 MB, write 267 ms, q1000 165 ms; fast INSERT write CPU -12%; all local suites PASS | not run | 0.267 s | 0.165 s | 41 units/raw 71.5; material commit is the child of this row |
+| S7 | 2026-11-15 | 4e486a732 |  | 2cd4a52 / 86064 | pending | not run | local only: WAL -20.2%, Docker B 4.36 MB, write 267 ms, q1000 165 ms; fast INSERT write CPU -12%; all local suites PASS | not run | 0.267 s | 0.165 s | 41 units/raw 71.5; material commit is the child of this row |
 | S8 |  |  |  |  |  |  |  |  |  |  |  |
 | S9 |  |  |  |  |  |  |  |  |  |  |  |
 | S10 |  |  |  |  |  |  |  |  |  |  |  |
