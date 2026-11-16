@@ -16,7 +16,7 @@ platform confirms all MySQL cases pass.
 | recall | 5000x128 uniform/clustered exact oracle match; ann recall 1.0 |
 | crash/checkpoint | 200 crash iterations 0 failures; checkpoint 10k/50k/disk restart counts PASS; fixed24 mixed restart PASS |
 | local perf A/B | Docker 2 CPU/2 GiB, 10k x 128: B 5.26→4.36 MB (-17.1%), write 288.5→273.3 ms (-5.3%), q1000 179.1→176.1 ms (-1.7%), M 13.77→13.62 MB (-1.1%) in 5x interleaved S5/current Docker A/B; host query A/B 69.0→63.4 ms; WAL 4,435,274→3,539,527 bytes (-20.2%); fast INSERT parse 30.4→20.3 ms, SQL 20.2→9.3 ms, exec 63.0→55.5 ms |
-| formal admission/perf | S9: E=4833.949072, prompt invalid (metadata-sync material), admission pass. S10: restored 45.5 material, pending. S11: guarded VNNI + current prompt sync (U24/U26 only, 81,971 B); pending. |
+| formal admission/perf | S9: E=4833.949072, prompt invalid, admission pass. S11: guarded VNNI **E=3792.245768**, prompt invalid; VNNI closed. S12: reverted to `47561eff6` + f0a7421; pending. |
 
 
 | slot | date/time | commit SHA | image digest | conversation sha256 / bytes | gate | precheck | formal result | admission | local E_write | local E_query | notes |
