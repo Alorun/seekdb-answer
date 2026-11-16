@@ -463,7 +463,7 @@ Status Database::applyRecord(const WalRecord& rec) {
       if (!table) {
         return Status::Error(Err::kIo, "recovery: missing table id " + std::to_string(rec.table));
       }
-      table->locations[static_cast<int64_t>(rec.pk)] = rec.offset;
+      table->locations.set(static_cast<int64_t>(rec.pk), rec.offset);
       return Status::Ok();
     }
     case WalType::Delete: {
@@ -517,7 +517,7 @@ Status Database::applyRecord(const WalRecord& rec) {
       bool ok = decodeInsertBatchPks(
           table->schema, rec.payload.data(), rec.payload.size(),
           [&](int64_t pk) {
-            table->locations[pk] = rec.offset;
+            table->locations.set(pk, rec.offset);
             return true;
           },
           err);
@@ -815,8 +815,8 @@ Status Database::loadSmallTables() {
         table->schema, v,
         [&](int64_t pk, Row& row) {
           auto loc = table->locations.find(pk);
-          if (loc == table->locations.end() || loc->second != v.offset) return true;
-          table->rows[pk] = std::move(row);
+          if (loc == table->locations.end() || loc->off != v.offset) return true;
+          table->rows.set(pk, std::move(row));
           return true;
         },
         err);
