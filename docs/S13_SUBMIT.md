@@ -62,3 +62,33 @@ git -C . ls-remote --heads git@github.com:Alorun/seekdb-answer.git 2026-competit
 sha256sum agent/conversation.json  # 必须 f0a7421…
 python3 scripts/release_gate.py --require-conversation   # RESULT: PASS
 ```
+
+## 40 个实例的一对一重写（`conversation.s18.json`）
+
+审计发现原 40 单元里有 5 条语义重复链（U17/U29/U34 写路径、U12/U25 崩溃、U02/U31 测量、
+U23/U30 内存、U22/U39 量化），以及 U21 的证据其实是 q7 IVF 原型（与 U26 同链）。重写版
+`agent/candidates/conversation.s18.json` 的做法：
+
+- **只替换、不新增条目**：units/conversations/experiments 仍是 40/40/39，索引不变，所有
+  pointer 原样有效。
+- 6 个单元换成 6 个**互不重叠**的新问题，每个都有自己的命令输出：B 的物理写构成（预分配
+  0/4/8/32 MB）、HNSW 图索引基准（uniform/clustered）、glibc trim 策略、行/位置存储替换
+  的语义差分、零拷贝 JSON 的转义 bug、本地 A/B 的读数口径。
+- 修掉 3 处过时事实：U26 自检 8→16 条样本、U25 reader 64 MiB→（现已 256 MiB）、U02 的
+  “5 次中位数”不再指向单次 profile（该槽已重写）。
+- 同步修正 5 处 `independence` 交叉引用（U24/U27/U28/U31/U33），避免指向已被替换的主题。
+- `summary` / `material_summary` / `material_notes` 按新单元集重写，维度仍是 7/11/10/6/6，
+  自评和仍为 70.5。
+- **大小 84,480 B，比已验证的 84,549 B 还小 69 B**；官方校验器 PASS（JSON/128 KiB/ID/
+  pointer/240 字符原文全部通过），无重复键、无 `score`/`E=` 等可能被当成分数的字段。
+
+风险与顺序：任何改写都可能触发平台"无效/待复核"（历史两次改写均失败，审计估计
+P(invalid) 60–75%）。因此建议**第一次提交仍用冻结的 `agent/conversation.json`**；
+拿到一次"性能 + prompt 双有效"的结果后，再把候选换上去试：
+
+```bash
+cp agent/candidates/conversation.s18.json agent/conversation.json
+python3 scripts/check_prompt_material.py agent/conversation.json
+python3 scripts/release_gate.py --require-conversation
+git add -A && git commit -m "prompt: 40 one-to-one instances" && git push
+```
