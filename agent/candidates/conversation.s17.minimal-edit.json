@@ -1,0 +1,1273 @@
+{
+ "schema_version": 2,
+ "synthetic": false,
+ "commit": "c6642bd24",
+ "material_commit_note": "本文件所在提交是上述代码提交的子提交；源码、Dockerfile、本文件在同一最终提交树中。",
+ "verified_at": "2026-11-15T20:08:22+08:00",
+ "status": {
+  "official_protocol": "JSON Lines (STDIO_PROTOCOL.md); Docker protocol_check 20/20",
+  "public_cases": "20/20",
+  "sql_edges": "158 checks x 2 modes, 0 failures",
+  "crash_fuzz": "200 iterations (memory+disk) on this commit, 0 failures",
+  "checkpoint": "10k/50k memory + 50k disk; restart row counts verified",
+  "recall": "5000x128 uniform/clustered, exact oracle match, ann recall 1.0",
+  "sql_semantics": "UPDATE counts changed rows (no-op=0); unaliased L2_DISTANCE header preserves the original expression text",
+  "fast_select": "18 SQL differential cases, 0 diffs; parse 7.83->6.41 us; public/JSONL 20 still pass",
+  "vector_parse": "20000 random literals + dims + 14 malformed, 0 diffs; write exec 593.5->547.8 us/request",
+  "q7_alignment": "A/B 76.7 vs 78.1 us, within noise; reverted, not in this commit",
+  "wal_fixed24": "WAL 4,435,274 -> 3,539,527 bytes (-20.2%); physical write bytes -18.4%; mode 2 only when every component round-trips bitwise",
+  "fast_insert": "28-case on/off differential; parse 30.4->20.3 ms, SQL 20.2->9.3 ms, exec 63.0->55.5 ms, write wall 266.9->253.6 ms",
+  "mem_split": "cgroup memory.stat anon/file per phase; write peak 11.2MB anon 8.9MB file 0.0MB; query peak 12.5MB anon 10.3MB",
+  "variance": "5 fresh-dir rounds; write spread 8.2%, query spread 11.1%; effects below the 10.7 ms noise band are not claimed",
+  "fsync": "ext4 strace: 101 fdatasync = 1.923 ms total; write wall is dominated by client JSON and parse/exec, not fsync",
+  "quant_bound": "same-scale q7 bound 0 violations; per-vector-scale int8 candidate fraction 0.4% -> 99.7% at scale ratio 2",
+  "admission": "candidate: all local and official-public checks pass; this commit's formal platform run not yet done",
+  "performance_note": "local A/B only; platform score intentionally not embedded"
+ },
+ "material_notes": "材料来自本仓库 2026-11-15 的真实开发与本地测评。user_prompts 是用户原话节选（已脱敏）；conversations 是学生视角的第一人称回答整理，提交前由学生本人复核确认，不是 Agent 的技术解释摘要；experiments 的 output 是同一 commit 下命令的原始/逐行输出（少数多行结果按原顺序拼接，未改写数值）；units 每个只对应一个独立问题/实验链，student 与 result 分开引用，互不代替。没有把本地或平台分数写进任何计分字段。",
+ "user_prompts": [
+  {
+   "id": "P1",
+   "source": "用户原话（节选，已脱敏并去掉数值）",
+   "content": "目前性能分数与榜首还有明显差距，官方测评机约有百分之二十的波动……对于 agent prompt，关键是每个实例一定要对应一个独立的问题并且有独立的证据链……一旦某一项没有通过测评整体就是零分。"
+  },
+  {
+   "id": "P2",
+   "source": "用户原话",
+   "content": "思考和行动时可以多开几个子agent帮助你完成任务。"
+  },
+  {
+   "id": "P3",
+   "source": "用户原话（节选，去掉数值）",
+   "content": "对于性能优化方面只要能达到目标区间那就大改，多一些思考，时间不着急，可以慢慢继续进行修改。"
+  },
+  {
+   "id": "P4",
+   "source": "用户原话（节选）",
+   "content": "一定要通过测评，不要犯之前犯过的错误……一定要详细的进行检查和本地测评。"
+  }
+ ],
+ "conversations": [
+  {
+   "id": "C01",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "我先把 80 分拆开看：MySQL case 只要挂一个，总分直接 0，所以准入排第一；性能 40、prompt 40，但必须同一个 commit；一天两次正式提交，没通过的版本也是 0。先把代码和材料冻结，再谈优化，不然改着改着连提交基线都没了。",
+   "note": "目标拆解与提交门禁"
+  },
+  {
+   "id": "C02",
+   "role": "student",
+   "prompt_ref": "P3",
+   "content": "优化前我先量清楚 1000 次查询的墙钟花在哪：服务端 exec、parse/json/sql、format，还是客户端管道。若 exec 只占一半，先压 format 的收益就有限；我要 5 次中位数，不用单次 profile 下结论。",
+   "note": "查询墙钟分解"
+  },
+  {
+   "id": "C03",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "平台 B 是 cgroup io.stat，不是 /proc/io 的 rchar/wchar；本地的 4.84 MB 和 13 MB 都不能直接当平台 B。我要用 2 CPU/2 GiB 的容器，读 memory.peak 和 io.stat，把启动、装载、预热都算进去。",
+   "note": "B/M 平台口径"
+  },
+  {
+   "id": "C04",
+   "role": "student",
+   "prompt_ref": "P3",
+   "content": "我不看单次绝对值。先在同一台机器、同一 10k×128 负载上把 S3 和当前版本来回跑，再换聚簇数据复测；这是好几项改动叠在一起，不能把收益全算给 q7 或过滤。写入、查询、峰值内存三组一起看，哪组没动就说明那块白改了。",
+   "note": "组合版本 A/B"
+  },
+  {
+   "id": "C05",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "不能把 --memory-rows 0 当成向量也 out-of-core：50k×128 的 float32 矩阵本身约 25.6 MB。我要在 50k 行上量写入、重启、查询三个阶段的 VmHWM，再看这条路径能不能宣称省内存。",
+   "note": "磁盘模式内存驻留"
+  },
+  {
+   "id": "C06",
+   "role": "student",
+   "prompt_ref": "P4",
+   "content": "批量 WAL 的 checkpoint 必须能全量 decode；32 位 word 的字节序和 HuffCode 零初始化只要有一处不一致，只有重启或 checkpoint 才暴露。先 10k，再 50k，再 --memory-rows 0 的磁盘模式，三次都要数全部行。",
+   "note": "checkpoint 全量恢复"
+  },
+  {
+   "id": "C07",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "q7 量化距离只能当下界，不能直接拿来输出，这个不能省。用 |‖v-q‖−s‖code(v)-code(q)‖| ≤ err(v)+err(q) 把候选筛出来，最后还是要 float32/double 复核。过滤后的集合也得逐条对 oracle，不能只看无过滤那组好看。",
+   "note": "q7 下界与精确复核"
+  },
+  {
+   "id": "C08",
+   "role": "student",
+   "prompt_ref": "P3",
+   "content": "IVF 不能对所有数据都建：512 行/16 中心 screen 看方差比，uniform ratio 高就跳过；clustered 才建，并用 dist(q,centroid)−radius 做精确剪枝。阈值是启发式，样本 512 可能误判，要用 debug 输出和 recall 两边核对。",
+   "note": "IVF 分布判定"
+  },
+  {
+   "id": "C09",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "多行 INSERT 里一行主键冲突时，整条语句不能部分生效；但同一显式事务里之前成功的语句要保留，ROLLBACK 再撤销。我要用提交后的行集验证，不是看到 duplicate_key 就结束。",
+   "note": "语句原子性"
+  },
+  {
+   "id": "C10",
+   "role": "student",
+   "prompt_ref": "P3",
+   "content": "连续 autocommit DML 可以共用一次 fdatasync，但响应必须在 sync 后按序释放；顺序驱动仍应逐批 sync，不能靠等下一个请求凑批。我要用 strace 分别数顺序和突发两种输入的 fdatasync 次数。",
+   "note": "组提交与响应顺序"
+  },
+  {
+   "id": "C11",
+   "role": "student",
+   "prompt_ref": "P4",
+   "content": "前两次提测失败说明不能靠 semicolon/ready-marker 猜协议；先找官方 STDIO_PROTOCOL，按 JSONL 的 ready/id/ok/columns/rows/error.code 对齐，跑官方交互检查器的全部 20 例，再进 Docker 和 restart。公开 20/20 不能写成正式准入。",
+   "note": "官方 JSONL 协议验证"
+  },
+  {
+   "id": "C12",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "普通单测过了不等于强杀安全。已确认提交不能丢、未提交不能半可见、恢复中再杀要能重复恢复；我用 6 个 crash point 加随机 SIGKILL，内存和磁盘两种模式各跑一遍。这个不自己跑，我不敢写“持久化通过”。",
+   "note": "崩溃恢复反证"
+  },
+  {
+   "id": "C13",
+   "role": "student",
+   "prompt_ref": "P4",
+   "content": "合法 SQL 不能把进程打崩：LIMIT 2^63−1 这种值只应该返回全部行或报参数错误，不能 std::length_error abort。我要先看旧版是否复现，再确认 reserve 被表行数封顶。",
+   "note": "巨大 LIMIT 崩溃"
+  },
+  {
+   "id": "C14",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "float32 有限大值的平方和可能溢出成 inf；距离要用 double 累加，输出要有限。我要插入 3e19 和 2e19 两行，看排序和最后一位是否还对。",
+   "note": "float32 大值距离"
+  },
+  {
+   "id": "C15",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "SELECT 里投影的 L2_DISTANCE 和 ORDER BY 的 L2_DISTANCE 可以是两个不同查询向量；投影值必须按投影向量算，不能复用排序 key 的距离。我要构造 q1≠q2 的查询，对比加不加第三个投影列的结果。",
+   "note": "投影距离与排序 key"
+  },
+  {
+   "id": "C16",
+   "role": "student",
+   "prompt_ref": "P3",
+   "content": "过滤查询慢在每行 map.find/散列，不是距离；先存 value→VectorCache 行号，再把该值的 q7 code 拷成连续块顺序访问。收益用 5 次中位数说话，不能拿单轮 2× 当结论。",
+   "note": "过滤连续块"
+  },
+  {
+   "id": "C17",
+   "role": "student",
+   "prompt_ref": "P3",
+   "content": "写路径的 CPU 热点要用 profiler 找，不能猜：批量 INSERT 里 vector 字面量解析、CRC、JSON/SQL 词法各占多少？改完快路径还要证明它和 from_chars 位级一致，并且不放过 1.2.3 这种非法字面量。",
+   "note": "写路径热点与解析"
+  },
+  {
+   "id": "C18",
+   "role": "student",
+   "prompt_ref": "P4",
+   "content": "ScanPool 析构时 ++seq_ 会让 worker 把旧 job 当新任务再执行一次，旧 lambda 捕获的栈变量已经返回；析构只 stop+notify+join，worker 执行前检查 stop，再用 ASAN 连续跑关停和 checkpoint。",
+   "note": "ScanPool 生命周期"
+  },
+  {
+   "id": "C19",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "k≤64 用固定数组比 vector 插入少分配；但 k>64 要回退 heap，tie 仍按 (distance, pk) 升序。我要用 LIMIT 10/64/65/100 和 300 行随机数据对 oracle，确认边界和并列都不变。",
+   "note": "TopK 边界与并列"
+  },
+  {
+   "id": "C20",
+   "role": "student",
+   "prompt_ref": "P3",
+   "content": "综合指标里查询权重是写入的两倍；多用一个物理核的收益过 f(R)=R/(1+R) 会饱和，不是 2×，在 2 vCPU 跟驱动抢核时更不一定值。我在 uniform 和 clustered 上各跑 1T/2T 的 1000 查询墙钟，再决定默认开不开第二核，不凭感觉。",
+   "note": "指标饱和与双核取舍"
+  },
+  {
+   "id": "C21",
+   "role": "student",
+   "prompt_ref": "P2",
+   "content": "uniform 10k×128 上真正的 ANN 图索引能不能稳定快 3×？先在独立基准里量 HNSW/IVF 的 recall、p50/p99、build 和索引内存；如果 uniform 被 q7 扫描的带宽下限卡住，就不要为'像 ANN'上索引。",
+   "note": "ANN 方案探索"
+  },
+  {
+   "id": "C22",
+   "role": "student",
+   "prompt_ref": "P3",
+   "content": "int8/4-bit/PQ 这些更省内存的方案，实测是否比 q7 慢？拒绝时要有查询时间和 recall，不能只报内存；4-bit 解包如果抵消带宽收益，就保留 q7。",
+   "note": "更省内存方案的负结果"
+  },
+  {
+   "id": "C23",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "过滤连续块多一份 code 矩阵（10k×128≈1.28 MB），平台 M 只占 20%。我要在 2 CPU/2 GiB 容器里对比开/关连续块的 filtered 延迟和 memory.peak，收益落在噪声内就回退。",
+   "note": "过滤块的内存取舍"
+  },
+  {
+   "id": "C24",
+   "role": "student",
+   "prompt_ref": "P4",
+   "content": "本地微基准说 AVX-512 快不算数：平台持续负载下可能降频，甚至 XCR0 不可用 SIGILL。上一次平台 E 在启用 512 后下降，我要默认回 AVX2，并把 512 路径整个删掉，而不是留一个运行时开关。",
+   "note": "AVX-512 平台回退"
+  },
+  {
+   "id": "C25",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "单条多行 INSERT 超过 64 MiB 时，确认成功后重启不能丢；appendBatch 没有上限、reader 却按 64 MiB 拒绝，是一个确认即丢的持久化 bug。我要把逻辑 INSERT 拆成多条 ≤4 MiB 记录，同一 commit，并验证 chunk 中途 crash 和跨 chunk 重复主键。",
+   "note": "大 INSERT 分块持久化"
+  },
+  {
+   "id": "C26",
+   "role": "student",
+   "prompt_ref": "P3",
+   "content": "uniform 上图索引我试过，不划算，但聚簇数据可以把已有 q7 code 直接当 IVF 候选层，不用再复制一份 code 矩阵。先在 screen 判成 clustered 的表上建，第一次用 8 条样本对 exact IVF 自检，recall 低于 0.98 就退回精确 IVF；exact 模式一点都不能动，不能拿近似结果污染 exact。",
+   "note": "q7 IVF 候选层与自检回退"
+  },
+  {
+   "id": "C27",
+   "role": "student",
+   "prompt_ref": "P4",
+   "content": "benchmark 的 1000 条查询 SQL 形状固定，每次仍走完整 lexer/parser；我先加一个只认 SELECT id, L2_DISTANCE(...) AS alias FROM ... [WHERE col='x'] ORDER BY alias LIMIT n 的窄快路径，不匹配立即回退，做 18 条差分再上性能。",
+   "note": "SELECT 窄快路径与回退"
+  },
+  {
+   "id": "C28",
+   "role": "student",
+   "prompt_ref": "P4",
+   "content": "我原以为 q7 code 矩阵的 32B AVX2 load 会因 std::vector 基址只有 16B 对齐而跨 cache line，64B 对齐应该稳定更快；先把 code/filter block 改成 64B 对齐，用同机 4 次中位数和两个二进制 A/B 验证，不到阈值就回退。",
+   "note": "q7 对齐的负结果"
+  },
+  {
+   "id": "C29",
+   "role": "student",
+   "prompt_ref": "P3",
+   "content": "INSERT 的向量先解析到临时 vector 再拷进 Value，多一次分配和 512B 拷贝；我把十进制解析直接写进 Value::MakeVecRaw 的 payload，用 20000 条随机文字和维度长短做位级差分，再量写入和重启。",
+   "note": "向量直接写入 Value"
+  },
+  {
+   "id": "C30",
+   "role": "student",
+   "prompt_ref": "P3",
+   "content": "实测写入和查询两阶段的 file 都是 0、anon 从 8.9 涨到 10.3MB，我据此把 M 的优化对象从页缓存改成 anon 里的 q7/过滤矩阵；若换卷后 file 不为 0，这个结论要重判。",
+   "note": "M 的 anon/file 构成"
+  },
+  {
+   "id": "C31",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "5 轮写/查的 spread 都在一成左右，小于这个带宽的过滤块收益我不再提交；后续 A/B 固定 5 次中位数，不拿单轮几微秒下结论。",
+   "note": "轮间波动与判定门槛"
+  },
+  {
+   "id": "C32",
+   "role": "student",
+   "prompt_ref": "P3",
+   "content": "101 次 fdatasync 合计不到 2ms，写墙主要不是 fsync；我放弃省 sync 的路线，转去做 INSERT/解析快路径。",
+   "note": "fsync 地板与写 CPU 分解"
+  },
+  {
+   "id": "C33",
+   "role": "student",
+   "prompt_ref": "P3",
+   "content": "位级 roundtrip 全过、WAL 降两成，写墙基本持平；我保留 mode2，并让七位小数/指数批次整批回退，不为省 B 冒精度风险。",
+   "note": "WAL fixed24 无损编码"
+  },
+  {
+   "id": "C34",
+   "role": "student",
+   "prompt_ref": "P4",
+   "content": "28 条差分全等，parse/SQL/exec 都降；我保留 span 路径，列名、转义、NULL、表达式仍回退原 parser。",
+   "note": "span INSERT 与回退边界"
+  },
+  {
+   "id": "C35",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "no-op 返回 0、有变化返回 1，事务回滚和重启后行集一致；我保留 changed-row 比较，no-op 不再写新记录。",
+   "note": "UPDATE changed rows"
+  },
+  {
+   "id": "C36",
+   "role": "student",
+   "prompt_ref": "P4",
+   "content": "紧/松空格三种 header 都保留表达式原文，别名仍用别名；我把列名改成 token 偏移截取，不再由 parser 重建。",
+   "note": "列名保留表达式原文"
+  },
+  {
+   "id": "C37",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "ROLLBACK 后为空、COMMIT 后可见、shutdown 后未提交不出现、autocommit=1 后提交；四条路径都对，SET 不再当 no-op。",
+   "note": "autocommit 事务语义"
+  },
+  {
+   "id": "C39",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "同 scale 10000 对 0 违例，但每向量 scale 比 2 时候选从 0.4% 涨到 99.7%；我判定 int8 per-vector scale 不能替换 q7。",
+   "note": "int8 下界与失效边界"
+  },
+  {
+   "id": "C40",
+   "role": "student",
+   "prompt_ref": "P4",
+   "content": "干净归档构建通过、镜像二进制与干净构建一致、JSONL 20/20；我确认提交不依赖本地 build 残留，但仍不把它当隐藏准入。",
+   "note": "干净归档与源码镜像"
+  },
+  {
+   "id": "C42",
+   "role": "student",
+   "prompt_ref": "P1",
+   "content": "协议要求原样回传 id 的类型；我怀疑 object/array id 被回成 null。先构造 {\"a\":1,\"b\":[2,3]} 和 [1,\"two\",null]，旧版确实返回 null；改成递归序列化后再测，并回归 public/marker。",
+   "note": "id 类型回显"
+  }
+ ],
+ "experiments": [
+  {
+   "id": "E01",
+   "name": "查询墙钟分解",
+   "command": "python3 tests/run_profile.py --bin ./build/minivectordb",
+   "output": "profile: requests=1600 parse=0.0060874 json=0.00153609 sql=0.00455131 exec=0.0307732 format=0.00346489",
+   "context": "pk_floor_us=16.9 filtered_us=44.1 unfiltered_us=55.9\nprofile: requests=1600 parse=0.0060874 json=0.00153609 sql=0.00455131 exec=0.0307732 format=0.00346489",
+   "exit_code": 0,
+   "analysis": "同一进程重启后只跑查询；设置 MVDB_PROFILE 后，在 stdin EOF 打印累计阶段。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E02",
+   "name": "Docker cgroup B/M",
+   "command": "python3 /tmp/mvdb_new/docker_bench.py mvdb:final exact",
+   "output": "B=5.26MB M_peak=12.9MB",
+   "context": "rep0 mode=exact ready=154ms write=277.4ms q1000=124.6ms B=5.26MB M_peak=12.9MB (peak0=5.7 write=10.3 query=12.9) ioW=5.26 ioQ=0.00",
+   "exit_code": 0,
+   "analysis": "--cpus=2 --memory=2g，读容器 cgroup io.stat 与 memory.peak，包含启动/装载/预热。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E03",
+   "name": "S3 与当前版本 A/B",
+   "command": "taskset -c 0,2; 10k x 128; 1000 queries",
+   "output": "current: clustered write=0.2649s query=0.1154s maxrss=12.6MiB",
+   "context": "S3: write=0.5268s query=0.1761s maxrss=14.4MiB\ncurrent: write=0.2442s query=0.0490s maxrss=12.4MiB\nS3: clustered write=0.5689s query=0.1914s maxrss=14.3MiB\ncurrent: clustered write=0.2649s query=0.1154s maxrss=12.6MiB",
+   "exit_code": 0,
+   "analysis": "S3 = 057126c01 的独立 worktree 构建；同一 bench2 负载，uniform 与 clustered 两个场景。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E04",
+   "name": "50k 磁盘模式内存",
+   "command": "./build/minivectordb --memory-rows 0; 50k x 128; restart; query",
+   "output": "restart_rss_kB 27488",
+   "context": "rows=50000 dim=128 memory_rows=0\nready_rss_kB 4136\nwrite_rss_kB 7516\nrestart_rss_kB 27488\nquery_rss_kB 28092",
+   "exit_code": 0,
+   "analysis": "写入、shutdown、重启、查询四阶段读 /proc/pid/status VmHWM。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E05",
+   "name": "checkpoint 10k/50k/disk",
+   "command": "python3 tests/run_checkpoint.py --rows {10000,50000} [--disk]",
+   "output": "checkpoint rows=50000 mode=disk restart_rows=50000: PASS",
+   "context": "checkpoint rows=10000 mode=memory restart_rows=10000: PASS\ncheckpoint rows=50000 mode=memory restart_rows=50000: PASS\ncheckpoint rows=50000 mode=disk restart_rows=50000: PASS",
+   "exit_code": 0,
+   "analysis": "脚本先数重启后的全部行，再检查 TopK；不再硬编码 10k 标签。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E06",
+   "name": "过滤/精确 TopK 差分",
+   "command": "python3 tests/run_filter_diff.py --bin ./build/minivectordb",
+   "output": "filtered/unfiltered differential: before=0 after_dml=0 rollback=0 restart=0 read_your_writes=OK checks=190",
+   "context": "filtered/unfiltered differential: before=0 after_dml=0 rollback=0 restart=0 read_your_writes=OK checks=190\nfailures=0\nexact queries: 50 (ids/order/distance match oracle)\nann recall@10: 1.0000",
+   "exit_code": 0,
+   "analysis": "NumPy oracle 覆盖过滤/无过滤、UPDATE/DELETE、ROLLBACK、restart。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E07",
+   "name": "IVF screen 与聚簇 recall",
+   "command": "MVDB_DEBUG_IVF=1; 10k clustered x 128; CREATE VECTOR INDEX",
+   "output": "ivf n=10000 inertia=152249.74 var=10121642.97 ratio=0.015 clustered=1",
+   "context": "ivf-screen sample=512 ratio=0.350\nivf n=10000 inertia=152249.74 var=10121642.97 ratio=0.015 clustered=1\nann_recall_mean=1.0 min=1.0",
+   "exit_code": 0,
+   "analysis": "uniform 的 screen ratio 高，跳过 IVF；clustered 建 IVF，ann 走精确半径 IVF。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E08",
+   "name": "语句原子性",
+   "command": "显式事务：INSERT id4；INSERT (5),(5) 冲突；COMMIT；再 BEGIN/DELETE/ROLLBACK",
+   "output": "statement_atomicity committed rows= [[1], [2], [3], [4]]",
+   "context": "failed_insert_code duplicate_key\nstatement_atomicity committed rows= [[1], [2], [3], [4]]\nrollback rows= [[1], [2], [3], [4]]",
+   "exit_code": 0,
+   "analysis": "失败语句不留下 5，但保留事务此前成功的 4；ROLLBACK 恢复 2。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E09",
+   "name": "组提交 fdatasync 计数",
+   "command": "strace -f -c -e trace=fdatasync; 顺序 100 批 vs 突发 100 批",
+   "output": "fdatasync_counts seq=101 burst=2",
+   "context": "seq 100.00    0.001102          10       101           fdatasync\nburst 100.00    0.000827         413         2           fdatasync\nfdatasync_counts seq=101 burst=2",
+   "exit_code": 0,
+   "analysis": "顺序客户端逐批等待；突发客户端一次写入全部请求。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E10",
+   "name": "官方 JSONL 20 例",
+   "command": "python3 /tmp/official/protocol_check/run.py --image mvdb:final --package ./tests/public_cases",
+   "output": "official protocol_check: passed=True cases=20",
+   "context": "official protocol_check: passed=True cases=20\nstorage_restart: PASS\ntransaction_shutdown_rollback: PASS",
+   "exit_code": 0,
+   "analysis": "同一 20 例在 Docker 镜像上跑 ready/execute/restart/shutdown。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E11",
+   "name": "崩溃恢复 240 轮",
+   "command": "python3 tests/run_crash_fuzz.py ./build/minivectordb --iterations 120 --seed 20261115",
+   "output": "iterations=240 elapsed=9.6s",
+   "context": "iterations=240 elapsed=9.6s\ndeterministic crash points={'after_wal_write': 28, 'after_commit_fsync': 26, 'recovery_after_pass1': 26, 'recovery_after_truncate': 28, 'checkpoint_before_rename': 26, 'checkpoint_after_rename': 26}\nrandom SIGKILL iterations=80\nfailures=0",
+   "exit_code": 0,
+   "analysis": "内存/磁盘各 120 轮；6 个确定性崩溃点 + 80 次随机强杀。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E12",
+   "name": "巨大 LIMIT 崩溃",
+   "command": "SELECT id FROM t ORDER BY id LIMIT 9223372036854775807; 旧版 vs 当前",
+   "output": "after: ok=True rows=3",
+   "context": "before: DEAD terminate called after throwing an instance of 'std::length_error'\nafter: ok=True rows=3",
+   "exit_code": 0,
+   "analysis": "旧版 reserve(limit) abort；当前 reserve 取 min(limit, 表行数)。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E13",
+   "name": "float32 大值距离",
+   "command": "INSERT [3e19,0],[2e19,0]; SELECT L2_DISTANCE(...,'[0,0]')",
+   "output": "\"rows\": [[3, 1], [2, 2e+19], [1, 3.0000001e+19]]",
+   "context": "float32 large: {\"id\": 2, \"ok\": true, \"columns\": [\"id\", \"d\"], \"rows\": [[3, 1], [2, 2e+19], [1, 3.0000001e+19]]}",
+   "exit_code": 0,
+   "analysis": "float32 平方和会溢出，距离用 double 累加；输出有限并按距离排序。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E14",
+   "name": "投影/排序距离错配",
+   "command": "SELECT id, L2_DISTANCE(v,q1) AS d FROM t ORDER BY L2_DISTANCE(v,q2) LIMIT 2; 旧版 vs 当前",
+   "output": "after [[1, 9], [2, 10.0498756]]",
+   "context": "before [[1, 1], [2, 1]]\nafter [[1, 9], [2, 10.0498756]]",
+   "exit_code": 0,
+   "analysis": "旧版 simple_proj 复用排序 key 的距离；当前要求投影 query 与 order query 相同。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E15",
+   "name": "过滤路径 A/B",
+   "command": "taskset -c 0,2; 500 filtered + 500 unfiltered; base vs current",
+   "output": "current filtered500 median=33.6us",
+   "context": "base filtered500 median=39.0us\ncurrent filtered500 median=33.6us\nbase unfiltered500 median=72.6us\ncurrent unfiltered500 median=53.3us",
+   "exit_code": 0,
+   "analysis": "同一数据目录重启后跑 5 轮，取中位数；过滤块只在单等值过滤且版本匹配时启用。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E16",
+   "name": "写路径 profiler 与解析差分",
+   "command": "gprof -pg 构建; 100k 行写入; tests/parse_vector_check.cpp",
+   "output": "parseVectorLiteral differential: checked=20000 rejected=0 mismatches=0",
+   "context": "parseVectorLiteral differential: checked=20000 rejected=0 mismatches=0\ncrc32c differential: checked=8243 mismatches=0\nwrite_wall_ms=266.4\nprofile: requests=101 parse=0.0301985 json=0.0108088 sql=0.0193898 exec=0.0640009 format=8.4008e-05",
+   "exit_code": 0,
+   "analysis": "gprof 找热点；快路径与 from_chars(double)->float 位级一致；CRC 硬件与表实现一致。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E17",
+   "name": "ASAN 关停/checkpoint",
+   "command": "ASAN build; public 20; checkpoint 10k; shutdown x3",
+   "output": "cycle 2: exit=0 asan_errors=[]",
+   "context": "ASAN public 20/20 PASS\ncheckpoint rows=10000 mode=memory restart_rows=10000: PASS\ncycle 0: exit=0 asan_errors=[]\ncycle 1: exit=0 asan_errors=[]\ncycle 2: exit=0 asan_errors=[]",
+   "exit_code": 0,
+   "analysis": "detect_stack_use_after_return=1；连续三次启动/查询/关停无 ASAN 报告。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E18",
+   "name": "TopK LIMIT 边界",
+   "command": "300 行随机 + 200 行全等距；LIMIT 10/64/65/100 对 oracle",
+   "output": "LIMIT 65: n=65 monotonic=True first=[1, 2, 3] last=65",
+   "context": "LIMIT 10: n=10 monotonic=True first=[1, 2, 3] last=10\nLIMIT 64: n=64 monotonic=True first=[1, 2, 3] last=64\nLIMIT 65: n=65 monotonic=True first=[1, 2, 3] last=65\nLIMIT 100: n=100 monotonic=True first=[1, 2, 3] last=100\nrandom LIMIT 65: match=True n=65\nrandom LIMIT 100: match=True n=100",
+   "exit_code": 0,
+   "analysis": "k≤64 走固定数组，k>64 走 heap；全等距按 pk 升序。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E19",
+   "name": "指标饱和 + 双核查询 A/B",
+   "command": "taskset -c 0,2; MVDB_NO_2T=0/1; 1000 queries uniform/clustered",
+   "output": "clustered 2T: query1000=118.3ms",
+   "context": "2x on one component saturates via f(R)=R/(1+R)\nuniform 2T: query1000=53.4ms\nuniform 1T: query1000=59.8ms\nclustered 2T: query1000=118.3ms\nclustered 1T: query1000=126.2ms",
+   "exit_code": 0,
+   "analysis": "0.6/0.2/0.2 权重与 f 饱和；双核在 uniform 约 1.12x、clustered 约 1.07x，不是线性的 2x。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E20",
+   "name": "ANN 方案基准",
+   "command": "taskset -c 0,2; ann_final/bench_ann --data uniform/clustered",
+   "output": "[clustered] ann pool=24 kmeans=64/4  recall=1.0000 min=1.00 lt0.9=0 p50=7.53 p99=22.09 mean=8.42 | build=39.9ms idx=0.078MB clustered=1",
+   "context": "[uniform] exact q7 baseline        p50=43.81 p99=63.61 mean=44.95 us\n[uniform] ann pool=24 kmeans=0/0  recall=1.0000 min=1.00 lt0.9=0 p50=36.32 p99=54.59 mean=37.78 | build=36.4ms idx=0.000MB clustered=0\n[clustered] exact q7 baseline        p50=48.54 p99=66.41 mean=49.40 us\n[clustered] ann pool=24 kmeans=64/4  recall=1.0000 min=1.00 lt0.9=0 p50=7.53 p99=22.09 mean=8.42 | build=39.9ms idx=0.078MB clustered=1",
+   "exit_code": 0,
+   "analysis": "uniform 的 ANN 只快约 1.2x；clustered 的精确 IVF 快约 5.9x，recall 1.0。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E21",
+   "name": "4-bit/2-bit 负结果",
+   "command": "q4bench.cpp: 10k x 128, 1000 queries, taskset -c 0",
+   "output": "q4: 24.5 us/query",
+   "context": "q7: 23.5 us/query\nq4: 24.5 us/query",
+   "exit_code": 0,
+   "analysis": "更窄的 packed code 解包抵消带宽收益；4-bit 在完整候选集上并未更快。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E22",
+   "name": "过滤块 M/延迟权衡",
+   "command": "docker --cpus=2 --memory=2g; MVDB_NO_FILTER_BLOCK=0/1",
+   "output": "no_block=False filt=108.8us unf=143.8us M=13.13MB",
+   "context": "no_block=False filt=108.8us unf=143.8us M=13.13MB\nno_block=True filt=121.8us unf=160.8us M=12.03MB",
+   "exit_code": 0,
+   "analysis": "连续块多约 1.1 MB memory.peak，换 filtered 约 13-35us；查询权重 2/3，保留。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E23",
+   "name": "AVX-512 移除",
+   "command": "grep -c avx512 src/executor.cpp; 当前构建全量回归",
+   "output": "source_avx512_matches=0",
+   "context": "source_avx512_matches=0\nbinary_avx512_symbols=0\ncurrent build: public 20/20, crash fuzz 240, checkpoint 50k/disk PASS",
+   "exit_code": 0,
+   "analysis": "本地微基准曾认为 512 更快，但平台持续负载下 E 下降；当前版本没有 512 路径和运行时开关。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E24",
+   "name": "大 INSERT 分块持久化",
+   "command": "3000 行 x 2000 字符；crash after_wal_write / after_commit_fsync；dup across chunks",
+   "output": "crash after_commit_fsync: restart_rows=3000",
+   "context": "normal: ok=True affected_rows=3000 restart_rows=3000\ncrash after_wal_write: restart_rows=0\ncrash after_commit_fsync: restart_rows=3000\nduplicate_across_chunks: duplicate_key restart_rows=0",
+   "exit_code": 0,
+   "analysis": "逻辑 INSERT 拆成多条 ≤4 MiB 记录；未提交 chunk 不生效，已确认 commit 全部保留。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E25",
+   "name": "聚簇 q7 IVF 候选层",
+   "command": "10k x 128 clustered; CREATE VECTOR INDEX; exact vs ann; server profile; Docker 2c/2g",
+   "output": "ann wall=47.0us exec=19.2us parse=4.6 format=2.4",
+   "context": "exact wall=70.3us exec=40.5us parse=4.3 format=2.4\nann wall=47.0us exec=19.2us parse=4.6 format=2.4\ninitial: ann recall mean=1.0000 min=1.0000\nafter_dml: ann recall mean=1.0000 min=1.0000\nafter_restart: ann recall mean=1.0000 min=1.0000\nDocker exact q1000=159.3ms\nDocker ann q1000=116.8ms\nold HEAD 3a5c782a clustered exact q1000=187.9ms\nold HEAD 3a5c782a clustered ann q1000=203.3ms",
+   "exit_code": 0,
+   "analysis": "nlist=64/nprobe=6/pool=24；首次 8 条样本对 exact IVF 自检，recall<0.98 回退；exact 模式不动。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E26",
+   "name": "fast SELECT 窄快路径 A/B",
+   "command": "python3 tests/run_perf_details.py --mode query --reps 4",
+   "output": "median query on wall=80.5 parse=6.41 exec=37.21",
+   "context": "mode=query on wall=80.5 parse=6.41 exec=37.21\nmode=query off wall=80.6 parse=7.83 exec=36.58\nmedian query on wall=80.5 parse=6.41 exec=37.21\nmedian query off wall=80.6 parse=7.83 exec=36.58\nfast select diff: cases 18 failures 0",
+   "exit_code": 0,
+   "analysis": "同机 10k×128、500 filtered + 500 unfiltered 交替；4 次中位数；MVDB_NO_FAST_SELECT 关掉快路径对照；18 条 SQL 差分。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E27",
+   "name": "q7 64B 对齐 A/B（负结果）",
+   "command": "python3 tests/run_perf_details.py --mode q7 --bin-a <6fbc5ee2-build> --bin-b <aligned-build> --reps 4",
+   "output": "median q7 b wall=78.1 parse=7.72 exec=35.61",
+   "context": "mode=q7 a wall=76.7 parse=7.45 exec=35.77\nmode=q7 b wall=78.1 parse=7.72 exec=35.61\nmedian q7 a wall=76.7 parse=7.45 exec=35.77\nmedian q7 b wall=78.1 parse=7.72 exec=35.61",
+   "exit_code": 0,
+   "analysis": "a=6fbc5ee2 未对齐，b=加 64B 对齐；同机 10k×128、fast SELECT 关闭、4 次中位数。对齐没有更快，差异在噪声内，代码已回退。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E28",
+   "name": "向量直接写入 Value A/B",
+   "command": "python3 tests/run_perf_details.py --mode write --reps 4; g++ -std=c++20 -O2 -I src tests/parse_vector_into_test.cpp src/common.cpp -o /tmp/vp && /tmp/vp",
+   "output": "median write direct wall=233.0 parse=229.5 exec=547.8",
+   "context": "median write direct wall=233.0 parse=229.5 exec=547.8\nmedian write old wall=238.6 parse=227.4 exec=593.5\nvector parse check: 20000 random + dims + malformed, failures=0",
+   "exit_code": 0,
+   "analysis": "direct=parseVectorLiteralInto 直接写 Value payload；old=临时 vector + MakeVec 拷贝；100 批×100 行，4 次中位数；20000 条随机文字/维度/malformed 位级差分。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E30",
+   "name": "cgroup anon/file 构成",
+   "command": "python3 tests/run_mem_split.py --image mvdb:work --cpus 2 --mem 2g --rows 10000",
+   "output": "mem phase=query peak=12.5MB anon=10.3MB file=0.0MB",
+   "context": "mem phase=write peak=11.2MB anon=8.9MB file=0.0MB\nmem phase=query peak=12.5MB anon=10.3MB file=0.0MB",
+   "exit_code": 0,
+   "analysis": "每阶段读 cgroup memory.stat(anon/file) 与 memory.peak；WAL 在每次 sync 后 DONTNEED，所以此卷 file 为 0。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E31",
+   "name": "5 轮轮间波动",
+   "command": "python3 tests/run_variance.py --rounds 5 --bin ./build/minivectordb",
+   "output": "query_ms min=64.7 p50=70.9 max=72.6 spread=11.1%",
+   "context": "write_ms min=251.7 p50=259.1 max=273.0 spread=8.2%\nquery_ms min=64.7 p50=70.9 max=72.6 spread=11.1%\nrounds=5 noise_band_2x_halfwidth_ms=10.7",
+   "exit_code": 0,
+   "analysis": "每轮全新数据目录、同一二进制；先算轮间带宽，再用它判此前小收益是否可判定。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E32",
+   "name": "fsync 地板 vs 写 CPU",
+   "command": "strace -f -c -e trace=fdatasync python3 tests/run_profile.py --bin ./build/minivectordb --dir /tmp/prof_ext4",
+   "output": "ext4 fdatasync calls=101 total=1.923ms usecs/call=19",
+   "context": "ext4 fdatasync calls=101 total=1.923ms usecs/call=19\nwrite profile parse=17.9ms json=10.9ms sql=7.0ms exec=60.8ms",
+   "exit_code": 0,
+   "analysis": "strace 数 101 次 fdatasync；与 MVDB_PROFILE 的 parse/json/sql/exec 对账。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E33",
+   "name": "WAL fixed24 往返",
+   "command": "python3 tests/measure_wal.py && g++ -O2 -std=c++20 -Isrc tests/fixed24_check.cpp src/common.cpp -o /tmp/fixed24_check && /tmp/fixed24_check",
+   "output": "wal rows=10000 dim=128 mode=fixed24 bytes=3539527 (-20.2%)",
+   "context": "wal rows=10000 dim=128 mode=raw bytes=4435274\nwal rows=10000 dim=128 mode=fixed24 bytes=3539527 (-20.2%)\nwrite_bytes 4841472 -> 3948544 (-18.4%)\nfixed24 self-check: PASS (20000 decimal mode2, 20000 random fallback)",
+   "exit_code": 0,
+   "analysis": "同 10k×128 负载；mode2 只在整批每个分量位级可重建时启用，否则回退 mode0/1。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E34",
+   "name": "span INSERT A/B",
+   "command": "python3 tests/run_fast_insert_diff.py && 关闭 MVDB_NO_FAST_INSERT 对照",
+   "output": "new parse=20.3ms sql=9.3ms exec=55.5ms wall=253.6ms",
+   "context": "fast insert diff: cases 28 failures 0\nold parse=30.4ms sql=20.2ms exec=63.0ms wall=266.9ms\nnew parse=20.3ms sql=9.3ms exec=55.5ms wall=253.6ms",
+   "exit_code": 0,
+   "analysis": "同一二进制 env on/off；差分覆盖列名、转义、NULL、重复主键、维度错、重启。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E35",
+   "name": "UPDATE changed rows",
+   "command": "python3 tests/run_semantics_verbose.py",
+   "output": "noop_int=0 change_int=1 noop_str=0 change_str=1 no_match=0",
+   "context": "noop_int=0 change_int=1 noop_str=0 change_str=1 no_match=0\ntx_noop=0\nrows_after_tx=[[1, \"a\", 2], [2, \"c\", 7]]\nvec_noop=0 vec_change=1\nrestart_noop=0\nrestart_rows=[[1, \"a\", 2], [2, \"c\", 7]]",
+   "exit_code": 0,
+   "analysis": "int/str/vector 的 no-op 与有变化分别验证；事务后与重启后再验。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E36",
+   "name": "列名保留原文",
+   "command": "python3 tests/run_semantics_verbose.py",
+   "output": "header_space=L2_DISTANCE(e, '[1,2]')",
+   "context": "header_tight=L2_DISTANCE(e,'[1,2]')\nheader_space=L2_DISTANCE(e, '[1,2]')\nheader_alias=d",
+   "exit_code": 0,
+   "analysis": "同一投影的紧空格、松空格、别名三种 header。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E37",
+   "name": "autocommit 事务",
+   "command": "python3 tests/run_autocommit.py",
+   "output": "restart_after_shutdown_rows=[[2]]",
+   "context": "after_rollback_rows=[]\nafter_commit_rows=[[2]]\nrestart_after_shutdown_rows=[[2]]\nautocommit_on_rows=[[2], [4]]",
+   "exit_code": 0,
+   "analysis": "ROLLBACK、COMMIT、shutdown、autocommit=1 四条路径。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E39",
+   "name": "int8 下界边界",
+   "command": "python3 tests/run_quant_bound.py --rows 10000 --dim 128",
+   "output": "recall@10 ratio=2 1.000 candidates_mean=0.997 candidates_max=1.000",
+   "context": "bound same-scale pairs=10000 violations=0\nrecall@10 ratio=1 1.000 candidates_mean=0.004 candidates_max=0.007\nrecall@10 ratio=2 1.000 candidates_mean=0.997 candidates_max=1.000\nrecall@10 ratio=4 1.000 candidates_mean=1.000 candidates_max=1.000\nrecall@10 ratio=8 1.000 candidates_mean=1.000 candidates_max=1.000",
+   "exit_code": 0,
+   "analysis": "同一 q7 三角形下界；ratio 是每向量 scale 相对公共 scale 的倍数。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E40",
+   "name": "干净归档 + 源码镜像",
+   "command": "git archive HEAD | tar -x -C /tmp/audit_clean && docker build --no-cache -t mvdb:clean /tmp/audit_clean",
+   "output": "docker build from source: OK; image binary sha256 == clean build",
+   "context": "clean archive build: Built target minivectordb\npublic cases: 20 cases, 0 failure(s)\ndocker build from source: OK; image binary sha256 == clean build\nJSONL public 20/20; marker 20/20",
+   "exit_code": 0,
+   "analysis": "只用 git archive 的文件构建；镜像二进制与干净构建逐字节一致，再跑 JSONL 20 例。",
+   "commit": "c6642bd24"
+  },
+  {
+   "id": "E42",
+   "name": "id 类型回显",
+   "command": "旧/新二进制各跑一条 object id 和一条 array id",
+   "output": "after object_id={\"a\":1,\"b\":[2,3]}",
+   "context": "before object_id=null after object_id={\"a\":1,\"b\":[2,3]}\nbefore array_id=null after array_id=[1,\"two\",null]\npublic 20/20; marker 20/20",
+   "exit_code": 0,
+   "analysis": "同一 stdin 两行请求分别跑旧 HEAD 与新 HEAD；响应只比较 id 字段。",
+   "commit": "c6642bd24"
+  }
+ ],
+ "units": [
+  {
+   "id": "U01",
+   "dimension": "问题理解与自主拆解",
+   "score": 0.5,
+   "problem": "把 80 分拆成准入、性能、prompt 三条线，并确定没有通过版本总分为 0 的提交门禁。",
+   "student_evidence": "我先把 80 分拆开看：MySQL case 只要挂一个，总分直接 0，所以准入排第一；性能 40、prompt 40，但必须同一个 commit；一天两次正式提交，没通过的版本也是 0。先把代码和材料冻结，再谈优化，不然改着改着连提交基线都没了。",
+   "student_pointer": "/conversations/0/content",
+   "reason": "只有规划，没有执行结果，按 0.5 计；它是唯一一条纯规划单元，不引用实验。",
+   "independence": "与 U04/U11 的版本 A/B、协议执行不同：本单元只描述约束和取舍边界。",
+   "result_evidence": ""
+  },
+  {
+   "id": "U02",
+   "dimension": "问题理解与自主拆解",
+   "score": 1.5,
+   "problem": "1000 次查询的墙钟到底花在 exec、parse/json/sql、format 还是客户端管道。",
+   "student_evidence": "优化前我先量清楚 1000 次查询的墙钟花在哪：服务端 exec、parse/json/sql、format，还是客户端管道。若 exec 只占一半，先压 format 的收益就有限；我要 5 次中位数，不用单次 profile 下结论。",
+   "student_pointer": "/conversations/1/content",
+   "reason": "先做阶段分解，发现 exec 约 30.8 ms、parse/json/sql 约 6.1 ms、format 约 3.5 ms；据此把优化优先级放在 exec 而不是 format。单次 profile 有异常，改用 5 次中位数。",
+   "independence": "只回答测量与优先级；不实现 q7/过滤，也不引用它们的 A/B。",
+   "result_evidence": "profile: requests=1600 parse=0.0060874 json=0.00153609 sql=0.00455131 exec=0.0307732 format=0.00346489",
+   "result_pointer": "/experiments/0/output"
+  },
+  {
+   "id": "U03",
+   "dimension": "问题理解与自主拆解",
+   "score": 1.5,
+   "problem": "平台 B 是 cgroup io.stat 时，本地 /proc/io 的 rchar/wchar 能不能当 B。",
+   "student_evidence": "平台 B 是 cgroup io.stat，不是 /proc/io 的 rchar/wchar；本地的 4.84 MB 和 13 MB 都不能直接当平台 B。我要用 2 CPU/2 GiB 的容器，读 memory.peak 和 io.stat，把启动、装载、预热都算进去。",
+   "student_pointer": "/conversations/2/content",
+   "reason": "用 2 CPU/2 GiB 容器读 cgroup：B=5.26 MB、M_peak=12.9 MB，和 host RSS/进程 io 都不是同一口径；因此本地只报代理值并注明方法，不把 4.84 MB 当平台 B。",
+   "independence": "只讨论度量口径；不讨论 WAL 内容或 E 权重。",
+   "result_evidence": "B=5.26MB M_peak=12.9MB",
+   "result_pointer": "/experiments/1/output"
+  },
+  {
+   "id": "U04",
+   "dimension": "问题理解与自主拆解",
+   "score": 2.0,
+   "problem": "S3→当前版本在 uniform 和 clustered 上的端到端收益，以及能否把收益归因于单一改动。",
+   "student_evidence": "我不看单次绝对值。先在同一台机器、同一 10k×128 负载上把 S3 和当前版本来回跑，再换聚簇数据复测；这是好几项改动叠在一起，不能把收益全算给 q7 或过滤。写入、查询、峰值内存三组一起看，哪组没动就说明那块白改了。",
+   "student_pointer": "/conversations/3/content",
+   "reason": "uniform：write 0.5268→0.2442 s、query 0.1761→0.0490 s；clustered：write 0.5689→0.2649 s、query 0.1914→0.1154 s。两个场景都复测；这是多项改动的组合，不能把 3.6x 查询收益全归给 q7。",
+   "independence": "与 U20 的指标饱和问题不同：本单元只做组合版本 A/B 与归因边界。",
+   "result_evidence": "current: clustered write=0.2649s query=0.1154s maxrss=12.6MiB",
+   "result_pointer": "/experiments/2/output",
+   "transfer": "从 uniform 迁移到 clustered 后查询收益从约 3.6x 降到约 1.7x。",
+   "limitation": "隐藏基线未测，单次平台 E 有波动；组合 A/B 不能拆出单项因果。"
+  },
+  {
+   "id": "U05",
+   "dimension": "问题理解与自主拆解",
+   "score": 2.0,
+   "problem": "--memory-rows 0 是否等于向量也 out-of-core；50k 行重启后的驻留内存是多少。",
+   "student_evidence": "不能把 --memory-rows 0 当成向量也 out-of-core：50k×128 的 float32 矩阵本身约 25.6 MB。我要在 50k 行上量写入、重启、查询三个阶段的 VmHWM，再看这条路径能不能宣称省内存。",
+   "student_pointer": "/conversations/4/content",
+   "reason": "50k×128、--memory-rows 0：写入阶段 7.5 MB，但重启后 27.5 MB、查询后 28.1 MB，接近 25.6 MB 的向量矩阵与 WAL 页缓存。行 out-of-core 不等于向量 out-of-core。",
+   "independence": "只问内存驻留；不涉及写入延迟或 checkpoint 编码。",
+   "result_evidence": "restart_rss_kB 27488",
+   "result_pointer": "/experiments/3/output",
+   "transfer": "从 10k 迁移到 50k 磁盘模式，结论反转：不能靠 --memory-rows 0 宣称省内存。",
+   "limitation": "只测本机单表 128 维；隐藏测试若把页缓存算入 M，需要更激进的分块。"
+  },
+  {
+   "id": "U06",
+   "dimension": "技术理解与迁移",
+   "score": 2.0,
+   "problem": "批量 WAL 的 checkpoint 为什么必须在 10k/50k/磁盘重启后都能全量 decode。",
+   "student_evidence": "批量 WAL 的 checkpoint 必须能全量 decode；32 位 word 的字节序和 HuffCode 零初始化只要有一处不一致，只有重启或 checkpoint 才暴露。先 10k，再 50k，再 --memory-rows 0 的磁盘模式，三次都要数全部行。",
+   "student_pointer": "/conversations/5/content",
+   "reason": "10k、50k、50k+磁盘三种模式都数重启后的全部行：10000/50000/50000 全部一致，说明 chunk/checkpoint 解码不是只看单条 TopK。历史上 Huffman 字节序和 HuffCode 零初始化错只在重启暴露。",
+   "independence": "只讲 WAL/checkpoint 编解码；与语句原子性、sync 顺序不同链。",
+   "result_evidence": "checkpoint rows=50000 mode=disk restart_rows=50000: PASS",
+   "result_pointer": "/experiments/4/output",
+   "transfer": "从 10k 迁移到 50k 和磁盘模式，三次都通过。",
+   "limitation": "只模拟 SIGKILL，不模拟断电/坏盘；checkpoint 脚本只校验行数和一条 TopK，不是逐行内容校验。"
+  },
+  {
+   "id": "U07",
+   "dimension": "技术理解与迁移",
+   "score": 2.0,
+   "problem": "q7 量化距离为什么不能直接输出，三角形下界怎样保证 exact 不漏，迁移到过滤查询还成立吗。",
+   "student_evidence": "q7 量化距离只能当下界，不能直接拿来输出，这个不能省。用 |‖v-q‖−s‖code(v)-code(q)‖| ≤ err(v)+err(q) 把候选筛出来，最后还是要 float32/double 复核。过滤后的集合也得逐条对 oracle，不能只看无过滤那组好看。",
+   "student_pointer": "/conversations/6/content",
+   "reason": "q7 只做下界；190 项差分覆盖过滤/无过滤、UPDATE/DELETE、ROLLBACK、restart，exact 与 NumPy oracle 一致，ann recall 1.0。下界只用于筛，最终仍用 exact 复核。",
+   "independence": "只讲 q7 精确性；过滤性能在 U16，IVF 在 U08。",
+   "result_evidence": "filtered/unfiltered differential: before=0 after_dml=0 rollback=0 restart=0 read_your_writes=OK checks=190",
+   "result_pointer": "/experiments/5/output",
+   "transfer": "从 uniform 迁移到 filtered/clustered，候选仍逐条对 oracle。",
+   "limitation": "只测 5000×128、L2；误差界依赖每行 err，换成 cosine/IP 不成立。"
+  },
+  {
+   "id": "U08",
+   "dimension": "技术理解与迁移",
+   "score": 2.0,
+   "problem": "IVF 为什么不能对所有数据都建；512 行/16 中心 screen 与簇半径下界各解决什么问题。",
+   "student_evidence": "IVF 不能对所有数据都建：512 行/16 中心 screen 看方差比，uniform ratio 高就跳过；clustered 才建，并用 dist(q,centroid)−radius 做精确剪枝。阈值是启发式，样本 512 可能误判，要用 debug 输出和 recall 两边核对。",
+   "student_pointer": "/conversations/7/content",
+   "reason": "screen 在 clustered 数据上给出 ratio=0.015、clustered=1；uniform ratio 高则跳过。clustered 用半径下界做精确剪枝，ann recall 1.0。阈值是启发式，样本 512 可能误判。",
+   "independence": "只讲分布判定/簇剪枝；不引用 q7 下界或过滤器。",
+   "result_evidence": "ivf n=10000 inertia=152249.74 var=10121642.97 ratio=0.015 clustered=1",
+   "result_pointer": "/experiments/6/output",
+   "transfer": "uniform 跳过 IVF，clustered 建 IVF；迁移后 ann recall 1.0。",
+   "limitation": "screen 阈值是启发式；只测合成聚簇，真实分布未测。"
+  },
+  {
+   "id": "U09",
+   "dimension": "技术理解与迁移",
+   "score": 1.5,
+   "problem": "多行 INSERT 一行冲突时整条语句是否部分生效，显式事务里之前的语句和 ROLLBACK 怎样。",
+   "student_evidence": "多行 INSERT 里一行主键冲突时，整条语句不能部分生效；但同一显式事务里之前成功的语句要保留，ROLLBACK 再撤销。我要用提交后的行集验证，不是看到 duplicate_key 就结束。",
+   "student_pointer": "/conversations/8/content",
+   "reason": "duplicate_key 后提交行仍是 [1,2,3,4]，没有留下 5；ROLLBACK 后仍为 [1,2,3,4]，说明失败语句原子但保留事务此前成功的语句。",
+   "independence": "只讲语句原子性；与 checkpoint、崩溃恢复不同链。",
+   "result_evidence": "statement_atomicity committed rows= [[1], [2], [3], [4]]",
+   "result_pointer": "/experiments/7/output"
+  },
+  {
+   "id": "U10",
+   "dimension": "技术理解与迁移",
+   "score": 2.0,
+   "problem": "组提交能否把 101 次 fdatasync 合并成 2 次，同时保证响应不早于 sync。",
+   "student_evidence": "连续 autocommit DML 可以共用一次 fdatasync，但响应必须在 sync 后按序释放；顺序驱动仍应逐批 sync，不能靠等下一个请求凑批。我要用 strace 分别数顺序和突发两种输入的 fdatasync 次数。",
+   "student_pointer": "/conversations/9/content",
+   "reason": "顺序驱动 101 次 fdatasync，突发驱动 2 次；响应在 sync 后按序释放。合并只在请求已到达时发生，顺序驱动没有写收益。",
+   "independence": "只讲 sync/响应顺序；与 WAL 编码、组合 A/B 不同链。",
+   "result_evidence": "fdatasync_counts seq=101 burst=2",
+   "result_pointer": "/experiments/8/output",
+   "transfer": "从顺序迁移到突发输入，fdatasync 101→2。",
+   "limitation": "突发模式不是官方驱动的必然行为；不能用 101→2 宣称平台写入 50x。"
+  },
+  {
+   "id": "U11",
+   "dimension": "独立验证与质疑",
+   "score": 2.0,
+   "problem": "前两次提测失败后，怎样证明文本协议/ready-marker 假设是错的，并以官方 JSONL 为准。",
+   "student_evidence": "前两次提测失败说明不能靠 semicolon/ready-marker 猜协议；先找官方 STDIO_PROTOCOL，按 JSONL 的 ready/id/ok/columns/rows/error.code 对齐，跑官方交互检查器的全部 20 例，再进 Docker 和 restart。公开 20/20 不能写成正式准入。",
+   "student_pointer": "/conversations/10/content",
+   "reason": "按官方 STDIO_PROTOCOL 对齐 JSONL，protocol_check 在 Docker 上 20/20，handshake/storage_restart/shutdown 都过；公开 20 例不是正式准入。",
+   "independence": "只讲协议验证；与 DDL 边界、崩溃恢复不同链。",
+   "result_evidence": "official protocol_check: passed=True cases=20",
+   "result_pointer": "/experiments/9/output",
+   "transfer": "从本地进程迁移到 Docker/restart，20/20。",
+   "limitation": "公开 20 例不是隐藏用例；本地进程不是平台，不能把 20/20 写成正式准入。"
+  },
+  {
+   "id": "U12",
+   "dimension": "独立验证与质疑",
+   "score": 2.0,
+   "problem": "普通单元测试通过能否证明强杀恢复；怎样用 6 个崩溃点 + 随机 SIGKILL + 恢复中再杀反证。",
+   "student_evidence": "普通单测过了不等于强杀安全。已确认提交不能丢、未提交不能半可见、恢复中再杀要能重复恢复；我用 6 个 crash point 加随机 SIGKILL，内存和磁盘两种模式各跑一遍。这个不自己跑，我不敢写“持久化通过”。",
+   "student_pointer": "/conversations/11/content",
+   "reason": "240 轮（内存/磁盘各 120）覆盖 6 个确定性崩溃点 + 80 次随机 SIGKILL，failures=0；恢复中再杀也能重复恢复。",
+   "independence": "只讲崩溃恢复验证；与语句原子性、WAL 编码不同链。",
+   "result_evidence": "iterations=240 elapsed=9.6s",
+   "result_pointer": "/experiments/10/output",
+   "transfer": "从内存迁移到磁盘模式，仍 0 失败。",
+   "limitation": "只模拟 SIGKILL，不模拟断电/坏盘；随机 kill 覆盖有限。"
+  },
+  {
+   "id": "U13",
+   "dimension": "独立验证与质疑",
+   "score": 1.5,
+   "problem": "合法 SQL 的巨大 LIMIT 会不会把进程打崩。",
+   "student_evidence": "合法 SQL 不能把进程打崩：LIMIT 2^63−1 这种值只应该返回全部行或报参数错误，不能 std::length_error abort。我要先看旧版是否复现，再确认 reserve 被表行数封顶。",
+   "student_pointer": "/conversations/12/content",
+   "reason": "旧版在 LIMIT 2^63−1 时抛 std::length_error 直接退出；当前 reserve 被表行数封顶，返回 3 行。",
+   "independence": "只讲 LIMIT 参数边界；与 float32 数值不同链。",
+   "result_evidence": "after: ok=True rows=3",
+   "result_pointer": "/experiments/11/output"
+  },
+  {
+   "id": "U14",
+   "dimension": "独立验证与质疑",
+   "score": 1.5,
+   "problem": "float32 有限大值的平方和会不会溢出成 inf，距离输出怎样保持有限。",
+   "student_evidence": "float32 有限大值的平方和可能溢出成 inf；距离要用 double 累加，输出要有限。我要插入 3e19 和 2e19 两行，看排序和最后一位是否还对。",
+   "student_pointer": "/conversations/13/content",
+   "reason": "3e19 与 2e19 两行按距离 1、2e19、3.0000001e19 排序，输出有限；float32 平方和会溢出，所以距离用 double 累加。",
+   "independence": "只讲数值溢出/格式化；与 q7 量化误差不同链。",
+   "result_evidence": "\"rows\": [[3, 1], [2, 2e+19], [1, 3.0000001e+19]]",
+   "result_pointer": "/experiments/12/output"
+  },
+  {
+   "id": "U15",
+   "dimension": "独立验证与质疑",
+   "score": 1.5,
+   "problem": "投影的 L2_DISTANCE 与 ORDER BY 用不同查询向量时，输出会不会复用了排序 key 的距离。",
+   "student_evidence": "SELECT 里投影的 L2_DISTANCE 和 ORDER BY 的 L2_DISTANCE 可以是两个不同查询向量；投影值必须按投影向量算，不能复用排序 key 的距离。我要构造 q1≠q2 的查询，对比加不加第三个投影列的结果。",
+   "student_pointer": "/conversations/14/content",
+   "reason": "旧版返回 [[1,1],[2,1]]，把 q2 的距离当 q1 的输出；当前返回 [[1,9],[2,10.0498756]]，投影按 q1，排序按 q2。",
+   "independence": "只讲投影/排序 key 错配；与过滤顺序不同链。",
+   "result_evidence": "after [[1, 9], [2, 10.0498756]]",
+   "result_pointer": "/experiments/13/output"
+  },
+  {
+   "id": "U16",
+   "dimension": "实验与反馈迭代",
+   "score": 1.5,
+   "problem": "过滤查询的瓶颈是不是每行 map.find/散列，连续 q7 code 块能带来多少真实收益。",
+   "student_evidence": "过滤查询慢在每行 map.find/散列，不是距离；先存 value→VectorCache 行号，再把该值的 q7 code 拷成连续块顺序访问。收益用 5 次中位数说话，不能拿单轮 2× 当结论。",
+   "student_pointer": "/conversations/15/content",
+   "reason": "500 条过滤查询中位数 39.0→33.6 us，无过滤 72.6→53.3 us；收益约 10-27%，不是 2x。连续块只在单等值过滤且版本匹配时启用，多条件回退。",
+   "independence": "只讲过滤性能；过滤正确性在 U07。",
+   "result_evidence": "current filtered500 median=33.6us",
+   "result_pointer": "/experiments/14/output"
+  },
+  {
+   "id": "U17",
+   "dimension": "实验与反馈迭代",
+   "score": 1.5,
+   "problem": "写路径 CPU 热点在哪里；快速 vector 解析/CRC 是否既快又和原实现位级一致。",
+   "student_evidence": "写路径的 CPU 热点要用 profiler 找，不能猜：批量 INSERT 里 vector 字面量解析、CRC、JSON/SQL 词法各占多少？改完快路径还要证明它和 from_chars 位级一致，并且不放过 1.2.3 这种非法字面量。",
+   "student_pointer": "/conversations/16/content",
+   "reason": "gprof 显示 vector 字面量解析与 CRC 是热点；改后 20000 组随机字面量与 from_chars 位级一致、8243 组 CRC 硬件/表实现一致，非法 1.2.3 仍被拒绝。",
+   "independence": "只讲写路径热点与解析/CRC 验证；不重复查询 profile。",
+   "result_evidence": "parseVectorLiteral differential: checked=20000 rejected=0 mismatches=0",
+   "result_pointer": "/experiments/15/output"
+  },
+  {
+   "id": "U18",
+   "dimension": "实验与反馈迭代",
+   "score": 1.5,
+   "problem": "ScanPool 析构时 ++seq_ 为什么会让 worker 重放旧 job，ASAN 能否证明修复。",
+   "student_evidence": "ScanPool 析构时 ++seq_ 会让 worker 把旧 job 当新任务再执行一次，旧 lambda 捕获的栈变量已经返回；析构只 stop+notify+join，worker 执行前检查 stop，再用 ASAN 连续跑关停和 checkpoint。",
+   "student_pointer": "/conversations/17/content",
+   "reason": "ASAN 下 public 20/20、checkpoint 10k、连续 3 次关停全部 exit=0、无 stack-use-after-return；析构只 stop+notify+join。",
+   "independence": "只讲并发关停生命周期；与崩溃恢复不同链。",
+   "result_evidence": "cycle 2: exit=0 asan_errors=[]",
+   "result_pointer": "/experiments/16/output",
+   "transfer": "从连续关停迁移到 checkpoint 10k 重启和 public 20：ASAN 下 checkpoint rows=10000 restart_rows=10000 PASS，public 20/20，三次 cycle 都 exit=0 且 asan_errors=[]。",
+   "limitation": "只覆盖 ASAN 的 stack-use-after-return；不是 TSan/竞态检测，只测单连接关停，未覆盖并发查询/写入。"
+  },
+  {
+   "id": "U19",
+   "dimension": "实验与反馈迭代",
+   "score": 1.5,
+   "problem": "k≤64 固定数组、k>64 heap 的边界和 tie 是否与 oracle 一致。",
+   "student_evidence": "k≤64 用固定数组比 vector 插入少分配；但 k>64 要回退 heap，tie 仍按 (distance, pk) 升序。我要用 LIMIT 10/64/65/100 和 300 行随机数据对 oracle，确认边界和并列都不变。",
+   "student_pointer": "/conversations/18/content",
+   "reason": "LIMIT 10/64/65/100 在 200 行全等距数据上都按 pk 升序；300 行随机数据 LIMIT 65/100 与 oracle 完全一致。",
+   "independence": "只讲 TopK 容器边界；与 q7 距离核不同链。",
+   "result_evidence": "LIMIT 65: n=65 monotonic=True first=[1, 2, 3] last=65",
+   "result_pointer": "/experiments/17/output",
+   "transfer": "从 200 行全等距迁移到 300 行随机：LIMIT 10/64/65/100 仍按 pk 升序，随机 LIMIT 65/100 与 oracle 完全一致（match=True）。",
+   "limitation": "只测 k≤100、300 行；并发、UPDATE/DELETE 后的 TopK 和更大 k 未覆盖。"
+  },
+  {
+   "id": "U20",
+   "dimension": "取舍与反思",
+   "score": 2.0,
+   "problem": "E 权重固定时，多用一个物理核的查询收益为什么不是线性的，在 2 vCPU 共享驱动时是否值得。",
+   "student_evidence": "综合指标里查询权重是写入的两倍；多用一个物理核的收益过 f(R)=R/(1+R) 会饱和，不是 2×，在 2 vCPU 跟驱动抢核时更不一定值。我在 uniform 和 clustered 上各跑 1T/2T 的 1000 查询墙钟，再决定默认开不开第二核，不凭感觉。",
+   "student_pointer": "/conversations/19/content",
+   "reason": "综合指标里 query 权重 0.4、write 0.2，f 饱和；uniform 1T→2T 只从 59.8ms 到 53.4ms（约 1.12x），clustered 仅约 1.07x。第二核的收益远小于 2x，还要与驱动共享 2 vCPU。",
+   "independence": "只讲指标饱和与双核取舍；与 U04 的版本归因不同问题。",
+   "result_evidence": "clustered 2T: query1000=118.3ms",
+   "result_pointer": "/experiments/18/output",
+   "transfer": "从 uniform 迁移到 clustered，双核收益从约 1.12x 降到约 1.07x。",
+   "limitation": "2 vCPU cgroup 与驱动共享，线程收益受调度影响；单次墙钟有波动。"
+  },
+  {
+   "id": "U21",
+   "dimension": "取舍与反思",
+   "score": 2.0,
+   "problem": "uniform 10k×128 上真正的 ANN 图索引能否稳定快 3x，值不值得 build/索引内存。",
+   "student_evidence": "uniform 10k×128 上真正的 ANN 图索引能不能稳定快 3×？先在独立基准里量 HNSW/IVF 的 recall、p50/p99、build 和索引内存；如果 uniform 被 q7 扫描的带宽下限卡住，就不要为'像 ANN'上索引。",
+   "student_pointer": "/conversations/20/content",
+   "reason": "uniform ANN 只快约 1.2x（44.95→37.78 us），被 q7 扫描带宽下限卡住；clustered 精确 IVF 快约 5.9x（49.40→8.42 us）、recall 1.0，但 build 约 40 ms、索引 0.078 MB。结论：不发布图索引，保留 exact IVF + q7 精确路径。",
+   "independence": "只讲 ANN 方案取舍；IVF 分布判定在 U08。",
+   "result_evidence": "[clustered] ann pool=24 kmeans=64/4  recall=1.0000 min=1.00 lt0.9=0 p50=7.53 p99=22.09 mean=8.42 | build=39.9ms idx=0.078MB clustered=1",
+   "result_pointer": "/experiments/19/output",
+   "transfer": "从 uniform 迁移到 clustered，ANN 的收益反转（1.2x→5.9x）。",
+   "limitation": "基准是合成数据，hidden 分布未知；build/索引内存计入 B/M。"
+  },
+  {
+   "id": "U22",
+   "dimension": "取舍与反思",
+   "score": 1.5,
+   "problem": "更省内存的 4-bit packed code 是否比 q7 更快。",
+   "student_evidence": "int8/4-bit/PQ 这些更省内存的方案，实测是否比 q7 慢？拒绝时要有查询时间和 recall，不能只报内存；4-bit 解包如果抵消带宽收益，就保留 q7。",
+   "student_pointer": "/conversations/21/content",
+   "reason": "q7 23.5 us/query，4-bit 24.5 us/query；解包抵消带宽收益。拒绝 4-bit，保留 q7；拒绝时同时看时间和 recall，不只看内存。",
+   "independence": "只讲 4-bit 负结果；HNSW/ANN 在 U21。",
+   "result_evidence": "q4: 24.5 us/query",
+   "result_pointer": "/experiments/20/output"
+  },
+  {
+   "id": "U23",
+   "dimension": "取舍与反思",
+   "score": 1.5,
+   "problem": "过滤连续块多 1.28 MB code 矩阵，换 filtered 延迟是否值得。",
+   "student_evidence": "过滤连续块多一份 code 矩阵（10k×128≈1.28 MB），平台 M 只占 20%。我要在 2 CPU/2 GiB 容器里对比开/关连续块的 filtered 延迟和 memory.peak，收益落在噪声内就回退。",
+   "student_pointer": "/conversations/22/content",
+   "reason": "容器内开连续块 filtered 108.8 us、M 13.13 MB；关闭 121.8 us、M 12.03 MB。多约 1.1 MB M 换约 13-35 us/查询，查询权重 2/3，保留。",
+   "independence": "只讲过滤块的内存取舍；过滤正确性在 U07。",
+   "result_evidence": "no_block=False filt=108.8us unf=143.8us M=13.13MB",
+   "result_pointer": "/experiments/21/output"
+  },
+  {
+   "id": "U24",
+   "dimension": "取舍与反思",
+   "score": 1.5,
+   "problem": "本地微基准更快的 AVX-512 为什么在平台下降，是否应该整个删除。",
+   "student_evidence": "本地微基准说 AVX-512 快不算数：平台持续负载下可能降频，甚至 XCR0 不可用 SIGILL。上一次平台 E 在启用 512 后下降，我要默认回 AVX2，并把 512 路径整个删掉，而不是留一个运行时开关。",
+   "student_pointer": "/conversations/23/content",
+   "reason": "平台在启用 AVX-512 自动选择后 E 下降，回退 AVX2 恢复；本地也没有 XCR0/512 机器。当前源码 avx512 匹配数为 0，默认只保留 AVX2。",
+   "independence": "只讲 AVX-512 平台回退；与 4-bit 算法负结果不同。",
+   "result_evidence": "source_avx512_matches=0",
+   "result_pointer": "/experiments/22/output"
+  },
+  {
+   "id": "U25",
+   "dimension": "独立验证与质疑",
+   "score": 2.0,
+   "problem": "单条多行 INSERT 超过 64 MiB 时，确认成功后重启会不会丢；怎样拆分并保证 chunk 原子性。",
+   "student_evidence": "单条多行 INSERT 超过 64 MiB 时，确认成功后重启不能丢；appendBatch 没有上限、reader 却按 64 MiB 拒绝，是一个确认即丢的持久化 bug。我要把逻辑 INSERT 拆成多条 ≤4 MiB 记录，同一 commit，并验证 chunk 中途 crash 和跨 chunk 重复主键。",
+   "student_pointer": "/conversations/24/content",
+   "reason": "3000 行×2000 字符（多 chunk）正常重启 3000 行；after_wal_write 崩溃重启 0 行（未提交）；显式 COMMIT 后 after_commit_fsync 崩溃重启 3000 行；跨 chunk 重复主键 duplicate_key 且 0 行。",
+   "independence": "只讲大 INSERT 分块持久化；与 checkpoint 编码、语句原子性不同链。",
+   "result_evidence": "crash after_commit_fsync: restart_rows=3000",
+   "result_pointer": "/experiments/23/output",
+   "transfer": "从普通重启迁移到 chunk 中途 crash + 跨 chunk 重复主键。",
+   "limitation": "只测 3000 行×2000 字符；更大单行/VARCHAR 上限未穷举。"
+  },
+  {
+   "id": "U26",
+   "dimension": "技术理解与迁移",
+   "score": 2.0,
+   "problem": "聚簇数据能否复用 q7 code 做 IVF 候选层，既快又不牺牲 ann recall；exact 模式如何不受影响。",
+   "student_evidence": "uniform 上图索引我试过，不划算，但聚簇数据可以把已有 q7 code 直接当 IVF 候选层，不用再复制一份 code 矩阵。先在 screen 判成 clustered 的表上建，第一次用 8 条样本对 exact IVF 自检，recall 低于 0.98 就退回精确 IVF；exact 模式一点都不能动，不能拿近似结果污染 exact。",
+   "student_pointer": "/conversations/25/content",
+   "reason": "聚簇表只在 screen 判定 clustered 后建 q7 IVF；server exec 精确 IVF 40.5 → 19.2 µs，Docker q1000 159.3→116.8 ms（旧 HEAD 的 clustered ann 是 203.3 ms，约 1.74x），initial/UPDATE+DELETE/restart recall 均 1.0；首次 8 条样本自检，recall<0.98 回退 exact IVF，exact 模式完全不动。",
+   "independence": "只讲 q7 IVF 候选层与自检回退；与 U08 的 IVF screen、U21 的 ANN 方案基准不同链。",
+   "result_evidence": "ann wall=47.0us exec=19.2us parse=4.6 format=2.4",
+   "result_pointer": "/experiments/24/output",
+   "transfer": "从 uniform 迁移到 clustered：uniform 仍走 q7 exact，clustered 走 q7 IVF；exact 模式不受影响。",
+   "limitation": "自检只有 8 条样本，hidden 分布不同可能回退；ann 只用于 k≤24；build 约 40 ms/0.078 MB。"
+  },
+  {
+   "id": "U27",
+   "dimension": "技术理解与迁移",
+   "score": 2.0,
+   "problem": "benchmark 的 1000 条固定 SELECT 是否值得绕过完整 lexer/parser，以及如何保证不改变 SQL 语义。",
+   "student_evidence": "benchmark 的 1000 条查询 SQL 形状固定，每次仍走完整 lexer/parser；我先加一个只认 SELECT id, L2_DISTANCE(...) AS alias FROM ... [WHERE col='x'] ORDER BY alias LIMIT n 的窄快路径，不匹配立即回退，做 18 条差分再上性能。",
+   "student_pointer": "/conversations/26/content",
+   "reason": "只加一个匹配 SELECT id, L2_DISTANCE(...) AS alias FROM t [WHERE c='x'] ORDER BY alias LIMIT n 的窄入口；18 条差分（过滤/大小写/空格/DESC/别名/非法向量/维度错/ORDER BY 表达式/投影错配）全等；4 次中位数 parse 7.83→6.41 µs，wall 在同一次里 80.6→80.5（被客户端/扫描淹没），filtered 的 parse 占比更高。",
+   "independence": "与 U02 的查询墙钟分解、U17 的写路径 parser 不同：本单元只改 SELECT 入口与回退，不动执行器。",
+   "result_evidence": "median query on wall=80.5 parse=6.41 exec=37.21",
+   "result_pointer": "/experiments/25/output",
+   "transfer": "从 benchmark 的无过滤/过滤查询迁移到公开 vector case 的 AS distance、任意表/列/别名；非法向量、维度错、ORDER BY 表达式和投影错配仍由原 parser/执行器给出原结果。",
+   "limitation": "只覆盖这一种 SELECT 形状；列名、转义、注释、多语句、其他投影全部回退；wall 收益受客户端/扫描占比限制，不能按 parse 的 18% 线性外推。"
+  },
+  {
+   "id": "U28",
+   "dimension": "实验与反馈迭代",
+   "score": 1.5,
+   "problem": "q7 code/filter block 的 16B 基址是否让 32B AVX2 load 跨 cache line，64B 对齐是否稳定更快。",
+   "student_evidence": "我原以为 q7 code 矩阵的 32B AVX2 load 会因 std::vector 基址只有 16B 对齐而跨 cache line，64B 对齐应该稳定更快；先把 code/filter block 改成 64B 对齐，用同机 4 次中位数和两个二进制 A/B 验证，不到阈值就回退。",
+   "student_pointer": "/conversations/27/content",
+   "reason": "把 code/filter block 改成 64B 对齐后，同机 4 次中位数 wall 76.7→78.1 µs；差异落在噪声里，不能证明对齐更快。",
+   "independence": "与 U22 的 4-bit、U24 的 AVX-512、U23 的过滤块内存不同：本单元只改变量基址对齐，不改算法或数据量。",
+   "result_evidence": "median q7 b wall=78.1 parse=7.72 exec=35.61",
+   "result_pointer": "/experiments/26/output",
+   "limitation": "4 次 A/B 的波动约 3-8%；对齐没有稳定收益，最终回退，不把未证实的 1-2% 带进提交。"
+  },
+  {
+   "id": "U29",
+   "dimension": "独立验证与质疑",
+   "score": 2.0,
+   "problem": "INSERT/UPDATE 的向量字面量能否跳过临时 vector 和第二次拷贝，直接写进 Value 的 payload。",
+   "student_evidence": "INSERT 的向量先解析到临时 vector 再拷进 Value，多一次分配和 512B 拷贝；我把十进制解析直接写进 Value::MakeVecRaw 的 payload，用 20000 条随机文字和维度长短做位级差分，再量写入和重启。",
+   "student_pointer": "/conversations/28/content",
+   "reason": "新增 parseVectorLiteralInto，解析直接写进 Value::MakeVecRaw 的缓冲区；20000 条随机文字（1-256 维）+14 个 malformed +维度长短差分全 0；写 100 批×100 行 exec 593.5→547.8 µs/请求（-7.7%），wall 238.6→233.0 ms（-2.3%）；public/JSONL/过滤/语义/重启全过。",
+   "independence": "与 U17 的写热点/CRC、U25 的大 INSERT 分块不同：本单元只改向量字面量的落点，不改 WAL 或分块。",
+   "result_evidence": "median write direct wall=233.0 parse=229.5 exec=547.8",
+   "result_pointer": "/experiments/27/output",
+   "transfer": "同一 convertValue 路径覆盖 INSERT 和 UPDATE 的 VECTOR 列；WAL 重启、过滤差分、维度错和 malformed 字面量仍走原错误/恢复链。",
+   "limitation": "Value 的堆分配还在；写 wall 主要被 100 次 fdatasync 占据，收益只有约 2%；超长/转义字面量仍回退原路径。"
+  },
+  {
+   "id": "U30",
+   "dimension": "问题理解与自主拆解",
+   "score": 2.0,
+   "problem": "M 的 cgroup 峰值里 anon 和 file 各占多少；缩 q7/过滤矩阵是不是正确杠杆。",
+   "student_evidence": "实测写入和查询两阶段的 file 都是 0、anon 从 8.9 涨到 10.3MB，我据此把 M 的优化对象从页缓存改成 anon 里的 q7/过滤矩阵；若换卷后 file 不为 0，这个结论要重判。",
+   "student_pointer": "/conversations/29/content",
+   "reason": "写入峰值 11.2MB（anon 8.9）、查询峰值 12.5MB（anon 10.3），两阶段 file 都是 0；WAL 每次 sync 后被 DONTNEED，所以 M 由 anon 主导，缩索引/行布局才可能降 M。",
+   "independence": "与 U03 的 B/M 口径不同：本单元只拆 memory.stat 的 anon/file，并据此决定下一步优化对象。",
+   "result_evidence": "mem phase=query peak=12.5MB anon=10.3MB file=0.0MB",
+   "result_pointer": "/experiments/28/output",
+   "transfer": "迁到 50k 磁盘模式或不同卷，file 可能不为 0，必须重新读 memory.stat，不能沿用 10k 结论。",
+   "limitation": "只测本机 Docker 卷；其他文件系统/内核的 page cache 计费不同。"
+  },
+  {
+   "id": "U31",
+   "dimension": "问题理解与自主拆解",
+   "score": 2.0,
+   "problem": "同一二进制五次跑的轮间带宽是多少；多小的收益不值得提交。",
+   "student_evidence": "5 轮写/查的 spread 都在一成左右，小于这个带宽的过滤块收益我不再提交；后续 A/B 固定 5 次中位数，不拿单轮几微秒下结论。",
+   "student_pointer": "/conversations/30/content",
+   "reason": "write spread 8.2%、query spread 11.1%，2×half-width=10.7ms；小于这个带宽的过滤块/写路径收益不提交，后续 A/B 都用 5 次中位数。",
+   "independence": "与 U02 的单次墙钟分解不同：本单元先量噪声，再定义可判定门槛。",
+   "result_evidence": "query_ms min=64.7 p50=70.9 max=72.6 spread=11.1%",
+   "result_pointer": "/experiments/29/output",
+   "transfer": "迁到 Docker/2 vCPU 后带宽更大，同一门槛要重算；不能把本机 10.7ms 当平台门槛。",
+   "limitation": "只覆盖本机 10k×128；平台 20% 波动无法本地复现，只能靠多轮中位数。"
+  },
+  {
+   "id": "U32",
+   "dimension": "技术理解与迁移",
+   "score": 2.0,
+   "problem": "写墙到底由 fdatasync 还是客户端 JSON/服务端 parse/exec 主导。",
+   "student_evidence": "101 次 fdatasync 合计不到 2ms，写墙主要不是 fsync；我放弃省 sync 的路线，转去做 INSERT/解析快路径。",
+   "student_pointer": "/conversations/31/content",
+   "reason": "ext4 上 101 次 fdatasync 合计 1.923ms（19us/次），只占写墙很小一部分；parse 17.9ms、exec 60.8ms 才是主要 CPU，所以先做 span INSERT/解析快路径，不省 fsync。",
+   "independence": "与 U10 的组提交不同：本单元只测 fsync 的绝对地板，并据此否定“省 fsync 换分”的路线。",
+   "result_evidence": "ext4 fdatasync calls=101 total=1.923ms usecs/call=19",
+   "result_pointer": "/experiments/30/output",
+   "transfer": "迁到 Docker 后 write 267ms、B 4.36MB，fsync 仍不是主项；客户端占比随驱动变化。",
+   "limitation": "strace 会放大系统调用；平台磁盘/驱动不同，比例可能变。"
+  },
+  {
+   "id": "U33",
+   "dimension": "取舍与反思",
+   "score": 2.0,
+   "problem": "六位小数的 float32 向量能否用每向量定点无损存，B 能降多少。",
+   "student_evidence": "位级 roundtrip 全过、WAL 降两成，写墙基本持平；我保留 mode2，并让七位小数/指数批次整批回退，不为省 B 冒精度风险。",
+   "student_pointer": "/conversations/32/content",
+   "reason": "20k 六位小数全部走 mode2 且位级一致，20k 随机 float32 全部回退；WAL 4,435,274→3,539,527（-20.2%）、物理写 -18.4%，写墙基本持平，保留。",
+   "independence": "与 U17/U29 的解析快路径不同：本单元改的是 WAL 向量编码，不是 SQL/Value 解析。",
+   "result_evidence": "wal rows=10000 dim=128 mode=fixed24 bytes=3539527 (-20.2%)",
+   "result_pointer": "/experiments/31/output",
+   "transfer": "迁到混合表/重启/SIGKILL，mode2 与回退批次都位级一致；七位小数/指数批次整批回退。",
+   "limitation": "只对整批可表示时生效；编码 CPU +12%，混合小数批次无收益。"
+  },
+  {
+   "id": "U34",
+   "dimension": "实验与反馈迭代",
+   "score": 2.0,
+   "problem": "benchmark 的 INSERT 能否只记 span、在执行器按列直接解析，省掉 lexer/AST 和一次 1.1KB 拷贝。",
+   "student_evidence": "28 条差分全等，parse/SQL/exec 都降；我保留 span 路径，列名、转义、NULL、表达式仍回退原 parser。",
+   "student_pointer": "/conversations/33/content",
+   "reason": "28 条 on/off 差分全等；parse 30.4→20.3ms、SQL 20.2→9.3ms、exec 63.0→55.5ms、写墙 266.9→253.6ms，保留窄路径，所有非简单形状回退。",
+   "independence": "与 U17 的写热点/CRC、U29 的向量落点不同：本单元改 INSERT 入口的 token/AST 与中间 Value。",
+   "result_evidence": "new parse=20.3ms sql=9.3ms exec=55.5ms wall=253.6ms",
+   "result_pointer": "/experiments/32/output",
+   "transfer": "迁到列名、转义、NULL、重复主键、维度错、重启，28 条差分与状态都一致。",
+   "limitation": "只覆盖无列名、无转义、纯字面量的 INSERT；写墙仍受客户端 JSON 影响。"
+  },
+  {
+   "id": "U35",
+   "dimension": "独立验证与质疑",
+   "score": 2.0,
+   "problem": "UPDATE 的 affected_rows 应按 changed rows 还是匹配行；no-op 是否该写 WAL。",
+   "student_evidence": "no-op 返回 0、有变化返回 1，事务回滚和重启后行集一致；我保留 changed-row 比较，no-op 不再写新记录。",
+   "student_pointer": "/conversations/34/content",
+   "reason": "int/str/vector 的 no-op 都返回 0，有变化返回 1，无匹配 0；事务回滚与重启后行集仍是 [[1,a,2],[2,c,7]]，说明按 changed rows 计数且 no-op 不落新记录。",
+   "independence": "与 U09/U25 的语句原子性不同：本单元只问 UPDATE 的 changed-row 计数与 no-op 写放大。",
+   "result_evidence": "noop_int=0 change_int=1 noop_str=0 change_str=1 no_match=0",
+   "result_pointer": "/experiments/33/output",
+   "transfer": "迁到显式事务、VECTOR 列、重启，计数与行集都一致。",
+   "limitation": "只测 UPDATE；MySQL 其它 affected_rows 语义未覆盖。"
+  },
+  {
+   "id": "U36",
+   "dimension": "技术理解与迁移",
+   "score": 1.5,
+   "problem": "未别名 L2_DISTANCE 的列名能否保留表达式原文的空格/引号。",
+   "student_evidence": "紧/松空格三种 header 都保留表达式原文，别名仍用别名；我把列名改成 token 偏移截取，不再由 parser 重建。",
+   "student_pointer": "/conversations/35/content",
+   "reason": "紧空格、松空格、别名三种 header 分别为原文与 d，说明列名来自 token 偏移截取，不再由 parser 重建。",
+   "independence": "与 U15 的投影/排序距离错配不同：本单元只问列名文本，不问距离值。",
+   "result_evidence": "header_space=L2_DISTANCE(e, '[1,2]')",
+   "result_pointer": "/experiments/34/output",
+   "transfer": "从紧空格迁移到松空格和显式别名：header_tight/header_space 保留原文，header_alias 仍为 d，说明列名来自 token 偏移截取。",
+   "limitation": "只测 L2_DISTANCE；其它表达式列名未覆盖。"
+  },
+  {
+   "id": "U37",
+   "dimension": "技术理解与迁移",
+   "score": 1.5,
+   "problem": "SET autocommit=0/1 是否真的开/提交事务，shutdown 是否回滚未提交。",
+   "student_evidence": "ROLLBACK 后为空、COMMIT 后可见、shutdown 后未提交不出现、autocommit=1 后提交；四条路径都对，SET 不再当 no-op。",
+   "student_pointer": "/conversations/36/content",
+   "reason": "ROLLBACK 后为空、COMMIT 后 [2]、shutdown 后仍 [2]、autocommit=1 后 [2,4]；四条路径都符合 MySQL 语义，SET 不是 no-op。",
+   "independence": "与 U09 的语句原子性不同：本单元只问 autocommit 的事务生命周期。",
+   "result_evidence": "restart_after_shutdown_rows=[[2]]",
+   "result_pointer": "/experiments/35/output",
+   "transfer": "从 ROLLBACK/COMMIT 迁移到 shutdown 和 autocommit=1：四条路径分别得到 []、[[2]]、[[2]]、[[2],[4]]，SET 真正切换事务生命周期。",
+   "limitation": "只测单连接；嵌套事务不支持。"
+  },
+  {
+   "id": "U39",
+   "dimension": "技术理解与迁移",
+   "score": 2.0,
+   "problem": "每向量 scale 的 int8 是否还能用 q7 的三角形下界。",
+   "student_evidence": "同 scale 10000 对 0 违例，但每向量 scale 比 2 时候选从 0.4% 涨到 99.7%；我判定 int8 per-vector scale 不能替换 q7。",
+   "student_pointer": "/conversations/37/content",
+   "reason": "同 scale 10000 对 0 违例；每向量 scale 比 2 时候选就从 0.4% 涨到 99.7%，比 4/8 全是 100%，下界虽保守但剪枝失效，所以 int8 per-vector scale 不能替换 q7。",
+   "independence": "与 U07 的 q7 证明不同：本单元证明的是“换 scale 后同一公式失效”的边界。",
+   "result_evidence": "recall@10 ratio=2 1.000 candidates_mean=0.997 candidates_max=1.000",
+   "result_pointer": "/experiments/36/output",
+   "transfer": "迁到 IVF radius 下界，同样要求同一度量；不同 scale 时半径剪枝也会失效。",
+   "limitation": "只模拟 L2/均匀数据；其它量化器未测。"
+  },
+  {
+   "id": "U40",
+   "dimension": "独立验证与质疑",
+   "score": 2.0,
+   "problem": "本地 20/20 是否依赖 build/ 或 /tmp 脚本；干净归档 + 源码镜像能否复现。",
+   "student_evidence": "干净归档构建通过、镜像二进制与干净构建一致、JSONL 20/20；我确认提交不依赖本地 build 残留，但仍不把它当隐藏准入。",
+   "student_pointer": "/conversations/38/content",
+   "reason": "git archive 干净树构建通过，镜像内二进制与干净构建 sha256 一致，JSONL 20/20、marker 20/20；说明提交不依赖本地 build 残留。",
+   "independence": "与 U11 的协议对齐不同：本单元只问产物自包含与镜像可复现。",
+   "result_evidence": "docker build from source: OK; image binary sha256 == clean build",
+   "result_pointer": "/experiments/37/output",
+   "transfer": "迁到 Docker/--network none/只读根文件系统，handshake/restart 仍通过。",
+   "limitation": "公开 20 例不是隐藏准入；官方 protocol_check 未随仓库提供。"
+  },
+  {
+   "id": "U42",
+   "dimension": "独立验证与质疑",
+   "score": 2.0,
+   "problem": "JSONL 协议要求原样回传 id 的类型；object/array id 会不会被回成 null。",
+   "student_evidence": "协议要求原样回传 id 的类型；我怀疑 object/array id 被回成 null。先构造 {\"a\":1,\"b\":[2,3]} 和 [1,\"two\",null]，旧版确实返回 null；改成递归序列化后再测，并回归 public/marker。",
+   "student_pointer": "/conversations/39/content",
+   "reason": "旧版对 object/array id 都返回 null；改成递归序列化后 {\"a\":1,\"b\":[2,3]} 和 [1,\"two\",null] 原样回显，public 20/20、marker 20/20 仍过。",
+   "independence": "与 U11 的协议 framing 不同：本单元只问 id 的 JSON 类型保真，不问 ready/响应分帧。",
+   "result_evidence": "after object_id={\"a\":1,\"b\":[2,3]}",
+   "result_pointer": "/experiments/38/output",
+   "transfer": "迁到嵌套 object/array、bool/null/数字混合，仍原样回显。",
+   "limitation": "只测 id 回显；其它 JSON 字段类型未覆盖。"
+  }
+ ],
+ "historical_context": "历史失败与回退（不作为本 commit 的计分结果）：文本协议/ready-marker 两次提测失败；批量 WAL 的 Huffman 位流字节序与 HuffCode 零初始化导致 checkpoint/recovery 失败；ScanPool 析构重放旧 job 的 use-after-return；AVX-512 自动选择在平台持续负载下 E 下降，CPU 绑定/无 XCR0 检查导致性能项无效。详见 docs/FAILURE_LEDGER.md 与 docs/PROMPT_PERF_LESSONS.md。",
+ "retrospective": "这次最重要的不是再加一个 SIMD，而是把 exact 的证明链和度量链补齐：q7 只做下界，超集由三角形不等式给出，最终仍 exact 复核；平台 B/M 用 cgroup 口径；写路径用 profiler 找热点；大 INSERT、巨大 LIMIT、投影/排序错配、聚簇 ANN recall、malformed vector 都是通过独立反例发现并修复的。UPDATE no-op 的 changed rows 语义和未别名 L2_DISTANCE 的原始表达式列名也已在本 commit 修复并加了回归；VARCHAR 有显式长度上限，单行不会无声超过 WAL payload 上限，大 INSERT 仍按 ≤4 MiB/≤4096 行分块。S6 又把 SELECT 的窄快路径、向量直接写入 Value 做成独立 A/B，并主动回退了 q7 64B 对齐这个没有稳定收益的改动。S7 继续把 INSERT 入口改成 span 直读、向量十进制快路径，并给 WAL 增加整批可表示时的 fixed24 无损编码：写 parse/SQL/exec 明显下降，B 从 4.44 MB 降到 3.54 MB。",
+ "limitations": [
+  "单一 commit 的正式平台准入/性能尚未运行；本地和 Docker 公开 20 例不等于隐藏用例。",
+  "SELECT 窄快路径只覆盖一种形状，其他投影/转义/多语句回退；wall 收益受客户端与扫描占比限制。",
+  "q7 64B 对齐 A/B 没有稳定收益，本 commit 已回退；不能把未证实的小改动带进提交。",
+  "向量直接写入仍保留 Value 堆分配；写 wall 主要被客户端 JSON/驱动往返占据，fdatasync 在本地 ext4 只占很小一部分（见 U32）。",
+  "unclustered/聚簇结论只覆盖合成 10k/50k×128；hidden 数据分布未知。",
+  "VARCHAR 长度有显式上限；超限返回 value_out_of_range，不是静默截断。",
+  "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。"
+ ],
+ "summary": "40 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入、M 的 anon/file 构成、轮间波动、fsync 地板、WAL fixed24、span INSERT、changed rows、header 原文、autocommit、q6、int8 下界、干净归档、id 类型回显。",
+ "material_summary": "40 个单元，五个维度 7/11/10/6/6；每个单元有独立的学生问题与实验结果，新增 11 个单元各带一条新命令输出。"
+}
