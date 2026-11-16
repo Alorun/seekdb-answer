@@ -4,7 +4,6 @@
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
-#include <malloc.h>
 #include <poll.h>
 #include <chrono>
 #include <string>
@@ -767,15 +766,6 @@ int main(int argc, char** argv) {
     g_numeric_errors = (m == "1" || m == "true" || m == "ok");
   }
   if (!parseArgs(argc, argv, opt)) return 0;
-
-  // Free heap pages back to the OS instead of keeping them resident for reuse.
-  // glibc normally raises its trim threshold (up to 32 MiB) as soon as a
-  // large mmap'd block is freed, so the ~1 MB of transient INSERT parsing /
-  // WAL-build buffers stays charged to the cgroup for the rest of the run.
-  // Setting the threshold explicitly disables that dynamic bump; the value is
-  // the glibc default, so this only freezes the policy.  Freeing already-live
-  // rows or index caches is unaffected — they are never freed in this run.
-  mallopt(M_TRIM_THRESHOLD, 128 * 1024);
 
   mvdb::Database db(opt.data_dir, opt.memory_rows);
   mvdb::Status st = db.open();
