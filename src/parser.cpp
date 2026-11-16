@@ -1004,14 +1004,16 @@ bool tryFastInsert(std::string_view s, Statement& out) {
       if (s[i] == '\'') {
         ++i;
         const size_t b = i;
-        while (i < s.size() && s[i] != '\'') {
-          if (s[i] == '\\') return false;  // escapes use the generic lexer
-          ++i;
-        }
-        if (i >= s.size()) return false;
-        cell.text = s.substr(b, i - b);
+        // memchr the closing quote instead of walking ~800 vector bytes one
+        // at a time; escapes still fall back to the generic lexer.
+        const char* base = s.data();
+        const void* close = std::memchr(base + b, '\'', s.size() - b);
+        if (close == nullptr) return false;
+        const size_t e = static_cast<size_t>(static_cast<const char*>(close) - base);
+        if (std::memchr(base + b, '\\', e - b) != nullptr) return false;
+        cell.text = s.substr(b, e - b);
         cell.quoted = true;
-        ++i;
+        i = e + 1;
       } else {
         const size_t b = i;
         if (s[i] == '-') ++i;

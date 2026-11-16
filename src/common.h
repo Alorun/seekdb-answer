@@ -418,8 +418,14 @@ bool decodeRow(const Schema& schema, const char* data, size_t size, Row& out,
 //     VARCHAR:   u8 mode (0 dictionary, 1 plain front-coded/RLE)
 //   VECTOR:      u8 mode (0 raw float32 stream, 1 Huffman high byte + 3 planes,
 //                          2 fixed24 sign+millionths: Huffman high byte + 2 planes)
+// `mags`, when non-null, carries the fixed24 magnitude (millionths, low 23
+// bits) of every vector component of `rows`, row-major, as produced by
+// parseVectorLiteralIntoMag().  It lets the encoder skip the per-component
+// round-trip verification it otherwise has to do; the caller must only pass
+// it for data the literal parser proved exactly representable.
 bool encodeInsertBatch(const Schema& schema, const std::vector<Row>& rows,
-                       std::string& out, std::string& err);
+                       std::string& out, std::string& err,
+                       const uint32_t* mags = nullptr);
 // Calls fn(pk, row) for every row in file order.  A false return from fn stops
 // iteration early and is not an error (the caller signals the stop itself).
 bool decodeInsertBatch(const Schema& schema, const char* data, size_t size,
@@ -443,6 +449,17 @@ bool parseVectorLiteral(std::string_view text, std::vector<float>& out,
 // to avoid the temporary vector plus the second copy into the Value.
 bool parseVectorLiteralInto(std::string_view text, float* out, size_t cap,
                             size_t& count, std::string& err);
+// Same, and additionally reports each component's magnitude in millionths
+// (the fixed24 representation) when - and only when - the literal is a plain
+// decimal vector in which every component has exactly six fractional digits
+// and |component| < 8.0.  For that shape float(mag)/1e6f reproduces the parsed
+// float bit for bit (checked exhaustively for every mantissa below 8e6), so
+// the WAL encoder can take its fixed24 path without re-verifying.
+// `mags_ok` is set to false when any component does not qualify; `mags` is
+// then undefined and callers must not use it.
+bool parseVectorLiteralIntoMag(std::string_view text, float* out, size_t cap,
+                               size_t& count, uint32_t* mags, bool& mags_ok,
+                               std::string& err);
 
 // Parse a decimal integer with overflow checking.
 bool parseBigInt(std::string_view text, int64_t& out, std::string& err);

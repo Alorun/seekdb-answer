@@ -1735,7 +1735,11 @@ Status Executor::collectMatchingPks(Table& table,
 // expects: BIGINT only from a bare integer, VARCHAR/VECTOR only from a quoted
 // string.  The fast SELECT/INSERT parsers reject escapes, so the quoted bytes
 // are already the lexer's unescaped value.
-Status convertRawCell(const Column& col, const RawCell& cell, Value& out) {
+// `mags`, when non-null, receives the fixed24 magnitudes for a VECTOR cell and
+// `mags_ok` is cleared if this literal is not exactly representable.  See
+// parseVectorLiteralIntoMag().
+Status convertRawCell(const Column& col, const RawCell& cell, Value& out,
+                      uint32_t* mags = nullptr, bool* mags_ok = nullptr) {
   if (col.type == ColumnType::BigInt) {
     if (cell.quoted) {
       return Status::Error(Err::kInvalidValue,
@@ -1771,8 +1775,14 @@ Status convertRawCell(const Column& col, const RawCell& cell, Value& out) {
   Value raw = Value::MakeVecRaw(col.length);
   size_t count = 0;
   std::string err;
-  if (!parseVectorLiteralInto(cell.text, raw.mutableVecData(), col.length,
-                              count, err)) {
+  const bool mags_wanted = mags != nullptr && mags_ok != nullptr;
+  const bool parsed =
+      mags_wanted ? parseVectorLiteralIntoMag(cell.text, raw.mutableVecData(),
+                                              col.length, count, mags,
+                                              *mags_ok, err)
+                  : parseVectorLiteralInto(cell.text, raw.mutableVecData(),
+                                           col.length, count, err);
+  if (!parsed) {
     return Status::Error(Err::kInvalidValue, err);
   }
   if (count != col.length) {
@@ -1820,6 +1830,18 @@ Status Executor::executeInsert(const InsertStmt& stmt) {
 
   const bool raw_mode = !stmt.raw_rows.empty();
   const size_t input_rows = raw_mode ? stmt.raw_rows.size() : stmt.rows.size();
+  // Fixed24 magnitudes for the vector column, row-major, filled by the literal
+  // parser so the WAL encoder does not have to re-derive and re-verify them.
+  const int vec_col = schema.vector_index;
+  const size_t vdim =
+      vec_col >= 0 ? schema.columns[static_cast<size_t>(vec_col)].length : 0;
+  // Bounded: pathological multi-million-row INSERTs must not pay a second
+  // component-sized allocation on top of the rows themselves.
+  std::vector<uint32_t> mags;
+  constexpr size_t kMagsMaxComponents = 1u << 20;
+  bool mags_ok = raw_mode && vec_col >= 0 && vdim > 0 && input_rows > 0 &&
+                 input_rows <= kMagsMaxComponents / vdim;
+  if (mags_ok) mags.resize(input_rows * vdim);
   std::vector<Row> rows;
   rows.reserve(input_rows);
   std::unordered_set<int64_t> batch_pks;
@@ -1834,6 +1856,7 @@ Status Executor::executeInsert(const InsertStmt& stmt) {
     return Status::Ok();
   };
   if (raw_mode) {
+    size_t row_ord = 0;
     for (const auto& raw : stmt.raw_rows) {
       if (raw.size() != col_map.size()) {
         return Status::Error(Err::kColumnCount,
@@ -1844,12 +1867,22 @@ Status Executor::executeInsert(const InsertStmt& stmt) {
       Row row;
       row.values.resize(schema.columns.size());
       for (size_t i = 0; i < raw.size(); ++i) {
+        uint32_t* mslot = nullptr;
+        bool cell_ok = true;
+        if (mags_ok && col_map[i] == vec_col) {
+          mslot = mags.data() + row_ord * vdim;
+        }
         Status st = convertRawCell(schema.columns[col_map[i]], raw[i],
-                                   row.values[col_map[i]]);
+                                   row.values[col_map[i]], mslot,
+                                   mslot ? &cell_ok : nullptr);
         if (!st.ok()) return st;
+        // One non-representable literal disables the trusted encoder path for
+        // the whole statement; `mags` is then never read.
+        if (mslot != nullptr && !cell_ok) mags_ok = false;
       }
       Status st = finish_row(std::move(row));
       if (!st.ok()) return st;
+      ++row_ord;
     }
   } else {
     for (const auto& raw : stmt.rows) {
@@ -1920,7 +1953,10 @@ Status Executor::executeInsert(const InsertStmt& stmt) {
     std::string batch;
     batch.resize(44);  // WAL header, patched after the payload is encoded
     batch.reserve(44 + chunk_bytes + chunk.size() * 16);
-    if (!encodeInsertBatch(schema, chunk, batch, encode_err)) {
+    const uint32_t* chunk_mags =
+        (mags_ok && vec_col >= 0 && vdim > 0) ? mags.data() + row_idx * vdim
+                                              : nullptr;
+    if (!encodeInsertBatch(schema, chunk, batch, encode_err, chunk_mags)) {
       return Status::Error(Err::kInvalidValue,
                            "cannot encode insert batch: " + encode_err);
     }

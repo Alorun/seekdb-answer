@@ -431,9 +431,19 @@ struct ByteBitReader {
   }
 };
 
-size_t commonPrefix(const std::string& a, const std::string& b) {
-  size_t n = std::min(a.size(), b.size());
+size_t commonPrefix(std::string_view a, std::string_view b) {
+  const size_t n = std::min(a.size(), b.size());
   size_t i = 0;
+  while (i + 8 <= n) {
+    uint64_t x = 0, y = 0;
+    std::memcpy(&x, a.data() + i, sizeof(x));
+    std::memcpy(&y, b.data() + i, sizeof(y));
+    const uint64_t diff = x ^ y;
+    if (diff != 0) {
+      return i + static_cast<size_t>(__builtin_ctzll(diff) >> 3);
+    }
+    i += 8;
+  }
   while (i < n && a[i] == b[i]) ++i;
   return i;
 }
@@ -467,15 +477,19 @@ bool encodeStringColumn(const std::vector<Row>& rows, int col, std::string& out)
   std::vector<uint32_t> prefixes(count);
   std::vector<uint32_t> suffix_lens(count);
   std::vector<uint8_t> suffix_rle(count);
-  std::vector<std::string> dict;
-  std::unordered_map<std::string, uint32_t> dict_index;
+  // Views into the row payloads (stable for the whole encode), not owned
+  // copies: this runs once per VARCHAR column per INSERT batch and the
+  // temporary std::string used to cost one allocation per cell.
+  std::vector<std::string_view> dict;
+  std::unordered_map<std::string_view, uint32_t> dict_index;
   dict_index.reserve(count);
 
   uint64_t plain_cost = 1;  // mode byte
-  std::string prev;
+  std::string_view prev;
   bool has_prev = false;
   for (size_t i = 0; i < count; ++i) {
-    std::string s(rows[i].values[static_cast<size_t>(col)].str());
+    const std::string_view s =
+        rows[i].values[static_cast<size_t>(col)].str();
     auto it = dict_index.find(s);
     uint32_t idx = 0;
     if (it == dict_index.end()) {
@@ -495,20 +509,20 @@ bool encodeStringColumn(const std::vector<Row>& rows, int col, std::string& out)
     suffix_rle[i] = use_rle;
     plain_cost += varintSize(prefix) + varintSize(suffix) + 1 +
                   (use_rle ? rle : suffix);
-    prev = std::move(s);
+    prev = s;
     has_prev = true;
   }
 
   uint64_t dict_cost = varintSize(dict.size());
-  for (const std::string& s : dict) dict_cost += varintSize(s.size()) + s.size();
+  for (const std::string_view s : dict) dict_cost += varintSize(s.size()) + s.size();
   for (size_t i = 0; i < count; ++i) dict_cost += varintSize(dict_index_of[i]);
 
   if (dict_cost + 1 < plain_cost && dict.size() < count) {
     out.push_back(1);
     appendVarint(out, dict.size());
-    for (const std::string& s : dict) {
+    for (const std::string_view s : dict) {
       appendVarint(out, s.size());
-      out.append(s);
+      out.append(s.data(), s.size());
     }
     for (size_t i = 0; i < count; ++i) appendVarint(out, dict_index_of[i]);
     return true;
@@ -516,7 +530,7 @@ bool encodeStringColumn(const std::vector<Row>& rows, int col, std::string& out)
 
   out.push_back(0);
   for (size_t i = 0; i < count; ++i) {
-    std::string s(rows[i].values[static_cast<size_t>(col)].str());
+    const std::string_view s = rows[i].values[static_cast<size_t>(col)].str();
     appendVarint(out, prefixes[i]);
     appendVarint(out, suffix_lens[i]);
     out.push_back(static_cast<char>(suffix_rle[i]));
@@ -632,11 +646,10 @@ float fixed24Value(uint32_t magnitude, bool negative) {
 }
 
 bool encodeVectorBlock(const Schema& schema, const std::vector<Row>& rows, int col,
-                       size_t dim, std::string& out, std::string& err) {
+                       size_t dim, std::string& out, std::string& err,
+                       const uint32_t* mags) {
   (void)schema;
   const size_t n = rows.size() * dim;
-  std::vector<uint32_t> bits(n);
-  uint32_t hist[256] = {};
   // Mode 2 is attempted in the same pass as the regular block collection:
   // 24-bit fixed point (sign + millionths).  It is used only when every
   // component round-trips bitwise and its Huffman-coded high bytes do not
@@ -652,6 +665,31 @@ bool encodeVectorBlock(const Schema& schema, const std::vector<Row>& rows, int c
     low24.resize(n);
   }
   size_t k = 0;
+  if (mags != nullptr) {
+    // Trusted fast path: the literal parser already proved every component is
+    // representable as sign + millionths, so this only materialises the three
+    // byte planes and the high-byte histogram.  bits[]/hist[] are only needed
+    // by the fallback codec and are built there instead (this used to be a
+    // second full pass over 12800 components per batch).
+    for (const Row& row : rows) {
+      std::span<const float> v = row.values[static_cast<size_t>(col)].vec();
+      if (v.size() != dim) {
+        err = "vector dimension mismatch in batch";
+        return false;
+      }
+      for (size_t j = 0; j < dim; ++j, ++k) {
+        uint32_t fb = 0;
+        std::memcpy(&fb, &v[j], sizeof(fb));
+        const uint32_t mag = mags[k] & 0x7FFFFFu;
+        const uint8_t hi = static_cast<uint8_t>(
+            ((fb >> 31) << 7) | ((mag >> 16) & 0x7Fu));
+        hi24[k] = hi;
+        mid24[k] = static_cast<uint8_t>((mag >> 8) & 0xFFu);
+        low24[k] = static_cast<uint8_t>(mag & 0xFFu);
+        ++hist24[hi];
+      }
+    }
+  } else {
   for (const Row& row : rows) {
     std::span<const float> v = row.values[static_cast<size_t>(col)].vec();
     if (v.size() != dim) {
@@ -662,8 +700,6 @@ bool encodeVectorBlock(const Schema& schema, const std::vector<Row>& rows, int c
       const size_t i = k++;
       uint32_t b = 0;
       std::memcpy(&b, &f, sizeof(b));
-      bits[i] = b;
-      ++hist[b >> 24];
       if (!fixed_ok) continue;
       const bool negative = (b >> 31) != 0;
       const double magnitude = std::fabs(static_cast<double>(f));
@@ -694,6 +730,7 @@ bool encodeVectorBlock(const Schema& schema, const std::vector<Row>& rows, int c
       ++hist24[hi24[i]];
     }
   }
+  }
 
   if (fixed_ok) {
     HuffCode hc24{};
@@ -708,6 +745,13 @@ bool encodeVectorBlock(const Schema& schema, const std::vector<Row>& rows, int c
         const size_t size_pos = out.size();
         out.append(4, '\0');
         const size_t start = out.size();
+        // buildHuffman() caps every code at 24 bits, so the stream can never
+        // exceed 3 bytes per symbol.  Booking that up front lets the writer
+        // store through a raw pointer instead of paying std::string's
+        // capacity check on every emitted byte.
+        out.resize(start + n * 3 + 8);
+        char* bit_dst = out.data() + start;
+        size_t wpos = 0;
         uint64_t acc = 0;
         int nbits = 0;
         for (size_t i = 0; i < n; ++i) {
@@ -717,20 +761,23 @@ bool encodeVectorBlock(const Schema& schema, const std::vector<Row>& rows, int c
           nbits += len;
           if (nbits >= 32) {
             nbits -= 32;
-            uint32_t word = static_cast<uint32_t>(acc >> nbits);
-            out.push_back(static_cast<char>((word >> 24) & 0xFF));
-            out.push_back(static_cast<char>((word >> 16) & 0xFF));
-            out.push_back(static_cast<char>((word >> 8) & 0xFF));
-            out.push_back(static_cast<char>(word & 0xFF));
+            const uint32_t word = static_cast<uint32_t>(acc >> nbits);
+            bit_dst[wpos++] = static_cast<char>((word >> 24) & 0xFF);
+            bit_dst[wpos++] = static_cast<char>((word >> 16) & 0xFF);
+            bit_dst[wpos++] = static_cast<char>((word >> 8) & 0xFF);
+            bit_dst[wpos++] = static_cast<char>(word & 0xFF);
             acc &= (nbits == 0) ? 0ull : ((1ull << nbits) - 1ull);
           }
         }
         while (nbits >= 8) {
           nbits -= 8;
-          out.push_back(static_cast<char>((acc >> nbits) & 0xFF));
+          bit_dst[wpos++] = static_cast<char>((acc >> nbits) & 0xFF);
         }
-        if (nbits > 0) out.push_back(static_cast<char>((acc << (8 - nbits)) & 0xFF));
-        const size_t coded = out.size() - start;
+        if (nbits > 0) {
+          bit_dst[wpos++] = static_cast<char>((acc << (8 - nbits)) & 0xFF);
+        }
+        out.resize(start + wpos);
+        const size_t coded = wpos;
         if (coded > 0xFFFFFFFFull) {
           err = "batch huffman block too large";
           return false;
@@ -751,6 +798,21 @@ bool encodeVectorBlock(const Schema& schema, const std::vector<Row>& rows, int c
     }
   }
 
+  // Raw / mode-1 fallback: collect the float32 words and their high-byte
+  // histogram now; the fast path above never needs them.
+  std::vector<uint32_t> bits(n);
+  uint32_t hist[256] = {};
+  k = 0;
+  for (const Row& row : rows) {
+    std::span<const float> v = row.values[static_cast<size_t>(col)].vec();
+    for (float f : v) {
+      uint32_t b = 0;
+      std::memcpy(&b, &f, sizeof(b));
+      bits[k] = b;
+      ++hist[b >> 24];
+      ++k;
+    }
+  }
   HuffCode hc{};
   bool use_huffman = n > 0 && buildHuffman(hist, hc);
   if (use_huffman) {
@@ -1083,7 +1145,8 @@ bool decodeVectorBlock(BatchReader& r, const Schema& schema, int col, size_t cou
 }  // namespace
 
 bool encodeInsertBatch(const Schema& schema, const std::vector<Row>& rows,
-                       std::string& out, std::string& err) {
+                       std::string& out, std::string& err,
+                       const uint32_t* mags) {
   if (rows.empty()) {
     err = "cannot encode an empty insert batch";
     return false;
@@ -1127,7 +1190,7 @@ bool encodeInsertBatch(const Schema& schema, const std::vector<Row>& rows,
     }
   }
   if (vec_col >= 0) {
-    return encodeVectorBlock(schema, rows, vec_col, dim, out, err);
+    return encodeVectorBlock(schema, rows, vec_col, dim, out, err, mags);
   }
   return true;
 }
@@ -1324,6 +1387,35 @@ bool parseSimpleDecimal(const char* begin, const char* end, const char*& next,
 }
 }  // namespace
 
+// One integer digit, '.', and exactly six fractional digits: the shape of
+// every component of the benchmark's 10k x 128 six-decimal vectors.  Reading
+// the digit group as one word and validating/converting it with SWAR is about
+// twice as fast as the byte-at-a-time loop below, and produces the identical
+// mantissa.
+// `q` must have at least 8 readable bytes; q[0..5] are the six fractional
+// digits.  Only those six bytes are inspected, so the bytes after them may be
+// the separator or anything else.
+static inline bool sixDecimalGroup(const char* q, uint32_t& out) {
+  uint64_t w;
+  std::memcpy(&w, q, sizeof(w));
+  constexpr uint64_t kSixBytes = 0x0000ffffffffffffull;
+  constexpr uint64_t kAsciiHigh6 = 0x0000303030303030ull;
+  constexpr uint64_t kHigh6 = 0x0000f0f0f0f0f0f0ull;
+  if ((w & kHigh6) != kAsciiHigh6) return false;
+  const uint64_t d = w & kSixBytes & 0x0f0f0f0f0f0f0full;
+  // Bytes 0..5 must each be <= 9 (0x0a..0x0f would be ':'..'?').
+  if (((d + 0x0000767676767676ull) & 0x0000808080808080ull) != 0) {
+    return false;
+  }
+  out = static_cast<uint32_t>((d & 0xfull) * 100000u +
+                              ((d >> 8) & 0xfull) * 10000u +
+                              ((d >> 16) & 0xfull) * 1000u +
+                              ((d >> 24) & 0xfull) * 100u +
+                              ((d >> 32) & 0xfull) * 10u +
+                              ((d >> 40) & 0xfull));
+  return true;
+}
+
 // Strict fast path for the plain-decimal vectors used by the benchmark
 // (`[-0.123456,0.234567,...]`, no spaces, no exponent).  It computes exactly
 // the same `mant / 10^frac` double and narrows to float32 like the generic
@@ -1332,7 +1424,8 @@ bool parseSimpleDecimal(const char* begin, const char* end, const char*& next,
 // the original parser handles it, including all error messages.
 template <class Sink>
 static inline bool tryParsePlainVector(std::string_view body, Sink&& sink,
-                                       size_t& count) {
+                                       size_t& count, uint32_t* mags,
+                                       bool* mags_ok, size_t mags_cap) {
   static constexpr double kPow10[] = {
       1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,
       1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18};
@@ -1345,6 +1438,40 @@ static inline bool tryParsePlainVector(std::string_view body, Sink&& sink,
     return true;
   }
   while (p < end) {
+    // The SWAR helper reads 8 bytes starting at q + 2, so require q + 10 <=
+    // end; the last component of a literal therefore takes the general path
+    // (one component per vector, so this costs nothing measurable).
+    if (end - p >= 10) {
+      const char* q = p;
+      const bool fneg = (*q == '-');
+      if (fneg) ++q;
+      uint32_t f6 = 0;
+      if (q + 10 <= end && q[1] == '.' && q[0] >= '0' && q[0] <= '9' &&
+          sixDecimalGroup(q + 2, f6)) {
+        const char* nx = q + 8;
+        if (nx == end || *nx == ',') {
+          const uint32_t m = static_cast<uint32_t>(q[0] - '0') * 1000000u + f6;
+          if (n >= 1024) return false;
+          const double fd = (m <= 8000000u) ? static_cast<double>(m) * 1e-6
+                                            : static_cast<double>(m) / 1e6;
+          if (mags != nullptr) {
+            // Never write past the caller's dimension; an over-long literal
+            // is rejected by the caller's dimension check below.
+            if (m <= 8000000u && n < mags_cap) {
+              mags[n] = m;
+            } else {
+              *mags_ok = false;
+            }
+          }
+          tmp[n++] = static_cast<float>(fneg ? -fd : fd);
+          p = nx;
+          if (p == end) break;
+          ++p;  // ','
+          if (p == end) return false;
+          continue;
+        }
+      }
+    }
     bool neg = false;
     if (*p == '-') {
       neg = true;
@@ -1380,6 +1507,16 @@ static inline bool tryParsePlainVector(std::string_view body, Sink&& sink,
             ? static_cast<double>(mant) * 1e-6
             : static_cast<double>(mant) / kPow10[frac];
     if (n >= 1024) return false;
+    if (mags != nullptr) {
+      // Exactly the branch above that proved bit-exact for fixed24: six
+      // fractional digits and a mantissa for which float(mant)/1e6f equals
+      // this narrowing (verified exhaustively for every mantissa < 8e6).
+      if (frac == 6 && mant <= 8000000ull && n < mags_cap) {
+        mags[n] = static_cast<uint32_t>(mant);
+      } else {
+        *mags_ok = false;
+      }
+    }
     tmp[n++] = static_cast<float>(neg ? -d : d);
     if (p == end) break;
     if (*p != ',') return false;
@@ -1393,7 +1530,9 @@ static inline bool tryParsePlainVector(std::string_view body, Sink&& sink,
 
 template <class Sink>
 bool parseVectorLiteralImpl(std::string_view text, size_t cap, Sink&& sink,
-                            size_t& count, std::string& err) {
+                            size_t& count, std::string& err,
+                            uint32_t* mags = nullptr,
+                            bool* mags_ok = nullptr) {
   // Parse in place: the SQL literal and every JSON request vector are already
   // owned by a token, so trimming and slicing into fresh std::strings only
   // copied ~700 bytes per query (and per row on bulk INSERT).
@@ -1406,10 +1545,11 @@ bool parseVectorLiteralImpl(std::string_view text, size_t cap, Sink&& sink,
     return false;
   }
   std::string_view body = s.substr(1, s.size() - 2);
-  if (tryParsePlainVector(body, sink, count)) {
+  if (tryParsePlainVector(body, sink, count, mags, mags_ok, cap)) {
     (void)cap;
     return true;
   }
+  if (mags_ok != nullptr) *mags_ok = false;
   count = 0;
   size_t pos = 0;
   while (pos < body.size()) {
@@ -1508,6 +1648,19 @@ bool parseVectorLiteralInto(std::string_view text, float* out, size_t cap,
         if (n < cap) out[n] = f;
       },
       count, err);
+}
+
+bool parseVectorLiteralIntoMag(std::string_view text, float* out, size_t cap,
+                               size_t& count, uint32_t* mags, bool& mags_ok,
+                               std::string& err) {
+  count = 0;
+  mags_ok = true;
+  return parseVectorLiteralImpl(
+      text, cap,
+      [&](float f, size_t n) {
+        if (n < cap) out[n] = f;
+      },
+      count, err, mags, &mags_ok);
 }
 
 }  // namespace mvdb
