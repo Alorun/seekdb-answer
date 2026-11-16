@@ -708,81 +708,6 @@ bool quantizeQuery7(const Quant8Cache& c, const std::vector<float>& q,
   return true;
 }
 
-// Exact TopK over one filter value's contiguous q7 code block.
-//
-// The code-space k-th distance gives a provable superset of the true top-k:
-// let E = max_row_err + query_err and d_k the k-th smallest code-space
-// distance.  Every true top-k row r satisfies
-//   ||v_r-q|| <= ||v_(k)-q|| <= scale*sqrt(d_k) + E,
-// and the triangle bound also gives scale*sqrt(d_r) <= ||v_r-q|| + E,
-// hence d_r <= (sqrt(d_k) + 2E/scale)^2.  Evaluating exactly only that pool
-// returns the same TopK as a full exact scan while touching a few dozen rows.
-__attribute__((target("avx2,fma"))) void scanQ7BlockExact(
-    const uint8_t* codes, const uint32_t* rows, size_t n,
-    const float* const* vecp, const int64_t* pks, size_t dim, const float* q,
-    const Q7Query& qq, const Quant8Cache& qc, size_t k,
-    std::vector<RawHit>& out) {
-  out.clear();
-  if (k == 0 || n == 0) return;
-  const int8_t* qcodes = qq.codes.data();
-  const int32_t* pv = qc.pv.data();
-  const int32_t cq = qq.cq;
-  // Reuse a per-thread scratch buffer: value-initializing 20 KB of int32
-  // per query was pure overhead, and the q7 pass writes every element.
-  static thread_local std::vector<int32_t> dq;
-  if (dq.size() < n) dq.resize(n);
-  TopK qtop(k);
-  size_t i = 0;
-  for (; i + 4 <= n; i += 4) {
-    int32_t dots[4];
-    q7Dot4(codes + i * dim, codes + (i + 1) * dim, codes + (i + 2) * dim,
-           codes + (i + 3) * dim, qcodes, dim, dots);
-    const int32_t d0 = pv[rows[i]] + cq - 2 * dots[0];
-    const int32_t d1 = pv[rows[i + 1]] + cq - 2 * dots[1];
-    const int32_t d2 = pv[rows[i + 2]] + cq - 2 * dots[2];
-    const int32_t d3 = pv[rows[i + 3]] + cq - 2 * dots[3];
-    dq[i] = d0;
-    dq[i + 1] = d1;
-    dq[i + 2] = d2;
-    dq[i + 3] = d3;
-    qtop.push(RawHit{static_cast<double>(d0), pks[rows[i]], i});
-    qtop.push(RawHit{static_cast<double>(d1), pks[rows[i + 1]], i + 1});
-    qtop.push(RawHit{static_cast<double>(d2), pks[rows[i + 2]], i + 2});
-    qtop.push(RawHit{static_cast<double>(d3), pks[rows[i + 3]], i + 3});
-  }
-  for (; i < n; ++i) {
-    const int32_t d = pv[rows[i]] + cq - 2 * q7Dot(codes + i * dim, qcodes, dim);
-    dq[i] = d;
-    qtop.push(RawHit{static_cast<double>(d), pks[rows[i]], i});
-  }
-  double thr2 = std::numeric_limits<double>::infinity();
-  if (qtop.full()) {
-    const double E = static_cast<double>(qc.max_err) + qq.error_norm;
-    const double inv = 1.0 / static_cast<double>(qc.scale);
-    const double t = std::sqrt(std::max(0.0, qtop.worstDistance())) +
-                     2.0 * E * inv;
-    thr2 = t * t * (1.0 + 1e-6) + 1e-12;
-  }
-  static thread_local std::vector<uint32_t> pool;
-  pool.clear();
-  if (pool.capacity() < 64) pool.reserve(64);
-  for (size_t j = 0; j < n; ++j) {
-    if (static_cast<double>(dq[j]) <= thr2) pool.push_back(static_cast<uint32_t>(j));
-  }
-  for (uint32_t j : pool) {
-    const float* a = vecp[rows[j]];
-    for (size_t cc = 0; cc < dim; cc += 16) {
-      _mm_prefetch(reinterpret_cast<const char*>(a + cc), _MM_HINT_T0);
-    }
-  }
-  TopK top(k);
-  for (uint32_t j : pool) {
-    const uint32_t vi = rows[j];
-    top.push(RawHit{l2Avx2DoubleSq(vecp[vi], q, dim), pks[vi], vi});
-  }
-  top.drain(out);
-}
-
 // Exact q7 scan with a triangle-inequality lower bound.
 //
 // The q7 pass finds the code-space k-th distance d_k.  The triangle bound
@@ -1351,58 +1276,6 @@ Quant8Cache* ensureQuant8(Table& table, int col) {
   buildQuant8(table, col);
   it = table.quant8_caches.find(col);
   return it == table.quant8_caches.end() ? nullptr : &it->second;
-}
-
-// Group the q7 codes by every equality-filter value.  A filtered TopK visits a
-// small subset whose rows are strided by the number of distinct values, so the
-// table-wide code matrix gives one cache line per 6.4 KB.  Copying each value's
-// rows into one contiguous block turns that into a sequential stream; the
-// blocks partition the rows, so the total extra memory is one code matrix.
-FilterCodes* ensureFilterCodes(Table& table, int col, int vec_col) {
-  Quant8Cache* q8 = ensureQuant8(table, vec_col);
-  if (q8 == nullptr || !q8->valid || q8->dim == 0 ||
-      q8->codes.size() != table.vector_cache.pks.size() * q8->dim) {
-    return nullptr;
-  }
-  auto it = table.filter_codes.find(col);
-  if (it != table.filter_codes.end() && it->second.valid &&
-      it->second.version == table.row_version &&
-      it->second.vec_col == vec_col && it->second.dim == q8->dim) {
-    return &it->second;
-  }
-  FilterCache* fc = ensureFilterCache(table, col);
-  if (fc == nullptr || fc->version != table.row_version) return nullptr;
-  FilterCodes c;
-  c.version = table.row_version;
-  c.col = col;
-  c.vec_col = vec_col;
-  c.dim = q8->dim;
-  const size_t rows = table.vector_cache.pks.size();
-  auto copy_list = [&](const std::vector<uint32_t>& idx,
-                       std::vector<uint8_t>& block) {
-    block.resize(idx.size() * c.dim);
-    for (size_t j = 0; j < idx.size(); ++j) {
-      if (idx[j] >= rows) continue;
-      std::memcpy(block.data() + j * c.dim, q8->codes.data() +
-                                                static_cast<size_t>(idx[j]) * c.dim,
-                  c.dim);
-    }
-  };
-  c.str.reserve(fc->str_idx.size());
-  for (const auto& [key, idx] : fc->str_idx) {
-    std::vector<uint8_t> block;
-    copy_list(idx, block);
-    c.str.emplace(key, std::move(block));
-  }
-  c.num.reserve(fc->num_idx.size());
-  for (const auto& [key, idx] : fc->num_idx) {
-    std::vector<uint8_t> block;
-    copy_list(idx, block);
-    c.num.emplace(key, std::move(block));
-  }
-  c.valid = true;
-  table.filter_codes[col] = std::move(c);
-  return &table.filter_codes[col];
 }
 
 // ann-mode q7 IVF index.  It reuses the existing code matrix (no second copy)
@@ -2736,54 +2609,20 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
             if (idx_list != nullptr) {
               if (simple_proj) {
                 // No row payload is needed: scan the dense vector cache and
-                // keep (distance, pk) only.  Prefer the value's contiguous q7
-                // block: it streams sequentially and re-evaluates only the
-                // rows whose triangle-inequality bound can still enter the
-                // top-k, so the result is identical to the exact loop below.
-                bool block_done = false;
-                static const bool allow_block =
-                    std::getenv("MVDB_NO_FILTER_BLOCK") == nullptr;
-                if (allow_block && use_avx2) {
-                  Quant8Cache* q8 = ensureQuant8(*table, orders[0].col);
-                  Q7Query qq;
-                  if (q8 != nullptr && q8->valid && q8->dim == vc.dim &&
-                      q8->codes.size() == vc.pks.size() * vc.dim &&
-                      quantizeQuery7(*q8, orders[0].query, qq)) {
-                    FilterCodes* fcodes = ensureFilterCodes(
-                        *table, conds[0].col, orders[0].col);
-                    if (fcodes != nullptr) {
-                      const std::vector<uint8_t>* block = nullptr;
-                      if (conds[0].literal.type == Value::Type::Str) {
-                        auto bit = fcodes->str.find(
-                            std::string(conds[0].literal.str()));
-                        if (bit != fcodes->str.end()) block = &bit->second;
-                      } else if (conds[0].literal.type == Value::Type::Int) {
-                        auto bit = fcodes->num.find(conds[0].literal.i);
-                        if (bit != fcodes->num.end()) block = &bit->second;
-                      }
-                      if (block != nullptr && idx_list->size() <= 4096 &&
-                          block->size() == idx_list->size() * vc.dim) {
-                        scanQ7BlockExact(block->data(), idx_list->data(),
-                                         idx_list->size(), vc.vecp.data(),
-                                         vc.pks.data(), vc.dim, q, qq, *q8, k,
-                                         fast_hits);
-                        have_fast_hits = true;
-                        block_done = true;
-                      }
-                    }
-                  }
+                // keep (distance, pk) only.  A filtered value matches ~n/50
+                // rows, so evaluating all of them with the exact float kernel
+                // is both cheap and exactly the same top-k the general path
+                // computes; an earlier q7 duplicate matrix for this case cost
+                // 1.28 MB and did not make the query faster.
+                TopK top(k);
+                for (uint32_t vi : *idx_list) {
+                  if (vi >= vc.pks.size()) continue;
+                  const float* a = vc.vecp[vi];
+                  const double d = l2Avx2DoubleSq(a, q, vc.dim);
+                  top.push(RawHit{d, vc.pks[vi], vi});
                 }
-                if (!block_done) {
-                  TopK top(k);
-                  for (uint32_t vi : *idx_list) {
-                    if (vi >= vc.pks.size()) continue;
-                    const float* a = vc.vecp[vi];
-                    const double d = l2Avx2DoubleSq(a, q, vc.dim);
-                    top.push(RawHit{d, vc.pks[vi], vi});
-                  }
-                  top.drain(fast_hits);
-                  have_fast_hits = true;
-                }
+                top.drain(fast_hits);
+                have_fast_hits = true;
               } else {
                 for (uint32_t vi : *idx_list) {
                   if (vi >= vc.pks.size()) continue;
