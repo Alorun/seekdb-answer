@@ -53,6 +53,7 @@ step "recall clustered" python3 tests/run_recall.py --bin "$BIN" --rows 5000 --q
 step "filter differential 190" python3 tests/run_filter_diff.py
 step "marker cases 20" python3 tests/run_marker_cases.py
 step "semantics fixes" python3 tests/run_semantics_fixes.py
+step "json escape / typed id" python3 tests/run_json_escape_diff.py --bin "$BIN"
 step "checkpoint 10k/50k" python3 tests/run_checkpoint.py --bin "$BIN"
 step "crash fuzz 150" python3 tests/run_crash_fuzz.py "$BIN" --iterations 150 --seed "$SEED"
 step "ann clustered 3-phase" python3 tests/run_ann_clustered.py --bin "$BIN"

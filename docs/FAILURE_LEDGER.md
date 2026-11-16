@@ -74,6 +74,8 @@ Prompt结果无效、待复核、超出平台0–100范围或缺少材料摘要�
 | D23 | 2026-11-16 S13 开发 | `mallopt(M_TRIM_THRESHOLD,128KiB)` 把 M 降约 0.3 MB，但 A/B 里 T_write 和 T_query 同时变差 | 每语句大量 malloc/free 后都触发 brk/madvise 与重新缺页，省下的内存不值这个 CPU | 回退该 mallopt，改为"第一次读前 `malloc_trim(0)` 一次"；M 仍降 0.32 MB 且 T 不变 | 5 轮交错 A/B、full_gate、ASAN |
 | D24 | 2026-11-16 S13 | 删除 FilterCodes 连续块后 M 降 1.2 MB，但 mixed T_query 在两次 A/B 里分别 +3.1% / +6.7% | 过滤值只匹配约 n/50 行，直接对 200 行做 double 精确扫描比 q7 块 + 下界再精排慢 2-4 µs/查询 | 恢复 FilterCodes，但让块自带 vector-cache 行号（只多 40 KB），一次哈希查找即可；A/B 回到 T_query 平价、E 不降 | 2102 条响应差分、190 项 filter diff、官方 20 例、ASAN |
 | D25 | 2026-11-16 S13 | 零拷贝 JSON 的 `Value::view()` 初版把解析位置留在闭引号后，转义字符串路径会错位 | `string()` 必须回到开引号重新解析 | 回到开引号并加 15 条 JSON 转义差分（\\t \\n \\\\ \\" \\uXXXX、裸 UTF-8、裸控制字符、空/缺失 sql、坏 JSON、object id） | 差分全等、ASAN、官方 20 例 |
+| D26 | 2026-11-16 S13 自测 | 带 JSON 转义的请求（SQL 里有 `\\`/`\"`/`\t`，如值含反斜杠或引号）返回 `invalid_json: expected string`，或插入后查询为空；同一请求旧版正常 | 零拷贝路径 `stringValue()` 在需要反转义时把 `p` 停在开引号之后，再调用 `string()`（它要求 `p` 指向开引号自身） | `p = begin - 1` 后重新进入 `string()`；新增 `tests/run_json_escape_diff.py` 固化 28 种转义/边界长度/typed id/畸形请求，并入 full_gate | 760+ 条差分 0 差异、该新测试 PASS、官方 20/20（含 ASAN）、full_gate 14/14 |
+
 
 ## 3. 每次修改后的强制检查
 

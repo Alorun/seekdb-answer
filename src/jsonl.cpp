@@ -170,7 +170,10 @@ struct Parser {
       return true;
     }
     v.is_view = false;
-    p = begin;
+    // Re-enter string() at the opening quote: it validates and consumes the
+    // quote itself, so leaving p just past it makes the escaped path fail
+    // with "expected string" for any request that contains a JSON escape.
+    p = begin - 1;
     return string(v.s);
   }
 
