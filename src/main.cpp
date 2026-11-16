@@ -445,7 +445,7 @@ bool drainLineBuffer(std::string& buffer, mvdb::Executor& exec,
 
 std::string jsonId(const mvdb::jsonl::Value& id) {
   using mvdb::jsonl::Value;
-  if (id.type == Value::Type::String) return mvdb::jsonl::quote(id.s);
+  if (id.type == Value::Type::String) return mvdb::jsonl::quote(id.view());
   if (id.type == Value::Type::Number) {
     return id.is_int ? mvdb::jsonl::number(id.i) : mvdb::jsonl::number(id.d);
   }
@@ -554,7 +554,7 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
   };
 
   // Returns 0 = continue, 1 = shutdown, 2 = fatal.
-  auto process = [&](const std::string& line) -> int {
+  auto process = [&](std::string_view line) -> int {
     if (line.empty()) return 0;
     auto tp0 = clockNow();
     mvdb::jsonl::Value req;
@@ -574,7 +574,7 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
            ",\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"missing op\"}}\n");
       return 0;
     }
-    if (op->s == "shutdown") {
+    if (op->view() == "shutdown") {
       if (!flushGroup()) return 2;
       exec.shutdown();
       mvdb::Status cp = db.checkpointIfNeeded(opt.checkpoint_bytes);
@@ -582,7 +582,7 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
       writeOut("{\"id\":" + idtxt + ",\"ok\":true}\n");
       return 1;
     }
-    if (op->s != "execute") {
+    if (op->view() != "execute") {
       emit("{\"id\":" + idtxt +
            ",\"ok\":false,\"error\":{\"code\":\"unsupported_op\",\"message\":\"unsupported op\"}}\n");
       return 0;
@@ -593,7 +593,7 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
            ",\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"missing sql\"}}\n");
       return 0;
     }
-    mvdb::ParseResult pr = mvdb::parseStatement(sqlv->s);
+    mvdb::ParseResult pr = mvdb::parseStatement(sqlv->view());
     if (pr.kind == mvdb::ParseResult::Kind::NeedMore) {
       emit("{\"id\":" + idtxt +
            ",\"ok\":false,\"error\":{\"code\":\"syntax_error\",\"message\":\"incomplete statement\"}}\n");
@@ -611,8 +611,8 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
     }
     if (const auto* sm = req.get("search_mode");
         sm && sm->type == mvdb::jsonl::Value::Type::String &&
-        (sm->s == "exact" || sm->s == "ann")) {
-      exec.setQueryMode(sm->s);
+        (sm->view() == "exact" || sm->view() == "ann")) {
+      exec.setQueryMode(sm->view());
     }
     const bool dml = pr.stmt.kind == mvdb::Statement::Kind::Insert ||
                      pr.stmt.kind == mvdb::Statement::Kind::Update ||
@@ -698,7 +698,7 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
       }
       if (n == 0) {
         if (inpos < inbuf.size()) {
-          int r = process(inbuf.substr(inpos));
+          int r = process(std::string_view(inbuf).substr(inpos));
           if (r == 1) return 0;
           if (r == 2) return 1;
         }
@@ -712,12 +712,15 @@ int runJson(const Options& opt, mvdb::Database& db, mvdb::Executor& exec) {
       nl -= inpos;
       inpos = 0;
     }
-    std::string line = inbuf.substr(inpos, nl - inpos);
+    // Zero-copy: the request is parsed straight out of the read buffer and
+    // every JSON string in it is a view; nothing below mutates inbuf until
+    // process() returns.
+    std::string_view line(inbuf.data() + inpos, nl - inpos);
     inpos = nl + 1;
     // If more requests are already buffered, the client is pipelining and the
     // helper CPU is free; otherwise stay single-threaded.
     exec.setParallelScan(true);
-    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
     int r = process(line);
     if (r == 1) return 0;
     if (r == 2) return 1;

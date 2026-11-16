@@ -81,7 +81,7 @@ class Executor {
   explicit Executor(Database& db) : db_(db) {}
 
   Status execute(const Statement& stmt, ExecResult& out);
-  void setQueryMode(const std::string& mode) { query_mode_ = mode; }
+  void setQueryMode(std::string_view mode) { query_mode_.assign(mode); }
   // True when the driver has already buffered more requests: using the helper
   // CPU does not steal cycles from a waiting client.
   void setParallelScan(bool on) { parallel_scan_ = on; }

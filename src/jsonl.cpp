@@ -6,7 +6,45 @@
 #include <cstdlib>
 #include <limits>
 
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
+
 namespace mvdb::jsonl {
+
+namespace {
+// Returns a pointer to the first byte that must end the "simple string" fast
+// path: the closing quote, a backslash (escape), or a control character.  A
+// byte-at-a-time scan here cost ~100 us for each 70 KB INSERT request because
+// the JSON text is almost entirely one long SQL string.
+inline const char* scanSimpleString(const char* p, const char* end) {
+#if defined(__SSE2__)
+  const __m128i quote = _mm_set1_epi8('"');
+  const __m128i backslash = _mm_set1_epi8('\\');
+  const __m128i ctrl_max = _mm_set1_epi8(0x1f);
+  const __m128i zero = _mm_setzero_si128();
+  while (static_cast<size_t>(end - p) >= 16) {
+    const __m128i v =
+        _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+    __m128i stop = _mm_or_si128(_mm_cmpeq_epi8(v, quote),
+                                _mm_cmpeq_epi8(v, backslash));
+    // _mm_subs_epu8 saturates at zero, so this is non-zero exactly for
+    // bytes 0x20..0xff and zero for control characters.
+    stop = _mm_or_si128(
+        stop, _mm_cmpeq_epi8(_mm_subs_epu8(v, ctrl_max), zero));
+    const int mask = _mm_movemask_epi8(stop);
+    if (mask != 0) return p + __builtin_ctz(static_cast<unsigned>(mask));
+    p += 16;
+  }
+#endif
+  while (p < end) {
+    const unsigned char c = static_cast<unsigned char>(*p);
+    if (c == '"' || c == '\\' || c < 0x20) return p;
+    ++p;
+  }
+  return end;
+}
+}  // namespace
 
 const Value* Value::get(std::string_view key) const {
   for (const auto& [k, v] : object) {
@@ -69,21 +107,11 @@ struct Parser {
   bool string(std::string& out) {
     if (p >= s.size() || s[p] != '"') return fail("expected string");
     ++p;
-    // Fast path for the common case (SQL text with no JSON escapes): scan for
-    // the closing quote and append one contiguous slice instead of pushing
-    // back every byte.  Multi-row INSERT requests are ~160 KB each.
-    {
-      size_t scan = p;
-      while (scan < s.size()) {
-        unsigned char c = static_cast<unsigned char>(s[scan]);
-        if (c == '"') {
-          out.append(s.data() + p, scan - p);
-          p = scan + 1;
-          return true;
-        }
-        if (c == '\\' || c < 0x20) break;
-        ++scan;
-      }
+    const char* stop = scanSimpleString(s.data() + p, s.data() + s.size());
+    if (stop < s.data() + s.size() && *stop == '"') {
+      out.append(s.data() + p, static_cast<size_t>(stop - (s.data() + p)));
+      p = static_cast<size_t>(stop - s.data()) + 1;
+      return true;
     }
     while (p < s.size()) {
       unsigned char c = static_cast<unsigned char>(s[p++]);
@@ -125,6 +153,25 @@ struct Parser {
       }
     }
     return fail("unterminated string");
+  }
+
+  // String value: no copy when the payload needs no unescaping.  The view
+  // points into the parse input; callers must keep it alive while the parsed
+  // value is used (the JSONL loop parses and executes one request at a time).
+  bool stringValue(Value& v) {
+    v.type = Value::Type::String;
+    if (p >= s.size() || s[p] != '"') return fail("expected string");
+    const size_t begin = p + 1;
+    const char* stop = scanSimpleString(s.data() + begin, s.data() + s.size());
+    if (stop < s.data() + s.size() && *stop == '"') {
+      v.sv = s.substr(begin, static_cast<size_t>(stop - (s.data() + begin)));
+      v.is_view = true;
+      p = static_cast<size_t>(stop - s.data()) + 1;
+      return true;
+    }
+    v.is_view = false;
+    p = begin;
+    return string(v.s);
   }
 
   bool number(Value& v) {
@@ -230,8 +277,7 @@ struct Parser {
       }
     }
     if (c == '"') {
-      v.type = Value::Type::String;
-      return string(v.s);
+      return stringValue(v);
     }
     if (c == 't' && s.substr(p, 4) == "true") {
       p += 4;
