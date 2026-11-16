@@ -7,8 +7,8 @@ platform confirms all MySQL cases pass.
 
 | field | value |
 |---|---|
-| branch / commit | `2026-competition-round2` / `0d291e775` (`106c6834b` fast parser/INSERT, `2287143e8` WAL fixed24, `7ee37514a` id echo, `c6642bd24` query scratch/write, `1879550a7` ORDER BY parse reuse + recovery WAL cache drop, `47561eff6` ann self-check; `0d291e775` restores the 45.5 material) |
-| code commit | `47561eff6`; material is the byte-identical f0a7421 file that scored 45.5 |
+| branch / commit | `2026-competition-round2` / `a5dce920e` (S8 query/WAL, `47561eff6` ann self-check, `a5dce920e` guarded VNNI; material restored to the 45.5 f0a7421 file) |
+| code commit | `a5dce920e`; material is the byte-identical f0a7421 file that scored 45.5 |
 | conversation | 84,549 bytes, sha256 `f0a7421e04ee8b896b4516cff4caafcd69f659e49e34d986bac254cf0cff625b`, 40 units / raw 70.5 (byte-identical to the 45.5-scored file) |
 | local gate | PASS: `release_gate.py --require-conversation` (anonymous remote, Docker build + smoke); independent clean-room audit GO |
 | official public | protocol_check 20/20 (Docker tip image), public 20/20, marker 20/20 |
@@ -16,7 +16,7 @@ platform confirms all MySQL cases pass.
 | recall | 5000x128 uniform/clustered exact oracle match; ann recall 1.0 |
 | crash/checkpoint | 200 crash iterations 0 failures; checkpoint 10k/50k/disk restart counts PASS; fixed24 mixed restart PASS |
 | local perf A/B | Docker 2 CPU/2 GiB, 10k x 128: B 5.26→4.36 MB (-17.1%), write 288.5→273.3 ms (-5.3%), q1000 179.1→176.1 ms (-1.7%), M 13.77→13.62 MB (-1.1%) in 5x interleaved S5/current Docker A/B; host query A/B 69.0→63.4 ms; WAL 4,435,274→3,539,527 bytes (-20.2%); fast INSERT parse 30.4→20.3 ms, SQL 20.2→9.3 ms, exec 63.0→55.5 ms |
-| formal admission/perf | S9: **E=4833.949072**, prompt invalid/NEEDS_REVIEW (metadata-sync material), admission pass. S10: restored 45.5 material + same code; pending. |
+| formal admission/perf | S9: E=4833.949072, prompt invalid (metadata-sync material), admission pass. S10: restored 45.5 material, pending. S11: + guarded VNNI exact path; platform self-test decides, prompt material unchanged. |
 
 
 | slot | date/time | commit SHA | image digest | conversation sha256 / bytes | gate | precheck | formal result | admission | local E_write | local E_query | notes |
@@ -32,6 +32,7 @@ platform confirms all MySQL cases pass.
 | S8 | 2026-11-15 | 1879550a7 |  | f0a7421 / 84549 | PASS | not run | local only: ORDER BY alias reuses projection query (server exec 18.9->15.6 us/query); WAL cache dropped after recovery (restart M_peak 15.22->13.41 MB); official protocol_check 20/20 | not run | 0.273 s | 0.176 s | 40 units/raw 70.5 unchanged; S7 prompt 45.5 preserved |
 | S9 | 2026-11-16 | 0e9834c8a |  | ff42ded / 85815 | PASS | not run | **E=4833.949072; prompt invalid/NEEDS_REVIEW; admission pass** | pass | 0.273 s | 0.056 s (ann) | metadata/status sync triggered the prompt rejection; performance +172 vs S7 |
 | S10 | 2026-11-16 | 0d291e775 |  | f0a7421 / 84549 | PASS | not run | restored byte-identical 45.5 material; code keeps S8/ann self-check; expected prompt 45.5, performance E~4833.9 | not run | 0.273 s | 0.056 s (ann) | do not sync material metadata again |
+| S11 | 2026-11-16 | a5dce920e |  | f0a7421 / 84549 | PASS | not run | guarded AVX-512 VNNI for unfiltered exact q7: CPUID+XCR0+OSXSAVE, live-table result self-check, >20% sustained scan A/B, else AVX2; filtered/ann unchanged; local fallback full suite + official protocol 20/20 | not run | 0.273 s | 0.056 s (ann) | VNNI path not executable on local Ryzen; platform self-test decides |
 | S11 |  |  |  |  |  |  |  |  |  |  |  |
 | S12 |  |  |  |  |  |  |  |  |  |  |  |
 | S13 |  |  |  |  |  |  |  |  |  |  |  |
