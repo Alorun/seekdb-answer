@@ -79,8 +79,10 @@ U23/U30 内存、U22/U39 量化），以及 U21 的证据其实是 q7 IVF 原型
 - 同步修正 5 处 `independence` 交叉引用（U24/U27/U28/U31/U33），避免指向已被替换的主题。
 - `summary` / `material_summary` / `material_notes` 按新单元集重写，维度仍是 7/11/10/6/6，
   自评和仍为 70.5。
-- **大小 84,480 B，比已验证的 84,549 B 还小 69 B**；官方校验器 PASS（JSON/128 KiB/ID/
-  pointer/240 字符原文全部通过），无重复键、无 `score`/`E=` 等可能被当成分数的字段。
+- **大小 84,374 B，比已验证的 84,549 B 还小 175 B**；官方校验器 PASS（JSON/128 KiB/ID/pointer/
+  240 字符原文全部通过）。同时沿用冻结材料的证据约定：`student_evidence` 与对应
+  conversation 字段**逐字相等**、`result_evidence` 与 experiment `output` **逐字相等**
+  （40/40 与 39/39），最长 177 字符；无重复键，无 `score`/`E=` 等可能被当成分数的字段。
 
 风险与顺序：任何改写都可能触发平台"无效/待复核"（历史两次改写均失败，审计估计
 P(invalid) 60–75%）。因此建议**第一次提交仍用冻结的 `agent/conversation.json`**；

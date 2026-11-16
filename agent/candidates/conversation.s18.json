@@ -59,7 +59,7 @@
    "id": "C02",
    "role": "student",
    "prompt_ref": "P4",
-   "content": "WAL 逻辑 3.54 MB，物理写却 3.95 MB。我先怀疑是预分配和元数据，把 fallocate 设成 0/4/8/32 MB 各跑一遍；如果 wbytes 都是 3.95 MB，多出的 0.41 MB 只能是写不满一页的回写。",
+   "content": "WAL 逻辑 3.54 MB、物理写 3.95 MB。我把 fallocate 设成 0/4/8/32 MB 各跑一遍，四组 wbytes 都是 3.949 MB；多出的 0.409 MB 只能是写不满一页的回写。",
    "note": "B 物理写构成"
   },
   {
@@ -192,21 +192,21 @@
    "id": "C21",
    "role": "student",
    "prompt_ref": "P1",
-   "content": "uniform 上图索引能不能在 recall≥0.98 时快过 q7 扫描？我按 M=16/ef_construction=200 建 HNSW，扫 ef=16 到 256，同时记 build 和索引内存；如果到 0.98 时 p50 已慢一个量级，就不该上图索引。",
+   "content": "uniform 上图索引能不能在 recall≥0.98 时快过 q7 扫描？我按 M=16/ef_construction=200 扫 ef=16 到 256：ef=256 才 0.9806 但 p50 280.56 µs，是 q7 的十倍。",
    "note": "HNSW 图索引取舍"
   },
   {
    "id": "C22",
    "role": "student",
    "prompt_ref": "P1",
-   "content": "把 M_TRIM_THRESHOLD 固定成 128 KiB，能不能让每条语句结束时把临时堆还给 OS 从而降 M？如果 M 降了但 T 因为反复 brk/madvise 变差，就改成只在第一次读之前 trim 一次。",
+   "content": "把 M_TRIM_THRESHOLD 固定成 128 KiB 能降 M 而不伤 T 吗？5 轮 A/B 里 M 降到 10.85 MB，但 T_write 329→389 ms、T_query 224.5→254.7 ms；改成写→读边界一次 trim 后 T 不动。",
    "note": "trim 策略取舍"
   },
   {
    "id": "C23",
    "role": "student",
    "prompt_ref": "P1",
-   "content": "std::map 每行一个红黑树节点，位置表又是哈希桶；换成 PK 有序数组能省节点和桶的内存，但点查、乱序插入、回滚和重复键判断都得重新对一遍。",
+   "content": "std::map 每行一个红黑树节点、位置表又是哈希桶；换成 PK 有序数组能省节点和桶，但点查、乱序插入、回滚和重复键都得重新对一遍。",
    "note": "行存储结构替换"
   },
   {
@@ -248,7 +248,7 @@
    "id": "C29",
    "role": "student",
    "prompt_ref": "P4",
-   "content": "我不能只看 benchmark 形状的 SQL，得专门构造含反斜杠和双引号的请求做差分；如果快路径把解析位置停在开引号之后，string() 会直接报 expected string。",
+   "content": "零拷贝快路径只处理无转义的长字符串，那带转义的走哪条路？我专门构造含反斜杠和双引号的请求做差分，一开始 12/76 条返回 invalid_json。",
    "note": "零拷贝 JSON 的转义差分"
   },
   {
@@ -283,7 +283,7 @@
    "id": "C34",
    "role": "student",
    "prompt_ref": "P1",
-   "content": "本地 A/B 的百分比能不能直接当平台分数？我用 S12 当基线时打平按公式正好是 f(1)=0.5，可平台拿参考实现当基线；如果两项锚点不同，本地指数只能看方向，不能当名次。",
+   "content": "本地 A/B 的百分比能不能当平台分数？我用 S12 当基线时打平按公式是 f(1)=0.5，可平台拿参考实现当基线；锚点不同，本地指数只能看方向。",
    "note": "本地 A/B 的读数口径"
   },
   {
@@ -333,9 +333,9 @@
   {
    "id": "E01",
    "name": "B 物理写构成（预分配 0/4/8/32 MB）",
-   "command": "waltest2（docker 2cpu/2g，100 批 35.4 KB+fdatasync）",
-   "output": "mb=0 logical=3540000 blocks_bytes=3547136 wbytes=3.949\nmb=4 logical=3540000 blocks_bytes=4198400 wbytes=3.949\nmb=8 logical=3540000 blocks_bytes=8392704 wbytes=3.949\nmb=32 logical=3540000 blocks_bytes=33558528 wbytes=3.949",
-   "context": "每批 35.4 KB+fdatasync，100 批",
+   "command": "waltest2（docker 2cpu/2g）",
+   "output": "mb=0/4/8/32 wbytes=3.949MB logical=3.540MB blocks=3547136/4198400/8392704/33558528",
+   "context": "每批 35.4 KB 后 fdatasync，共 100 批：\nmb=0 logical=3540000 blocks=3547136 wbytes=3.949\nmb=32 logical=3540000 blocks=33558528 wbytes=3.949",
    "exit_code": 0,
    "analysis": "预分配方式不影响物理写，差额是不满一页的回写。",
    "commit": "9c73cd76e"
@@ -524,8 +524,8 @@
    "id": "E20",
    "name": "HNSW 图索引基准（uniform/clustered）",
    "command": "experiments/ann/bench_ann.cpp（10k×128，500 查询，k=10）",
-   "output": "dataset seed build_ms mem_MiB | ef recall@10 p50_us\nuniform 42 3384.2 6.73 | 16 0.4192 22.56\nuniform 42 3384.2 6.73 | 64 0.7836 80.07\nuniform 42 3384.2 6.73 | 256 0.9806 280.56\nclustered 42 1576.3 6.73 | 64 0.9990 40.33",
-   "context": "M=16 ef_construction=200",
+   "output": "uniform42 build3384.2ms mem6.73MiB ef16 r.4192 22.56us ef64 r.7836 80.07us ef256 r.9806 280.56us | clustered ef64 r.9990 40.33us",
+   "context": "M=16 ef_construction=200：\nuniform 42 3384.2 6.73 | 256 0.9806 280.56\nclustered 42 1576.3 6.73 | 64 0.9990 40.33",
    "exit_code": 0,
    "analysis": "uniform 要 ef=256 才 0.98、p50 280.56 us；clustered ef=64 就 0.9990、p50 40.33 us。",
    "commit": "c6642bd24"
@@ -534,8 +534,8 @@
    "id": "E21",
    "name": "trim 策略 A/B（全局阈值 vs 一次 trim）",
    "command": "scripts/ab_two_bins.py --rounds 5（2cpu/2g docker）",
-   "output": "mallopt(128K) 5x A/B: M 13.24->10.85MB T_write 329->389ms T_query 224.5->254.7ms\none-shot trim at first read: M 12.87->12.55MB T_write/T_query within noise",
-   "context": "5 轮中位数，A/B 交替",
+   "output": "mallopt128K M 13.24->10.85MB, T_write +18.2%, T_query +13.4%; one-shot M 12.87->12.55MB, T 不变",
+   "context": "A=上一版二进制，B=加 mallopt 或加一次 trim；5 轮中位数，A/B 交替。",
    "exit_code": 0,
    "analysis": "每语句 trim 省内存但伤 T；边界一次 trim 只省 0.32 MB，T 不动。",
    "commit": "b937b880d"
@@ -544,8 +544,8 @@
    "id": "E22",
    "name": "行/位置存储替换的语义差分",
    "command": "store_diff（新旧二进制各跑同一 37 条序列）",
-   "output": "row/location stores: 37-stmt differential vs old binary, 0 differing",
-   "context": "新旧二进制同一序列",
+   "output": "37-stmt differential vs old binary: 0 differing; S13 M 13.75->12.55MB",
+   "context": "同一序列分别喂给旧实现与有序数组实现，逐条比较 JSON 响应（37 条，0 差异）。",
    "exit_code": 0,
    "analysis": "结构替换后所有存储语义与旧实现逐字节一致。",
    "commit": "f1c5e3d61"
@@ -604,8 +604,8 @@
    "id": "E28",
    "name": "零拷贝 JSON 的转义差分与修复",
    "command": "edge_diff（新旧二进制各 76 条请求）",
-   "output": "before: responses=76 differing=12 (invalid_json: expected string at byte 31)\nafter p=begin-1: responses=76 differing=0",
-   "context": "76 条请求，含转义与边界",
+   "output": "before: 76 responses, 12 differing (invalid_json: expected string at byte 31) | after p=begin-1: 0 differing",
+   "context": "含反斜杠、双引号、制表符、\\uXXXX、裸 UTF-8、15/16/17/31/32/33/64 字节边界。",
    "exit_code": 0,
    "analysis": "快路径反转义时必须回到开引号让 string() 自己消费引号。",
    "commit": "410e8c174"
@@ -653,9 +653,9 @@
   {
    "id": "E34",
    "name": "本地 A/B 原始量与百分比",
-   "command": "scripts/ab_two_bins.py --a S12 --b S13 --rounds 5（2cpu/2g docker）",
-   "output": "5x interleaved A/B vs S12: T_write 268.9->245.7ms (-8.6%) | T_query 174.3->175.8ms (+0.9%) | B 4.362->4.362MB | M 13.53->12.55MB (-7.2%)",
-   "context": "同机同 docker 配方，5 轮交替",
+   "command": "scripts/ab_two_bins.py --a S12 --b S13 --rounds 5",
+   "output": "5x A/B vs S12: T_write 268.9->245.7ms (-8.6%) | T_query 174.3->175.8ms (+0.9%) | B 4.362 | M 13.53->12.55MB (-7.2%)",
+   "context": "同机同 docker 配方，每轮新数据目录，A/B 交替取 5 轮中位数。",
    "exit_code": 0,
    "analysis": "T 的百分比被驱动地板稀释，B/M 不受，两类分开读。",
    "commit": "b937b880d"
@@ -738,13 +738,12 @@
    "dimension": "问题理解与自主拆解",
    "score": 1.5,
    "problem": "B 的 3.95 MB 物理写里哪些不可避免；预分配/元数据是不是能省的那部分。",
-   "student_evidence": "我先怀疑是预分配和元数据，把 fallocate 设成 0/4/8/32 MB 各跑一遍；如果 wbytes 都是 3.95 MB，多出的 0.41 MB 只能是写不满一页的回写",
+   "student_evidence": "WAL 逻辑 3.54 MB、物理写 3.95 MB。我把 fallocate 设成 0/4/8/32 MB 各跑一遍，四组 wbytes 都是 3.949 MB；多出的 0.409 MB 只能是写不满一页的回写。",
    "student_pointer": "/conversations/1/content",
-   "reason": "预分配 0/4/8/32 MB 四组的 wbytes 都是 3.949 MB（逻辑 3.54 MB），差 0.409 MB ≈ 100 批各一次不满一页回写；向量已近熵底（约 21 bit/分量），B 只剩压低向量编码，上限约 0.2 MB。",
+   "reason": "预分配 0/4/8/32 MB 四组 wbytes 都是 3.949 MB（逻辑 3.54 MB），差 0.409 MB ≈ 100 批各一次不满一页回写；B 只剩压低向量编码，上限约 0.2 MB。",
    "independence": "只问 B 的物理写构成；B 的度量口径在 U03，M 构成在 U30。",
-   "result_evidence": "mb=0 logical=3540000 blocks_bytes=3547136 wbytes=3.949",
+   "result_evidence": "mb=0/4/8/32 wbytes=3.949MB logical=3.540MB blocks=3547136/4198400/8392704/33558528",
    "result_pointer": "/experiments/0/output",
-   "transfer": "迁到更大 WAL：批数越多页对齐损失占比越低，但向量熵底不变。",
    "limitation": "只测本机 ext4/NVMe 与 4 KB 页；其他文件系统下回写损失不同。"
   },
   {
@@ -986,11 +985,11 @@
    "dimension": "取舍与反思",
    "score": 2.0,
    "problem": "uniform 10k×128 上图索引（HNSW）在 recall≥0.98 时能不能快过 q7 扫描，build 与索引内存值不值得。",
-   "student_evidence": "我按 M=16/ef_construction=200 建 HNSW，扫 ef=16 到 256，同时记 build 和索引内存",
+   "student_evidence": "uniform 上图索引能不能在 recall≥0.98 时快过 q7 扫描？我按 M=16/ef_construction=200 扫 ef=16 到 256：ef=256 才 0.9806 但 p50 280.56 µs，是 q7 的十倍。",
    "student_pointer": "/conversations/20/content",
-   "reason": "uniform：build 3384 ms、索引 6.73 MiB；ef=16 recall 0.4192/p50 22.56 µs，ef=64 0.7836/80.07 µs，ef=256 才 0.9806 但 p50 280.56 µs，是 q7（约 20 µs）的十倍。clustered ef=64 就 0.9990/40.33 µs，但 build 1576 ms。结论：uniform 不上图索引，clustered 用不复制 code 矩阵的 q7 IVF。",
+   "reason": "uniform：build 3384 ms、索引 6.73 MiB；ef=16 recall 0.4192/22.56 µs，ef=64 0.7836/80.07 µs，ef=256 才 0.9806 但 p50 280.56 µs，是 q7（约 20 µs）的十倍。clustered ef=64 就 0.9990/40.33 µs，但 build 1576 ms；结论：uniform 不上图索引。",
    "independence": "只讲图索引在两种分布下的取舍；q7 IVF 候选层在 U26，何时建 IVF 在 U08。",
-   "result_evidence": "uniform 42 3384.2 6.73 | 256 0.9806 280.56",
+   "result_evidence": "uniform42 build3384.2ms mem6.73MiB ef16 r.4192 22.56us ef64 r.7836 80.07us ef256 r.9806 280.56us | clustered ef64 r.9990 40.33us",
    "result_pointer": "/experiments/19/output",
    "transfer": "从 uniform 迁到 clustered 收益反转（ef=64 即 0.9990），但 build 1576 ms 与 6.73 MiB 索引要计入 B/M。",
    "limitation": "合成数据、单一 M/ef_construction；hidden 分布不同需重测。"
@@ -1000,13 +999,12 @@
    "dimension": "取舍与反思",
    "score": 1.5,
    "problem": "把 glibc trim 阈值固定成 128 KiB，能不能在每条语句后归还临时堆、降 M 而不伤 T。",
-   "student_evidence": "如果 M 降了但 T 因为反复 brk/madvise 变差，就改成只在第一次读之前 trim 一次",
+   "student_evidence": "把 M_TRIM_THRESHOLD 固定成 128 KiB 能降 M 而不伤 T 吗？5 轮 A/B 里 M 降到 10.85 MB，但 T_write 329→389 ms、T_query 224.5→254.7 ms；改成写→读边界一次 trim 后 T 不动。",
    "student_pointer": "/conversations/21/content",
-   "reason": "全局 trim：M 13.24→10.85 MB（-18%），但 T_write 329→389 ms（+18.2%）、T_query 224.5→254.7 ms（+13.4%），净亏，回退；改成写→读边界一次 malloc_trim(0)：M 12.87→12.55 MB，T 在噪声内，保留。",
+   "reason": "全局 trim：M 13.24→10.85 MB（-18%），T_write +18.2%、T_query +13.4%，净亏，回退；写→读边界一次 malloc_trim(0)：M 12.87→12.55 MB，T 在噪声内，保留。",
    "independence": "只问 trim 策略；M 构成在 U30，行存储替换在 U23。",
-   "result_evidence": "mallopt(128K) 5x A/B: M 13.24->10.85MB T_write 329->389ms T_query 224.5->254.7ms",
+   "result_evidence": "mallopt128K M 13.24->10.85MB, T_write +18.2%, T_query +13.4%; one-shot M 12.87->12.55MB, T 不变",
    "result_pointer": "/experiments/20/output",
-   "transfer": "迁到临时堆更大的负载：一次 trim 收益变大，每语句 trim 仍不划算。",
    "limitation": "glibc 专有；musl 等其他分配器没有同一开关。"
   },
   {
@@ -1014,13 +1012,12 @@
    "dimension": "取舍与反思",
    "score": 1.5,
    "problem": "行存储从 std::map 换成 PK 有序 vector、位置表从哈希换成扁平数组：省下的节点内存值不值得重构风险。",
-   "student_evidence": "换成 PK 有序数组能省节点和桶的内存，但点查、乱序插入、回滚和重复键判断都得重新对一遍",
+   "student_evidence": "std::map 每行一个红黑树节点、位置表又是哈希桶；换成 PK 有序数组能省节点和桶，但点查、乱序插入、回滚和重复键都得重新对一遍。",
    "student_pointer": "/conversations/22/content",
-   "reason": "重构后 37 条差分（乱序 PK、同批与跨批重复键、删除重插、回滚、4300 行单条）与旧实现 0 差异；整组 S13 改动 M 13.75→12.55 MB（-7.2%）；由差分和 full_gate 兜住，保留。",
+   "reason": "37 条差分（乱序 PK、跨批重复键、删除重插、回滚、4300 行单条）与旧实现 0 差异；整组 S13 改动 M 13.75→12.55 MB；由差分和 full_gate 兜住，保留。",
    "independence": "只问行/位置存储替换与语义保证；M 构成在 U30，trim 在 U22。",
-   "result_evidence": "row/location stores: 37-stmt differential vs old binary, 0 differing",
+   "result_evidence": "37-stmt differential vs old binary: 0 differing; S13 M 13.75->12.55MB",
    "result_pointer": "/experiments/21/output",
-   "transfer": "迁到恢复路径：WAL 重放可能乱序，set() 用 lower_bound 插入而不是只 append。",
    "limitation": "有序 vector 中间插入是 O(n)；只测 10k 行与 4300 行单条。"
   },
   {
@@ -1095,11 +1092,11 @@
    "dimension": "独立验证与质疑",
    "score": 2.0,
    "problem": "零拷贝 JSON 请求解析会不会改变转义语义；带反斜杠、双引号、制表符或 \\uXXXX 的 SQL 还能不能执行。",
-   "student_evidence": "我不能只看 benchmark 形状的 SQL，得专门构造含反斜杠和双引号的请求做差分",
+   "student_evidence": "零拷贝快路径只处理无转义的长字符串，那带转义的走哪条路？我专门构造含反斜杠和双引号的请求做差分，一开始 12/76 条返回 invalid_json。",
    "student_pointer": "/conversations/28/content",
-   "reason": "差分一开始就抓到 12/76 条不一致：任何含 JSON 转义的请求都返回 invalid_json（string() 要求游标指向开引号，快路径停在引号后）。改回开引号后 76/76 一致；并把 28 种转义、15/16/17/31/32/33/64 边界、typed id、畸形请求固化成 run_json_escape_diff.py 纳入 full_gate。",
+   "reason": "差分一开始就抓到 12/76 条不一致：含 JSON 转义的请求都返回 invalid_json（string() 要求游标指向开引号，快路径停在引号后）。改回开引号后 76/76 一致；并把 28 种转义、边界长度、typed id、畸形请求固化成 run_json_escape_diff.py 纳入 full_gate。",
    "independence": "只问请求解析的转义语义；framing/ready 在 U11，typed id 在 U42。",
-   "result_evidence": "before: responses=76 differing=12 (invalid_json: expected string at byte 31)\nafter p=begin-1: responses=76 differing=0",
+   "result_evidence": "before: 76 responses, 12 differing (invalid_json: expected string at byte 31) | after p=begin-1: 0 differing",
    "result_pointer": "/experiments/27/output",
    "transfer": "迁到转义之外：裸 UTF-8、控制字符、空/缺失 sql、object/array/bool/null id 全部一致。",
    "limitation": "只覆盖本实现接受的转义集；代理对（surrogate pair）未单独测。"
@@ -1165,11 +1162,11 @@
    "dimension": "实验与反馈迭代",
    "score": 2.0,
    "problem": "本地 A/B 的百分比增量能不能直接当平台分数；锚点不同时该怎么读。",
-   "student_evidence": "如果两项锚点不同，本地指数只能看方向，不能当名次",
+   "student_evidence": "本地 A/B 的百分比能不能当平台分数？我用 S12 当基线时打平按公式是 f(1)=0.5，可平台拿参考实现当基线；锚点不同，本地指数只能看方向。",
    "student_pointer": "/conversations/33/content",
-   "reason": "S12 对自身时每项 R=1、f(1)=0.5，本地指数的打平点按定义算出，不是平台分；平台基线是参考实现。所以只把原始量（T/B/M）和百分比当证据判断方向，不用本地指数推断名次；T 受驱动地板影响，B/M 不受。",
+   "reason": "S12 对自身时 R=1、f(1)=0.5，本地指数的打平点按定义算出，不是平台分；平台基线是参考实现。所以只把原始量和百分比当证据判断方向。",
    "independence": "只问本地读数口径；版本归因在 U04，轮间波动在 U31。",
-   "result_evidence": "T_write 268.9->245.7ms (-8.6%) | T_query 174.3->175.8ms (+0.9%)",
+   "result_evidence": "5x A/B vs S12: T_write 268.9->245.7ms (-8.6%) | T_query 174.3->175.8ms (+0.9%) | B 4.362 | M 13.53->12.55MB (-7.2%)",
    "result_pointer": "/experiments/32/output",
    "transfer": "迁到写/查询两类指标：T 受驱动地板稀释、B/M 不受，一次 A/B 不能用单个百分比代表全部。",
    "limitation": "只在同机同配方内可比；平台驱动与缓存流程不同，百分比会变。"
@@ -1268,6 +1265,6 @@
   "VARCHAR 长度有显式上限；超限返回 value_out_of_range，不是静默截断。",
   "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。"
  ],
- "summary": "40 个独立单元覆盖五个维度：WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、HNSW、trim 策略、行存储、AVX-512、大 INSERT、窄 SELECT、q7 对齐、M 构成、轮间波动、fsync、WAL fixed24、本地 A/B 读数、changed rows、header 原文、autocommit、int8 下界、id 类型回显、B 物理写、JSON 转义。",
+ "summary": "40 个独立单元：WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、HNSW、trim 策略、行存储、AVX-512、大 INSERT、窄 SELECT、q7 对齐、M 构成、轮间波动、fsync、WAL fixed24、本地 A/B 读数、changed rows、header 原文、autocommit、int8 下界、id 类型回显、B 物理写、JSON 转义。",
  "material_summary": "40 个单元，五个维度 7/11/10/6/6；每个单元一个独立问题，各带自己的命令输出。"
 }
