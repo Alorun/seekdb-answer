@@ -403,10 +403,6 @@ def build():
             "variance": "5 fresh-dir rounds; write spread 8.2%, query spread 11.1%; effects below the 10.7 ms noise band are not claimed",
             "fsync": "ext4 strace: 101 fdatasync = 1.923 ms total; write wall is dominated by client JSON and parse/exec, not fsync",
             "quant_bound": "same-scale q7 bound 0 violations; per-vector-scale int8 candidate fraction 0.4% -> 99.7% at scale ratio 2",
-            "query_projection_reuse": "ORDER BY distance alias reuses the projection's parsed vector; server exec 18.9 -> 15.6 us on 1600 mixed queries",
-            "recovery_wal_cache": "clean WAL mmap pages dropped after loadSmallTables; restart query M_peak 15.22 -> 13.41 MB, file 3.83 -> 0 MB",
-            "ann_clustered": "q7 IVF candidate layer with exact re-rank; 16-sample self-check against exact IVF, below 0.98 falls back to exact IVF; clustered 10k exact 79.4 vs ann 59.3 ms/1000, recall 1.0 initial/UPDATE+DELETE/restart",
-            "ann_scope": "exact remains the default; ann runs only when the request/search_mode selects it; uniform data uses the exact q7 path in ann mode (no index, no speedup)",
             "admission": "candidate: all local and official-public checks pass; this commit's formal platform run not yet done",
             "performance_note": "local A/B only; platform score intentionally not embedded",
         },
@@ -435,9 +431,6 @@ def build():
             "VARCHAR 有显式长度上限，单行不会无声超过 WAL payload 上限，大 INSERT 仍按 ≤4 MiB/≤4096 行分块。"
             "S6 又把 SELECT 的窄快路径、向量直接写入 Value 做成独立 A/B，并主动回退了 q7 64B 对齐这个没有稳定收益的改动。"
             "S7 继续把 INSERT 入口改成 span 直读、向量十进制快路径，并给 WAL 增加整批可表示时的 fixed24 无损编码：写 parse/SQL/exec 明显下降，B 从 4.44 MB 降到 3.54 MB。"
-            "S8 又让 ORDER BY 距离别名复用投影已解析的查询向量（server exec 18.9 -> 15.6 us），"
-            "在恢复完成后丢弃 WAL 的干净页缓存（重启查询 M_peak 15.22 -> 13.41 MB）；"
-            "clustered ann 的 q7 IVF 候选层补上 16 样本自检，低于 0.98 回退 exact IVF，exact 默认与 exact 路径完全不动。"
         ),
         "limitations": [
             "单一 commit 的正式平台准入/性能尚未运行；本地和 Docker 公开 20 例不等于隐藏用例。",
@@ -447,9 +440,8 @@ def build():
             "unclustered/聚簇结论只覆盖合成 10k/50k×128；hidden 数据分布未知。",
             "VARCHAR 长度有显式上限；超限返回 value_out_of_range，不是静默截断。",
             "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。",
-            "ann 是否执行取决于平台请求的 search_mode；uniform 数据在 ann 模式下仍走 exact q7（无加速），clustered 的 q7 IVF 收益也只在平台发 ann 时体现。",
         ],
-        "summary": "40 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入、M 的 anon/file 构成、轮间波动、fsync 地板、WAL fixed24、span INSERT、changed rows、header 原文、autocommit、q6、int8 下界、干净归档、id 类型回显、ORDER BY 查询复用、恢复 WAL 页缓存、clustered ann 自检。",
+        "summary": "40 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入、M 的 anon/file 构成、轮间波动、fsync 地板、WAL fixed24、span INSERT、changed rows、header 原文、autocommit、q6、int8 下界、干净归档、id 类型回显。",
         "material_summary": "40 个单元，五个维度 7/11/10/6/6；每个单元有独立的学生问题与实验结果，新增 11 个单元各带一条新命令输出。",
     }
     return data
