@@ -9,7 +9,6 @@
 #include <chrono>
 #include <limits>
 #include <immintrin.h>
-#include <cpuid.h>
 #include <queue>
 #include <set>
 #include <thread>
@@ -912,241 +911,6 @@ __attribute__((target("avx2,fma"))) void scanQ7ExactRange(
     top.push(RawHit{l2Avx2DoubleSq(vecp[vi], q, dim), pks[vi], vi});
   }
   top.drain(out);
-}
-
-
-// ---------------------------------------------------------------------------
-// Optional AVX-512 VNNI q7 dot.  It is used ONLY for the exact unfiltered q7
-// scan, and only after the CPUID/XCR0 gate, a full result self-check on the
-// live table, and a sustained A/B against the AVX2 scan.  The scan algorithm
-// is identical to scanQ7ExactRange; only the dot instruction changes, so the
-// candidate bound and exact re-rank are unchanged.
-// ---------------------------------------------------------------------------
-__attribute__((target("avx512f,avx512bw,avx512vnni"))) static inline int32_t
-hsum512v(__m512i acc) {
-  alignas(64) int32_t tmp[16];
-  _mm512_store_si512(reinterpret_cast<__m512i*>(tmp), acc);
-  int32_t sum = 0;
-  for (int i = 0; i < 16; ++i) sum += tmp[i];
-  return sum;
-}
-
-__attribute__((target("avx512f,avx512bw,avx512vnni"))) static inline int32_t
-q7DotVNNI(const uint8_t* __restrict a, const int8_t* __restrict b, size_t n) {
-  __m512i acc = _mm512_setzero_si512();
-  size_t i = 0;
-  for (; i + 64 <= n; i += 64) {
-    __m512i va = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a + i));
-    __m512i vb = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(b + i));
-    acc = _mm512_dpbusd_epi32(acc, va, vb);
-  }
-  int32_t dot = hsum512v(acc);
-  for (; i < n; ++i) {
-    dot += static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
-  }
-  return dot;
-}
-
-__attribute__((target("avx512f,avx512bw,avx512vnni"))) static inline void
-q7Dot4VNNI(const uint8_t* __restrict a0, const uint8_t* __restrict a1,
-           const uint8_t* __restrict a2, const uint8_t* __restrict a3,
-           const int8_t* __restrict b, size_t n, int32_t out[4]) {
-  __m512i p0 = _mm512_setzero_si512();
-  __m512i p1 = _mm512_setzero_si512();
-  __m512i p2 = _mm512_setzero_si512();
-  __m512i p3 = _mm512_setzero_si512();
-  size_t i = 0;
-  for (; i + 64 <= n; i += 64) {
-    __m512i vb = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(b + i));
-    __m512i r = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a0 + i));
-    p0 = _mm512_dpbusd_epi32(p0, r, vb);
-    r = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a1 + i));
-    p1 = _mm512_dpbusd_epi32(p1, r, vb);
-    r = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a2 + i));
-    p2 = _mm512_dpbusd_epi32(p2, r, vb);
-    r = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a3 + i));
-    p3 = _mm512_dpbusd_epi32(p3, r, vb);
-  }
-  out[0] = hsum512v(p0);
-  out[1] = hsum512v(p1);
-  out[2] = hsum512v(p2);
-  out[3] = hsum512v(p3);
-  for (; i < n; ++i) {
-    out[0] += static_cast<int32_t>(a0[i]) * static_cast<int32_t>(b[i]);
-    out[1] += static_cast<int32_t>(a1[i]) * static_cast<int32_t>(b[i]);
-    out[2] += static_cast<int32_t>(a2[i]) * static_cast<int32_t>(b[i]);
-    out[3] += static_cast<int32_t>(a3[i]) * static_cast<int32_t>(b[i]);
-  }
-}
-
-template <typename Add>
-__attribute__((target("avx512f,avx512bw,avx512vnni,avx2,fma")))
-inline void q7CollectVNNI(const Quant8Cache& c, size_t begin, size_t n,
-                          size_t dim, const int8_t* qcodes, int32_t cq,
-                          int32_t* dq, Add add) {
-  const uint8_t* codes = c.codes.data();
-  const int32_t* pv = c.pv.data();
-  size_t i = 0;
-  for (; i + 4 <= n; i += 4) {
-    int32_t dots[4];
-    q7Dot4VNNI(codes + (begin + i) * dim, codes + (begin + i + 1) * dim,
-               codes + (begin + i + 2) * dim, codes + (begin + i + 3) * dim,
-               qcodes, dim, dots);
-    const int32_t d0 = pv[begin + i] + cq - 2 * dots[0];
-    const int32_t d1 = pv[begin + i + 1] + cq - 2 * dots[1];
-    const int32_t d2 = pv[begin + i + 2] + cq - 2 * dots[2];
-    const int32_t d3 = pv[begin + i + 3] + cq - 2 * dots[3];
-    dq[i] = d0;
-    dq[i + 1] = d1;
-    dq[i + 2] = d2;
-    dq[i + 3] = d3;
-    add(d0);
-    add(d1);
-    add(d2);
-    add(d3);
-  }
-  for (; i < n; ++i) {
-    int32_t d = pv[begin + i] + cq -
-                2 * q7DotVNNI(codes + (begin + i) * dim, qcodes, dim);
-    dq[i] = d;
-    add(d);
-  }
-}
-
-__attribute__((target("avx512f,avx512bw,avx512vnni,avx2,fma")))
-void scanQ7ExactRangeVNNI(const Quant8Cache& c, const float* const* vecp,
-                          const int64_t* pks, size_t begin, size_t end,
-                          size_t dim, const float* q, const Q7Query& qq,
-                          size_t k, std::vector<RawHit>& out) {
-  out.clear();
-  if (k == 0 || begin >= end) return;
-  const size_t n = end - begin;
-  static thread_local std::vector<int32_t> dq;
-  if (dq.size() < n) dq.resize(n);
-  const int8_t* qcodes = qq.codes.data();
-  const int32_t cq = qq.cq;
-  double dk = std::numeric_limits<double>::infinity();
-  if (k <= 64) {
-    Q7Kth qk(k);
-    q7CollectVNNI(c, begin, n, dim, qcodes, cq, dq.data(),
-                  [&](int32_t v) { qk.add(v); });
-    if (qk.full()) dk = static_cast<double>(qk.worst());
-  } else {
-    std::priority_queue<int32_t> qheap;
-    q7CollectVNNI(c, begin, n, dim, qcodes, cq, dq.data(), [&](int32_t v) {
-      if (qheap.size() < k) {
-        qheap.push(v);
-      } else if (v < qheap.top()) {
-        qheap.pop();
-        qheap.push(v);
-      }
-    });
-    if (qheap.size() >= k) dk = static_cast<double>(qheap.top());
-  }
-  double thr2 = std::numeric_limits<double>::infinity();
-  if (std::isfinite(dk)) {
-    const double E = static_cast<double>(c.max_err) + qq.error_norm;
-    const double inv = 1.0 / static_cast<double>(c.scale);
-    const double t = std::sqrt(std::max(0.0, dk)) + 2.0 * E * inv;
-    thr2 = t * t * (1.0 + 1e-6) + 1e-12;
-  }
-  static thread_local std::vector<uint32_t> pool;
-  pool.clear();
-  if (pool.capacity() < 128) pool.reserve(128);
-  for (size_t j = 0; j < n; ++j) {
-    if (static_cast<double>(dq[j]) <= thr2) {
-      pool.push_back(static_cast<uint32_t>(j));
-    }
-  }
-  for (uint32_t j : pool) {
-    const float* a = vecp[begin + j];
-    for (size_t cc = 0; cc < dim; cc += 16) {
-      _mm_prefetch(reinterpret_cast<const char*>(a + cc), _MM_HINT_T0);
-    }
-  }
-  TopK top(k);
-  for (uint32_t j : pool) {
-    const size_t vi = begin + j;
-    top.push(RawHit{l2Avx2DoubleSq(vecp[vi], q, dim), pks[vi], vi});
-  }
-  top.drain(out);
-}
-
-bool vnniCpuOk() {
-  static const bool ok = [] {
-    if (std::getenv("MVDB_NO_VNNI") != nullptr) return false;
-    if (!__builtin_cpu_supports("avx512f") ||
-        !__builtin_cpu_supports("avx512bw") ||
-        !__builtin_cpu_supports("avx512vnni")) {
-      return false;
-    }
-    // XGETBV itself is #UD unless CPUID.1:ECX.OSXSAVE is set.  Check it
-    // explicitly before executing xgetbv, then require the opmask/ZMM state.
-    unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
-    if (__get_cpuid(1, &eax, &ebx, &ecx, &edx) == 0) return false;
-    if ((ecx & (1u << 27)) == 0) return false;
-    __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
-    return (eax & 0xE6u) == 0xE6u;
-  }();
-  return ok;
-}
-
-bool vnniSelfCheck(const Quant8Cache& q8, const VectorCache& vc, size_t k) {
-  const size_t n = vc.pks.size();
-  if (n < 5000 || k == 0) return false;
-  const size_t kk = std::min<size_t>(k, 64);
-  std::vector<float> qv;
-  std::vector<Q7Query> qqs;
-  std::vector<const float*> queries;
-  for (int si = 1; si <= 8; ++si) {
-    const size_t qi = (static_cast<size_t>(si) * n) / 9;
-    queries.push_back(vc.vecp[qi]);
-    qv.assign(vc.vecp[qi], vc.vecp[qi] + vc.dim);
-    Q7Query qq;
-    if (!quantizeQuery7(q8, qv, qq)) return false;
-    qqs.push_back(std::move(qq));
-  }
-  volatile double sink = 0.0;
-  auto run = [&](bool use_vnni) {
-    for (size_t i = 0; i < queries.size(); ++i) {
-      std::vector<RawHit> out;
-      if (use_vnni) {
-        scanQ7ExactRangeVNNI(q8, vc.vecp.data(), vc.pks.data(), 0, n, vc.dim,
-                             queries[i], qqs[i], kk, out);
-      } else {
-        scanQ7ExactRange(q8, vc.vecp.data(), vc.pks.data(), 0, n, vc.dim,
-                         queries[i], qqs[i], kk, out);
-      }
-      sink += static_cast<double>(out.size());
-    }
-  };
-  // Correctness: the VNNI scan must produce exactly the same (distance, pk)
-  // sequence as AVX2 for every sample query.
-  for (size_t i = 0; i < queries.size(); ++i) {
-    std::vector<RawHit> a, b;
-    scanQ7ExactRange(q8, vc.vecp.data(), vc.pks.data(), 0, n, vc.dim,
-                     queries[i], qqs[i], kk, a);
-    scanQ7ExactRangeVNNI(q8, vc.vecp.data(), vc.pks.data(), 0, n, vc.dim,
-                         queries[i], qqs[i], kk, b);
-    if (a.size() != b.size()) return false;
-    for (size_t j = 0; j < a.size(); ++j) {
-      if (a[j].pk != b[j].pk || a[j].d != b[j].d) return false;
-    }
-  }
-  // Sustained A/B on the actual scan (not a dot microbenchmark).
-  auto timeit = [&](bool use_vnni) {
-    const auto t0 = std::chrono::steady_clock::now();
-    for (int rep = 0; rep < 3; ++rep) run(use_vnni);
-    const auto t1 = std::chrono::steady_clock::now();
-    return std::chrono::duration<double>(t1 - t0).count();
-  };
-  run(true);  // warm code/caches
-  run(false);
-  const double t_vnni = timeit(true);
-  const double t_avx2 = timeit(false);
-  (void)sink;
-  // Require a clear, sustained win; otherwise stay on AVX2.
-  return t_vnni * 5.0 < t_avx2 * 4.0;  // >20% faster
 }
 
 // Exact IVF search for clustered data.  Each list stores the maximum distance
@@ -3180,44 +2944,21 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
               ivf_used = true;
             } else {
             // Exact mode: q7 scan with a conservative lower bound, then the
-            // exact float32 kernel on the (few) surviving candidates.  The
-            // VNNI variant is used only after a live-table result self-check
-            // and a sustained scan A/B; any doubt keeps the AVX2 path.
-            bool vnni = n >= 5000 && vnniCpuOk();
-            if (vnni && !table->vnni_checked) {
-              table->vnni_checked = true;
-              if (!vnniSelfCheck(*q8, cache, k)) table->vnni_disabled = true;
-            }
-            const bool use_vnni = vnni && !table->vnni_disabled;
+            // exact float32 kernel on the (few) surviving candidates.
             std::vector<RawHit> left, right;
             auto run_left = [&] {
-              if (use_vnni) {
-                scanQ7ExactRangeVNNI(*q8, cache.vecp.data(), cache.pks.data(),
-                                     0, n / 2, cache.dim, q, qq, k, left);
-              } else {
-                scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), 0,
-                                 n / 2, cache.dim, q, qq, k, left);
-              }
+              scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), 0,
+                               n / 2, cache.dim, q, qq, k, left);
             };
             auto run_right = [&] {
-              if (use_vnni) {
-                scanQ7ExactRangeVNNI(*q8, cache.vecp.data(), cache.pks.data(),
-                                     n / 2, n, cache.dim, q, qq, k, right);
-              } else {
-                scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(),
-                                 n / 2, n, cache.dim, q, qq, k, right);
-              }
+              scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), n / 2,
+                               n, cache.dim, q, qq, k, right);
             };
             if (can_parallel) {
               pool_.run(run_left, run_right);
             } else {
-              if (use_vnni) {
-                scanQ7ExactRangeVNNI(*q8, cache.vecp.data(), cache.pks.data(), 0,
-                                     n, cache.dim, q, qq, k, left);
-              } else {
-                scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), 0, n,
-                                 cache.dim, q, qq, k, left);
-              }
+              scanQ7ExactRange(*q8, cache.vecp.data(), cache.pks.data(), 0, n,
+                               cache.dim, q, qq, k, left);
               right.clear();
             }
             TopK merged(k);
