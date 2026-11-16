@@ -222,6 +222,10 @@ struct Table {
   uint64_t ann_q7_version = 0;
   bool ann_q7_checked = false;
   bool ann_q7_disabled = false;
+  // Exact-mode AVX-512 VNNI is table-gated: checked once on real rows,
+  // disabled permanently if the result self-check or the scan A/B fails.
+  bool vnni_checked = false;
+  bool vnni_disabled = false;
 };
 
 // Expand one WAL row record (Insert/Update) or every row of an InsertBatch
