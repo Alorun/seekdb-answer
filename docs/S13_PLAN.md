@@ -88,3 +88,64 @@ official `protocol_check` 20 cases through the official JSONL driver), plus a
 2. If E ≥ 5100: designated.  Slot 2 (optional): same code + prompt candidate.
 3. If E < 5100: repeat slot 2 with the same combination (noise roll), keep the
    best measured run as the designated version.
+
+## Final integration results (2026-11-16, quiet machine)
+
+Five-round interleaved A/B, `scripts/ab_two_bins.py`, 2 vCPU / 2 GiB docker,
+each round a fresh data dir, A = S12 code (`47561eff6` / `9c73cd76e`):
+
+| metric | A (S12) | B (S13 candidate) | delta |
+|---|---:|---:|---:|
+| T_write | 268.9 ms | 245.7 ms | **-8.6%** |
+| T_query | 174.3 ms | 175.8 ms | +0.9% (parity) |
+| B | 4.362 MB | 4.362 MB | 0.0% (WAL bytes identical) |
+| M | 13.53 MB | 12.55 MB | **-7.2%** |
+| proxy E (A as baseline) | 5000 | **5071** | +71 |
+
+The proxy E is deliberately conservative for T: the docker CLI relay adds
+~140 us to every request, so a 2 us server-side query win is invisible there,
+and the same is true for the write side (fsync floor ~165 ms of the 250 ms
+T_write).  Component view on the server side, which is what the platform
+driver actually waits for:
+
+- write server CPU 79 ms -> 49 ms per 100 batches (-38%), WAL bytes identical
+- unfiltered TopK exec 34.3 -> 31.5 us (-8%), filtered 16.7 -> 15.0 us (-10%)
+- peak memory 13.5 -> 12.55 MB (-7.2%)
+
+Actions kept:
+1. RowStore (PK-ordered vector instead of `std::map`) and LocationIndex
+   (flat PK-ordered vector instead of `unordered_map`).
+2. FilterCodes block kept, now carrying its vector-cache row list so a
+   filtered query costs one hash lookup instead of three + two string keys.
+3. Mask-based pool build, pipelined re-rank prefetch, verbatim numeric output,
+   no header-text build when the projection has an alias.
+4. Zero-copy JSON request path, fixed24 fused into the literal parse, SWAR
+   six-decimal vector parse, cheaper string/Huffman encoders.
+5. One-shot `malloc_trim` at the write -> query boundary.
+
+Actions rejected, with numbers:
+- `mallopt(M_TRIM_THRESHOLD, 128 KiB)` (a per-free trim policy): saved ~0.3 MB
+  but cost T_write and T_query in A/B — reverted.
+- Removing FilterCodes entirely: -1.2 MB M but +2-4 us on every filtered TopK;
+  with the docker driver that looked neutral, with a lean driver it is a loss.
+- 2-thread default change (already on), int16 q7 accumulation, 8-bit codes,
+  partial-dimension pruning, dropping Huffman: measured or analysed as no-win.
+- Dropping `posix_fadvise(DONTNEED)` after WAL sync: the following fdatasync
+  absorbs the cost; CPU is unchanged and M would grow.
+
+## What still separates us from 5100
+
+At the measured component level the remaining ceiling is structural:
+- B is at the lossless entropy floor (10k x 128 six-decimal components need
+  ~21 bits each = 3.36 MB; the WAL writes 3.95 MB including row data, and
+  ~0.41 MB is unavoidable partial-page writeback).
+- T_write is dominated by 100 mandatory fdatasyncs (~165 ms of 250 ms).
+- T_query is dominated by the 1.28 MB q7 code scan (~20 us of ~33 us exec),
+  already bandwidth bound and 2-threaded.
+- M floor with the q7 matrix and the exact vectors is ~10 MB (vectors 5.12 +
+  q7 codes 1.28 + row payloads ~2.3 + process/kernel ~1.5).
+
+So the S13 candidate is expected to land near 5.0k on the platform with the
+usual run-to-run spread; the remaining path to 5.1k is repeated measurement
+(the platform keeps the best combined result) rather than a further
+single-change win.

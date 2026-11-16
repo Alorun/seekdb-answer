@@ -3,7 +3,20 @@
 One row per formal submission. A submission is a candidate only after the
 platform confirms all MySQL cases pass.
 
-## Current candidate (not formally submitted)
+## S13 candidate (ready, not yet submitted)
+
+| field | value |
+|---|---|
+| code commits | `4455e0bed` + `f1c5e3d61` + `1feebd38d` (memory/row stores) + `51b64a83e` + `7f30b75d2` (write path) + `b937b880d` (query path; submission commit is the one containing this row) |
+| conversation | byte-identical frozen `f0a7421` 84,549 B, 40 units / raw 70.5 (scored 45.5 on S7) -- deliberately unchanged |
+| local gate | `scripts/full_gate.sh`: 13/13 PASS (public 20, SQL edges 158x2, recall uniform+clustered, filter diff 190, marker 20, semantics, checkpoint, crash fuzz 150, ann 3-phase, crc, vector literals, official protocol_check 20) |
+| ASAN/UBSAN | public 20/20, official 20/20, SQL edges 158x2, crash fuzz 120 iters, checkpoint 10k: all clean |
+| differential | 200-statement mixed workload vs S12 binary: 0 differing responses; WAL bytes identical (B unchanged) |
+| perf A/B | 5 interleaved rounds, 2 vCPU/2 GiB docker: T_write 268.9->245.7 ms (-8.6%), T_query 174.3->175.8 ms (+0.9%, parity), B 4.362 MB unchanged, M 13.53->12.55 MB (-7.2%); proxy E 5000->5071 |
+| server CPU | write phase 79->49 ms (-38%); unfiltered TopK exec 34.3->31.5 us (-8%); filtered 16.7->15.0 us (-10%) |
+| expected platform | ~5.0k with the usual spread; 5100 needs a favourable but normal roll |
+
+## Previous candidate (not formally submitted)
 
 | field | value |
 |---|---|
