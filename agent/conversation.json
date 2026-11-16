@@ -333,7 +333,7 @@
   {
    "id": "E01",
    "name": "B 物理写构成（预分配 0/4/8/32 MB）",
-   "command": "waltest2（docker 2cpu/2g）",
+   "command": "docker 2cpu/2g：100 批 35.4 KB+fdatasync，预分配 0/4/8/32 MB，wbytes 读 cgroup io.stat",
    "output": "mb=0/4/8/32 wbytes=3.949MB logical=3.540MB blocks=3547136/4198400/8392704/33558528",
    "context": "每批 35.4 KB 后 fdatasync，共 100 批：\nmb=0 logical=3540000 blocks=3547136 wbytes=3.949\nmb=32 logical=3540000 blocks=33558528 wbytes=3.949",
    "exit_code": 0,
@@ -543,7 +543,7 @@
   {
    "id": "E22",
    "name": "行/位置存储替换的语义差分",
-   "command": "store_diff（新旧二进制各跑同一 37 条序列）",
+   "command": "新旧二进制各跑同一 37 条存储序列，逐条比较 JSON 响应",
    "output": "37-stmt differential vs old binary: 0 differing; S13 M 13.75->12.55MB",
    "context": "同一序列分别喂给旧实现与有序数组实现，逐条比较 JSON 响应（37 条，0 差异）。",
    "exit_code": 0,
@@ -603,7 +603,7 @@
   {
    "id": "E28",
    "name": "零拷贝 JSON 的转义差分与修复",
-   "command": "edge_diff（新旧二进制各 76 条请求）",
+   "command": "新旧二进制各跑 76 条请求，覆盖反斜杠/双引号/制表符/\\uXXXX/裸 UTF-8/边界长度",
    "output": "before: 76 responses, 12 differing (invalid_json: expected string at byte 31) | after p=begin-1: 0 differing",
    "context": "含反斜杠、双引号、制表符、\\uXXXX、裸 UTF-8、15/16/17/31/32/33/64 字节边界。",
    "exit_code": 0,
