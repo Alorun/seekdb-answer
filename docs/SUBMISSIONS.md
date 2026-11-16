@@ -7,16 +7,16 @@ platform confirms all MySQL cases pass.
 
 | field | value |
 |---|---|
-| branch / commit | `2026-competition-round2` / `1dd8876fd` (S8 query/WAL, `47561eff6` ann self-check, `a5dce920e` guarded VNNI; material syncs U24/U26 under 84,549 B) |
-| code commit | `a5dce920e`; material compact, 81,938 B, 38 existing units byte-identical, U24/U26 synced to current VNNI/16-sample ann |
-| conversation | 81,938 bytes, sha256 `a17c54da88456139c28817a1dd1aee9c9bfbe58311bfea63e2f907f28193bc84`, 40 units / raw 70.5 (compact; 38 existing units byte-identical to the 45.5 file) |
+| branch / commit | `2026-competition-round2` / `a8b045b18` (S8 query/WAL, `47561eff6` ann self-check, `a5dce920e` guarded VNNI; material syncs U24/U26 under 84,549 B) |
+| code commit | `a5dce920e`; material compact, 81,971 B, 38 existing units byte-identical, U24/U26 synced to current VNNI/16-sample ann |
+| conversation | 81,971 bytes, sha256 `988a1c0ca3805907f5c5235b0006e3ba907f622603a5c95e3e2255118af5da68`, 40 units / raw 70.5 (compact; 38 existing units byte-identical to the 45.5 file) |
 | local gate | PASS: `release_gate.py --require-conversation` (anonymous remote, Docker build + smoke); independent clean-room audit GO |
 | official public | protocol_check 20/20 (Docker tip image), public 20/20, marker 20/20 |
 | SQL edges | 158 checks x 2 modes, 0 failures |
 | recall | 5000x128 uniform/clustered exact oracle match; ann recall 1.0 |
 | crash/checkpoint | 200 crash iterations 0 failures; checkpoint 10k/50k/disk restart counts PASS; fixed24 mixed restart PASS |
 | local perf A/B | Docker 2 CPU/2 GiB, 10k x 128: B 5.26→4.36 MB (-17.1%), write 288.5→273.3 ms (-5.3%), q1000 179.1→176.1 ms (-1.7%), M 13.77→13.62 MB (-1.1%) in 5x interleaved S5/current Docker A/B; host query A/B 69.0→63.4 ms; WAL 4,435,274→3,539,527 bytes (-20.2%); fast INSERT parse 30.4→20.3 ms, SQL 20.2→9.3 ms, exec 63.0→55.5 ms |
-| formal admission/perf | S9: E=4833.949072, prompt invalid (metadata-sync material), admission pass. S10: restored 45.5 material, pending. S11: guarded VNNI + current prompt sync (U24/U26 only, 81,938 B); pending. |
+| formal admission/perf | S9: E=4833.949072, prompt invalid (metadata-sync material), admission pass. S10: restored 45.5 material, pending. S11: guarded VNNI + current prompt sync (U24/U26 only, 81,971 B); pending. |
 
 
 | slot | date/time | commit SHA | image digest | conversation sha256 / bytes | gate | precheck | formal result | admission | local E_write | local E_query | notes |
@@ -32,7 +32,7 @@ platform confirms all MySQL cases pass.
 | S8 | 2026-11-15 | 1879550a7 |  | f0a7421 / 84549 | PASS | not run | local only: ORDER BY alias reuses projection query (server exec 18.9->15.6 us/query); WAL cache dropped after recovery (restart M_peak 15.22->13.41 MB); official protocol_check 20/20 | not run | 0.273 s | 0.176 s | 40 units/raw 70.5 unchanged; S7 prompt 45.5 preserved |
 | S9 | 2026-11-16 | 0e9834c8a |  | ff42ded / 85815 | PASS | not run | **E=4833.949072; prompt invalid/NEEDS_REVIEW; admission pass** | pass | 0.273 s | 0.056 s (ann) | metadata/status sync triggered the prompt rejection; performance +172 vs S7 |
 | S10 | 2026-11-16 | 0d291e775 |  | f0a7421 / 84549 | PASS | not run | restored byte-identical 45.5 material; code keeps S8/ann self-check; expected prompt 45.5, performance E~4833.9 | not run | 0.273 s | 0.056 s (ann) | do not sync material metadata again |
-| S11 | 2026-11-16 | 1dd8876fd |  | a17c54d / 81938 | PASS | not run | guarded AVX-512 VNNI for unfiltered exact q7: CPUID+XCR0+OSXSAVE, live-table result self-check, >20% sustained scan A/B, else AVX2; U24/U26 synced, 38 old units identical; local fallback full suite + official 20/20 | not run | 0.273 s | 0.056 s (ann) | 81,938 B under the known-valid 84,549 B; VNNI path not executable locally |
+| S11 | 2026-11-16 | a8b045b18 |  | a17c54d / 81971 | PASS | not run | guarded AVX-512 VNNI for unfiltered exact q7: CPUID+XCR0+OSXSAVE, live-table result self-check, >20% sustained scan A/B, else AVX2; U24/U26 synced, 38 old units identical; local fallback full suite + official 20/20 | not run | 0.273 s | 0.056 s (ann) | 81,971 B under the known-valid 84,549 B; VNNI path not executable locally |
 | S11 |  |  |  |  |  |  |  |  |  |  |  |
 | S12 |  |  |  |  |  |  |  |  |  |  |  |
 | S13 |  |  |  |  |  |  |  |  |  |  |  |
