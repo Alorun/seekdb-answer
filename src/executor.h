@@ -153,6 +153,9 @@ class Executor {
   std::vector<Undo> undo_;
   std::string query_mode_ = "exact";
   bool parallel_scan_ = false;
+  // Set by a data-modifying statement; the next SELECT returns freed
+  // transient heap to the OS once (see Executor::execute).
+  bool heap_dirty_ = false;
 };
 
 // Helpers shared with tests.

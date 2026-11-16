@@ -172,6 +172,25 @@ struct FilterCache {
   std::unordered_map<int64_t, std::vector<uint32_t>> num_idx;
 };
 
+struct FilterCodes {
+  // One filter value's q7 codes plus the vector-cache row of each code line,
+  // kept together so a filtered TopK resolves the value with a single hash
+  // lookup instead of walking FilterCache's pk list and vector-index list
+  // first (three lookups and two std::string keys per query).  The row copy
+  // costs 4 bytes per row (~40 KB at 10k rows).
+  struct Block {
+    std::vector<uint8_t> codes;
+    std::vector<uint32_t> rows;
+  };
+  uint64_t version = 0;
+  int col = -1;
+  int vec_col = -1;
+  size_t dim = 0;
+  std::unordered_map<std::string, Block> str;
+  std::unordered_map<int64_t, Block> num;
+  bool valid = false;
+};
+
 struct IvfCache {
   uint64_t version = 0;
   int col = -1;
@@ -368,6 +387,7 @@ struct Table {
   uint64_t row_version = 0;
   VectorCache vector_cache;
   std::unordered_map<int, FilterCache> filter_caches;
+  std::unordered_map<int, FilterCodes> filter_codes;
   std::unordered_map<int, IvfCache> ivf_caches;
   std::unordered_map<int, QuantCache> quant_caches;
   std::unordered_map<int, Quant8Cache> quant8_caches;

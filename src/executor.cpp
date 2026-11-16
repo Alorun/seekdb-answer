@@ -12,6 +12,9 @@
 #include <queue>
 #include <set>
 #include <thread>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include <sched.h>
 #include <fstream>
 #include <sstream>
@@ -708,6 +711,114 @@ bool quantizeQuery7(const Quant8Cache& c, const std::vector<float>& q,
   return true;
 }
 
+// Collect the indices j < n with dq[j] <= thr, ascending.
+//
+// The scalar form (one predictably-not-taken compare per row) measured
+// 1.6-2.5 us for a 5000-row half while the whole q7 dot pass streams the same
+// rows in ~11 us; an 8-wide compare + movemask keeps the second pass at
+// ~0.57 us and leaves the pool itself in the same order.
+__attribute__((target("avx2"))) inline void collectAtMost(
+    const int32_t* dq, size_t n, double thr, std::vector<uint32_t>& pool) {
+  pool.clear();
+  int32_t lim;
+  if (!(thr < 2147483647.0)) {
+    lim = 2147483646;  // include every int32 row distance
+  } else {
+    lim = static_cast<int32_t>(std::floor(thr));
+    if (lim < 0) lim = 0;
+  }
+  const __m256i bound = _mm256_set1_epi32(lim + 1);
+  size_t j = 0;
+  for (; j + 8 <= n; j += 8) {
+    const __m256i v =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dq + j));
+    unsigned m = static_cast<unsigned>(_mm256_movemask_ps(
+        _mm256_castsi256_ps(_mm256_cmpgt_epi32(bound, v))));
+    while (m != 0) {
+      pool.push_back(static_cast<uint32_t>(j + __builtin_ctz(m)));
+      m &= m - 1;
+    }
+  }
+  for (; j < n; ++j) {
+    if (dq[j] <= lim) pool.push_back(static_cast<uint32_t>(j));
+  }
+}
+
+__attribute__((target("avx2,fma"))) void scanQ7BlockExact(
+    const uint8_t* codes, const uint32_t* rows, size_t n,
+    const float* const* vecp, const int64_t* pks, size_t dim, const float* q,
+    const Q7Query& qq, const Quant8Cache& qc, size_t k,
+    std::vector<RawHit>& out) {
+  out.clear();
+  if (k == 0 || n == 0) return;
+  const int8_t* qcodes = qq.codes.data();
+  const int32_t* pv = qc.pv.data();
+  const int32_t cq = qq.cq;
+  // Reuse a per-thread scratch buffer: value-initializing 20 KB of int32
+  // per query was pure overhead, and the q7 pass writes every element.
+  static thread_local std::vector<int32_t> dq;
+  if (dq.size() < n) dq.resize(n);
+  TopK qtop(k);
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    int32_t dots[4];
+    q7Dot4(codes + i * dim, codes + (i + 1) * dim, codes + (i + 2) * dim,
+           codes + (i + 3) * dim, qcodes, dim, dots);
+    const int32_t d0 = pv[rows[i]] + cq - 2 * dots[0];
+    const int32_t d1 = pv[rows[i + 1]] + cq - 2 * dots[1];
+    const int32_t d2 = pv[rows[i + 2]] + cq - 2 * dots[2];
+    const int32_t d3 = pv[rows[i + 3]] + cq - 2 * dots[3];
+    dq[i] = d0;
+    dq[i + 1] = d1;
+    dq[i + 2] = d2;
+    dq[i + 3] = d3;
+    qtop.push(RawHit{static_cast<double>(d0), pks[rows[i]], i});
+    qtop.push(RawHit{static_cast<double>(d1), pks[rows[i + 1]], i + 1});
+    qtop.push(RawHit{static_cast<double>(d2), pks[rows[i + 2]], i + 2});
+    qtop.push(RawHit{static_cast<double>(d3), pks[rows[i + 3]], i + 3});
+  }
+  for (; i < n; ++i) {
+    const int32_t d = pv[rows[i]] + cq - 2 * q7Dot(codes + i * dim, qcodes, dim);
+    dq[i] = d;
+    qtop.push(RawHit{static_cast<double>(d), pks[rows[i]], i});
+  }
+  double thr2 = std::numeric_limits<double>::infinity();
+  if (qtop.full()) {
+    const double E = static_cast<double>(qc.max_err) + qq.error_norm;
+    const double inv = 1.0 / static_cast<double>(qc.scale);
+    const double t = std::sqrt(std::max(0.0, qtop.worstDistance())) +
+                     2.0 * E * inv;
+    thr2 = t * t * (1.0 + 1e-6) + 1e-12;
+  }
+  static thread_local std::vector<uint32_t> pool;
+  if (pool.capacity() < 64) pool.reserve(64);
+  collectAtMost(dq.data(), n, thr2, pool);
+  // Pipeline the float-row prefetches a few rows ahead: issuing all of them
+  // up front overruns the line-fill buffers, so the tail of the pool still
+  // misses (measured 2.3 us vs 1.7 us for 81 scattered rows).
+  const size_t np = pool.size();
+  constexpr size_t kLookahead = 8;
+  const size_t warm = np < kLookahead ? np : kLookahead;
+  for (size_t i = 0; i < warm; ++i) {
+    const float* a = vecp[rows[pool[i]]];
+    for (size_t cc = 0; cc < dim; cc += 16) {
+      _mm_prefetch(reinterpret_cast<const char*>(a + cc), _MM_HINT_T0);
+    }
+  }
+  TopK top(k);
+  for (size_t i = 0; i < np; ++i) {
+    if (i + kLookahead < np) {
+      const float* a = vecp[rows[pool[i + kLookahead]]];
+      for (size_t cc = 0; cc < dim; cc += 16) {
+        _mm_prefetch(reinterpret_cast<const char*>(a + cc), _MM_HINT_T0);
+      }
+    }
+    const uint32_t vi = rows[pool[i]];
+    top.push(RawHit{l2Avx2DoubleSq(vecp[vi], q, dim), pks[vi], vi});
+  }
+  top.drain(out);
+}
+
 // Exact q7 scan with a triangle-inequality lower bound.
 //
 // The q7 pass finds the code-space k-th distance d_k.  The triangle bound
@@ -1276,6 +1387,59 @@ Quant8Cache* ensureQuant8(Table& table, int col) {
   buildQuant8(table, col);
   it = table.quant8_caches.find(col);
   return it == table.quant8_caches.end() ? nullptr : &it->second;
+}
+
+// Group the q7 codes by every equality-filter value.  A filtered TopK visits a
+// small subset whose rows are strided by the number of distinct values, so the
+// table-wide code matrix gives one cache line per 6.4 KB.  Copying each value's
+// rows into one contiguous block turns that into a sequential stream; the
+// blocks partition the rows, so the total extra memory is one code matrix.
+FilterCodes* ensureFilterCodes(Table& table, int col, int vec_col) {
+  Quant8Cache* q8 = ensureQuant8(table, vec_col);
+  if (q8 == nullptr || !q8->valid || q8->dim == 0 ||
+      q8->codes.size() != table.vector_cache.pks.size() * q8->dim) {
+    return nullptr;
+  }
+  auto it = table.filter_codes.find(col);
+  if (it != table.filter_codes.end() && it->second.valid &&
+      it->second.version == table.row_version &&
+      it->second.vec_col == vec_col && it->second.dim == q8->dim) {
+    return &it->second;
+  }
+  FilterCache* fc = ensureFilterCache(table, col);
+  if (fc == nullptr || fc->version != table.row_version) return nullptr;
+  FilterCodes c;
+  c.version = table.row_version;
+  c.col = col;
+  c.vec_col = vec_col;
+  c.dim = q8->dim;
+  const size_t rows = table.vector_cache.pks.size();
+  auto copy_list = [&](const std::vector<uint32_t>& idx,
+                       FilterCodes::Block& block) {
+    block.codes.resize(idx.size() * c.dim);
+    block.rows = idx;
+    for (size_t j = 0; j < idx.size(); ++j) {
+      if (idx[j] >= rows) continue;
+      std::memcpy(block.codes.data() + j * c.dim,
+                  q8->codes.data() + static_cast<size_t>(idx[j]) * c.dim,
+                  c.dim);
+    }
+  };
+  c.str.reserve(fc->str_idx.size());
+  for (const auto& [key, idx] : fc->str_idx) {
+    FilterCodes::Block block;
+    copy_list(idx, block);
+    c.str.emplace(key, std::move(block));
+  }
+  c.num.reserve(fc->num_idx.size());
+  for (const auto& [key, idx] : fc->num_idx) {
+    FilterCodes::Block block;
+    copy_list(idx, block);
+    c.num.emplace(key, std::move(block));
+  }
+  c.valid = true;
+  table.filter_codes[col] = std::move(c);
+  return &table.filter_codes[col];
 }
 
 // ann-mode q7 IVF index.  It reuses the existing code matrix (no second copy)
@@ -2611,6 +2775,49 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
 
   if (!limit_zero) {
     bool cache_scanned = false;
+    // Benchmark shape: one equality condition plus the (pk, distance)
+    // projection.  Resolve the value's contiguous q7 block directly and skip
+    // the generic filter-cache path, whose pk list / vector-index lookups were
+    // pure overhead here (three hash lookups and two std::string keys per
+    // filtered query, ~1.9 us of a 16 us query).
+    static const bool allow_block =
+        std::getenv("MVDB_NO_FILTER_BLOCK") == nullptr;
+    if (allow_block && distance_topk && simple_proj && !table->disk_mode &&
+        use_avx2 && conds.size() == 1 && conds[0].op == "=") {
+      ensureVectorCache(*table, orders[0].col);
+      const VectorCache& bvc = table->vector_cache;
+      if (bvc.valid && bvc.dim == orders[0].query.size() &&
+          bvc.pks.size() == table->rows.size()) {
+        Quant8Cache* bq8 = ensureQuant8(*table, orders[0].col);
+        Q7Query bqq;
+        if (bq8 != nullptr && bq8->valid && bq8->dim == bvc.dim &&
+            bq8->codes.size() == bvc.pks.size() * bvc.dim &&
+            quantizeQuery7(*bq8, orders[0].query, bqq)) {
+          FilterCodes* bfc =
+              ensureFilterCodes(*table, conds[0].col, orders[0].col);
+          const FilterCodes::Block* block = nullptr;
+          if (bfc != nullptr) {
+            if (conds[0].literal.type == Value::Type::Str) {
+              auto bit = bfc->str.find(std::string(conds[0].literal.str()));
+              if (bit != bfc->str.end()) block = &bit->second;
+            } else if (conds[0].literal.type == Value::Type::Int) {
+              auto bit = bfc->num.find(conds[0].literal.i);
+              if (bit != bfc->num.end()) block = &bit->second;
+            }
+          }
+          if (block != nullptr && !block->rows.empty() &&
+              block->rows.size() <= 4096 &&
+              block->codes.size() == block->rows.size() * bvc.dim) {
+            scanQ7BlockExact(block->codes.data(), block->rows.data(),
+                             block->rows.size(), bvc.vecp.data(),
+                             bvc.pks.data(), bvc.dim,
+                             orders[0].query.data(), bqq, *bq8, k, fast_hits);
+            have_fast_hits = true;
+            cache_scanned = true;
+          }
+        }
+      }
+    }
     if (!cache_scanned && distance_topk && !table->disk_mode) {
       static const std::vector<int64_t> kNoMatches;
       const std::vector<int64_t>* filtered = nullptr;
@@ -3008,8 +3215,21 @@ Status Executor::execute(const Statement& stmt, ExecResult& out) {
       return rollbackTxn();
     case Statement::Kind::Exit:
       return Status::Ok();
-    case Statement::Kind::Select:
+    case Statement::Kind::Select: {
+      // One-shot heap return at the write -> query boundary.  A 100-row
+      // INSERT transiently allocates ~1 MB of parse/WAL scratch, and glibc
+      // keeps the freed pages resident (and charged to the cgroup) for reuse.
+      // Trimming once when the first read follows a write releases those pages
+      // before the read caches grow, which lowers the measured peak without
+      // paying a per-statement trim (that variant was slower in A/B).
+#if defined(__GLIBC__)
+      if (heap_dirty_) {
+        heap_dirty_ = false;
+        malloc_trim(0);
+      }
+#endif
       return executeSelect(stmt.select, out);
+    }
     case Statement::Kind::CreateTable:
       return executeCreateTable(stmt.create_table);
     case Statement::Kind::DropTable:
@@ -3064,6 +3284,7 @@ Status Executor::execute(const Statement& stmt, ExecResult& out) {
     case Statement::Kind::Insert:
     case Statement::Kind::Update:
     case Statement::Kind::Delete: {
+      heap_dirty_ = true;
       bool implicit = !active_;
       if (implicit) {
         Status st = beginTxn();
