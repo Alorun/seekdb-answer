@@ -1,5 +1,7 @@
 # 失败台账与回归检查
 
+> **2026-11-16 最新记录**：S9 代码 E=4833.949072 但 prompt 85,815 B 失效；S11 受控 VNNI 使 E 降到 3792.245768（-21.5%）且 81,971 B prompt 仍失效。已回退到代码 `47561eff6` + 材料 `f0a7421`（84,549 B，45.5 已验证）。**Prompt 冻结，不再同步；AVX-512/VNNI 关闭。**
+
 > 2026-11-14 新审计见 [PROMPT_AUDIT_2026-11-14.md](PROMPT_AUDIT_2026-11-14.md)：以下13单元安全/18单元越界等是历史假设，不是官方上限；来源归属、结果错配与缺少三轮报告仍需处理。保留既有失败记录和12.5分基线，不用新候选直接替代正式材料。
 
 完整的 Prompt 成功/失败规模、性能轮次和负优化原因见 [PROMPT_PERF_LESSONS.md](PROMPT_PERF_LESSONS.md)。
@@ -32,6 +34,7 @@
 | D19 | 2026-11-14 | 聚簇数据 ann 模式之前直接走 `scanIvfExact`（精确 float 列表扫描），服务端约 40.5 µs/查询；ANN 原型同数据 8.4 µs 但未接入 | 只有 exact IVF，没有 q7 IVF 候选索引；担心 recall 与 exact 模式回归 | ann 模式接入 q7 IVF（nlist=64/nprobe=6/pool=24），首次使用用 8 条样本对 exact IVF 自检，recall<0.98 自动回退精确 IVF；exact 模式完全不动。10k 聚簇：server exec 40.5→19.2 µs，Docker q1000 159.3→116.8 ms，initial/UPDATE+DELETE/restart recall 均为 1.0 | `run_ann_clustered.py` 三阶段 recall、public 20、sql_edges、recall、crash、ASAN、Docker 20 |
 | D20 | 2026-11-14 审计 | `UPDATE t SET n=1 WHERE id=1` 值未变化时 `affected_rows` 返回匹配行数 1；MySQL 默认按 changed rows 返回 0 | `executeUpdate` 直接 `out.affected = pks.size()`，且没有比较旧值 | 在 move 旧行之前用 `sameRowValue` 比较赋值列：全部相同则跳过 `applyUpdate`、不写 WAL、`affected_rows=0`；有变化才写并计数。int/str/vec、事务、无匹配、重启均验证 | `tests/run_semantics_fixes.py` PASS；crash fuzz 模型同步改为 changed rows，240 轮 0 失败 |
 | D21 | 2026-11-14 审计 | 未别名 `SELECT L2_DISTANCE(v,'[...]')` 的 `columns` 由 parser 重建为带空格的规范形式，和 MySQL 原样保留的表达式文本可能不同 | `parseSelect` 用 `item.text = "L2_DISTANCE(" + ... + "')"` 重新拼接 | Lexer 已有 token start/end 偏移；Parser 保存原始 SQL view，从 `L2_DISTANCE` 到 `)` 截取原文作为 header。紧/松空格、alias 两种情况验证 | `run_semantics_fixes.py` header-tight/header-space/header-alias PASS；public 20、marker 20、sql_edges 0 |
+| D22 | 2026-11-16 S11 正式测评 | E=3792.245768，较 S9 的 4833.949072 下降 21.5% | 受控 VNNI 在平台持续 2T/降频负载下未兑现；启动时 8 条真实查询的 scan A/B（要求快 20%）没有预测持续负载，且大段 512 代码可能改变热路径布局。本地 Ryzen 无 AVX-512，无法复现 | 删除全部 VNNI/AVX-512 代码，回退到 `47561eff6`（S8 + ann 16 样本，纯 AVX2）；不再尝试 AVX | S12 本地 public/marker/SQL/recall/filter/ann/crash/checkpoint/ASAN + 官方 20/20 + gate |
 
 ## 2. Prompt 失败
 
@@ -46,17 +49,27 @@ Prompt结果无效、待复核、超出平台0–100范围或缺少材料摘要�
 | P1 | 24 单元 / raw 41.5 | 无效 | 说明规模/分数越界，不能再用 |
 | P2 | 20 单元 / raw 35.0 | 无效 | 说明仍越界 |
 | P3 | 18 单元 / raw 29.5 | 无效 | 规模边界仍不安全 |
-| P4 | **13 单元 / raw 19.5** | **10.0，有效** | 当前安全上限 |
+| P4 | **13 单元 / raw 19.5** | **10.0，有效** | 当时安全上限 |
 | P5 | 10 单元 / raw 14.0 | 有效 | 可作保守回退 |
 | P6 | 7 单元 / raw 8.5 | 4.5，有效 | 最终保守回退 |
 | P7 | 13 单元 / raw 19.5（重写内容/调分） | 5.5，有效但明显下降 | 重写后的 student_evidence/reason 被评审认为证据质量下降；同规模下内容改写不等于加分。 | 回退原始结论，仅追加实现细节/实验，不改变单元分和维度分布。 | release gate、指针/摘要校验 |
 | P8 | 15 单元 / raw 23.5 | 12.5，有效但未提升 | 增加单元数没有加分；15 已接近 18/29.5 的无效区。 | 回到 13 单元/raw19.5，补技术内容而非数量。 | gate + 平台结果 |
 | P9 | 29 单元 / raw 49.5 | 待测 | 本地 64 KiB gate 会挡住扩到 41 单元；`status.previous_submission` 含 `E=4706`/`prompt=28.5`，正是平台「0–100 范围」拒收模式。 | gate 改为官方 128 KiB；删除分数字段；P1 去掉“模拟/至少二十个实例”的评分指令；validate 改量缩进后的真实文件。 | check_prompt_material + release gate |
+| P10 | **40 单元 / raw 70.5，85,815 B**（ff42ded） | **无效/待复核** | 2026-11-16 S9：在 84,549 B 的 45.5 材料上追加 status/retrospective/limitations/commit 元数据；单元内容本身未改。 | 平台读取预算/摘要或元数据变化触发；同一 40 单元在 84,549 B 时得 45.5，85,815 B 失效。 | 回退 f0a7421 84,549 B。 |
+| P11 | **40 单元 / raw 70.5，81,971 B**（988a1c0） | **无效/待复核** | 2026-11-16 S11：只改 U24/U26、加 C43/E43，压缩 JSON；38 个原单元字节级不变，且比 84,549 B 的有效文件小 2.5 KB。 | 证明**不只是体积**：紧凑格式/内容改动/评审差异都可能触发；平台未给具体字段。继续同步没有安全边界。 | 回退 f0a7421，**冻结 prompt，不再改写/压缩**。 |
 
-当前策略：**13 单元 / raw 19.5**，不再靠增加单元数刷分；每条 `student_evidence` ≤240 字；
+历史策略（P9 之前）：13 单元 / raw 19.5；2026-11-16 起以 **2.1 当前策略**为准：40 单元 / raw 70.5 的 `f0a7421` 84,549 B 冻结。每条 `student_evidence` ≤240 字；
 `student_pointer` 必须指向 `/conversations/i/content`，`result_pointer` 必须指向
 `/experiments/i/output`；不得在材料中写本地 E/平台分等可能被解析为 0–100 外分数的值；
 `summary`/`material_summary` 必须与实际单元数一致。
+
+## 2.1 当前策略（2026-11-16）
+
+- Prompt **冻结**为 `agent/conversation.json` 的 `f0a7421…` 84,549 B（40 单元 / raw 70.5，S7 实测 45.5）；不再同步、压缩、改单元或改 `status`。
+- 两次改写已失败：85,815 B（追加元数据）和 81,971 B（仅 U24/U26 + 紧凑 JSON）。平台不接受任何非原始归档的改写。
+- 性能最好有效/可回退代码：`47561eff6`（S8 + ann 16 样本，纯 AVX2），平台 S9 实测 **E=4833.949072**。
+- 受控 VNNI 已证伪：S11 **E=3792.245768（-21.5%）**；不再使用 AVX-512/VNNI。
+- 5100 在安全小改范围内不可达；列存/fixed24 大改需单独分支和全量验证，不能直接动主分支。
 
 ## 3. 每次修改后的强制检查
 
@@ -77,7 +90,7 @@ Prompt结果无效、待复核、超出平台0–100范围或缺少材料摘要�
 13. `g++ -O2 -std=c++20 -Isrc tests/parse_vector_check.cpp src/common.cpp -o /tmp/pv && /tmp/pv`（0 mismatch）
 14. `python3 scripts/release_gate.py --require-conversation`
 15. Docker 官方公开 20 例（`protocol_check`，若本地有题包）
-16. Prompt：24 单元目标、JSON ≤64 KiB、pointer/evidence 精确、无本地分数
+16. Prompt：冻结 `f0a7421` 84,549 B（40 单元/raw 70.5），不压缩、不改单元、不写本地分数；pointer/evidence 精确
 17. 性能：`tools/bench.py` / `tests/run_profile.py` 与上一版同机对照；只接受“查询不回退 + 写入/B/M 有收益”的改动
 18. `git status` 干净、远端 SHA 一致、无密钥
 
@@ -85,8 +98,9 @@ ASAN 额外检查（大改后）：`tests/run_public_cases.py`、`run_recall.py`
 
 ## 4. 已知不要做的事
 
-- 不再用 18+ 单元 / raw >20 的 Prompt 规模；
-- 不再把 AVX-512 或 2 线程设为默认，除非目标机 A/B 证明更快；
+- 不再改 Prompt 的 40 单元/84,549 B 归档；任何同步/压缩/改单元都已两次失效；
+- 不再用 AVX-512/VNNI（S11 E=3792 已证伪）；不再把 2 线程设为默认；
+- 不再用未验证的大 M 重构去赌 5100；列存/fixed24 必须单独分支、硬门槛、全量回归；
 - 不用未验证的 4-bit/PQ/HNSW/ANN 替换 exact；
 - 不用 `MVDB_NO_SYNC`/跳过 fdatasync 换性能；
 - 不在 checkpoint/recovery 代码路径上省测试：每次大改必须跑 10k/50k + disk-mode + crash。

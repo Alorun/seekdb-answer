@@ -7,9 +7,9 @@ platform confirms all MySQL cases pass.
 
 | field | value |
 |---|---|
-| branch / commit | `2026-competition-round2` / `a8b045b18` (S8 query/WAL, `47561eff6` ann self-check, `a5dce920e` guarded VNNI; material syncs U24/U26 under 84,549 B) |
-| code commit | `a5dce920e`; material compact, 81,971 B, 38 existing units byte-identical, U24/U26 synced to current VNNI/16-sample ann |
-| conversation | 81,971 bytes, sha256 `988a1c0ca3805907f5c5235b0006e3ba907f622603a5c95e3e2255118af5da68`, 40 units / raw 70.5 (compact; 38 existing units byte-identical to the 45.5 file) |
+| branch / commit | `2026-competition-round2` / `cc631fb98` (VNNI reverted; code `47561eff6` S8 + ann 16-sample; material f0a7421 84,549 B) |
+| code commit | `47561eff6`; material is the byte-identical f0a7421 84,549 B file that scored 45.5 |
+| conversation | 84,549 bytes, sha256 `f0a7421e04ee8b896b4516cff4caafcd69f659e49e34d986bac254cf0cff625b`, 40 units / raw 70.5 |
 | local gate | PASS: `release_gate.py --require-conversation` (anonymous remote, Docker build + smoke); independent clean-room audit GO |
 | official public | protocol_check 20/20 (Docker tip image), public 20/20, marker 20/20 |
 | SQL edges | 158 checks x 2 modes, 0 failures |
@@ -32,9 +32,8 @@ platform confirms all MySQL cases pass.
 | S8 | 2026-11-15 | 1879550a7 |  | f0a7421 / 84549 | PASS | not run | local only: ORDER BY alias reuses projection query (server exec 18.9->15.6 us/query); WAL cache dropped after recovery (restart M_peak 15.22->13.41 MB); official protocol_check 20/20 | not run | 0.273 s | 0.176 s | 40 units/raw 70.5 unchanged; S7 prompt 45.5 preserved |
 | S9 | 2026-11-16 | 0e9834c8a |  | ff42ded / 85815 | PASS | not run | **E=4833.949072; prompt invalid/NEEDS_REVIEW; admission pass** | pass | 0.273 s | 0.056 s (ann) | metadata/status sync triggered the prompt rejection; performance +172 vs S7 |
 | S10 | 2026-11-16 | 0d291e775 |  | f0a7421 / 84549 | PASS | not run | restored byte-identical 45.5 material; code keeps S8/ann self-check; expected prompt 45.5, performance E~4833.9 | not run | 0.273 s | 0.056 s (ann) | do not sync material metadata again |
-| S11 | 2026-11-16 | a8b045b18 |  | a17c54d / 81971 | PASS | not run | guarded AVX-512 VNNI for unfiltered exact q7: CPUID+XCR0+OSXSAVE, live-table result self-check, >20% sustained scan A/B, else AVX2; U24/U26 synced, 38 old units identical; local fallback full suite + official 20/20 | not run | 0.273 s | 0.056 s (ann) | 81,971 B under the known-valid 84,549 B; VNNI path not executable locally |
-| S11 |  |  |  |  |  |  |  |  |  |  |  |
-| S12 |  |  |  |  |  |  |  |  |  |  |  |
+| S11 | 2026-11-16 | f4ae96dbf |  | 988a1c0 / 81971 | PASS | not run | **E=3792.245768; prompt invalid; VNNI down 21.5% vs 4833.9** | pass | 0.273 s | 0.056 s (ann) | live-scan A/B false positive under sustained 2T/thermal; prompt sync still rejected |
+| S12 | 2026-11-16 | cc631fb98 |  | f0a7421 / 84549 | PASS | not run | reverted VNNI to `47561eff6`; restored byte-identical 45.5 material; expected E~4833.9 + prompt 45.5 | not run | 0.273 s | 0.056 s (ann) | no more AVX or prompt rewrites |
 | S13 |  |  |  |  |  |  |  |  |  |  |  |
 | S14 |  |  |  |  |  |  |  |  |  |  |  |
 | S15 |  |  |  |  |  |  |  |  |  |  |  |
