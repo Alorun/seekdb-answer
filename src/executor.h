@@ -145,6 +145,7 @@ class Executor {
   bool autocommit_ = true;
   bool defer_sync_ = false;
   bool pending_sync_ = false;
+  bool wal_dirty_ = false;
   uint64_t txn_id_ = 0;
   uint64_t txn_start_ = 0;
   uint64_t first_lsn_ = 0;

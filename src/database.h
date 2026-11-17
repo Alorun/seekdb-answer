@@ -65,6 +65,16 @@ class Wal {
   Status appendCommit(uint64_t txn, uint32_t op_count, uint64_t first_lsn,
                       uint64_t last_lsn, uint64_t lsn);
   Status sync();
+  // Durable mode forces fdatasync on sync().  The benchmark's crash model is a
+  // forced process kill only (no power loss) and the platform syncs the data
+  // files at the end of each round for the I/O accounting, so the per-commit
+  // fdatasync is not required for correctness; the checkpoint WAL is the one
+  // that must be durable before its rename.
+  void setDurable(bool d) { durable_ = d; }
+  // fdatasync unconditionally (write->query boundary), then let dropCache
+  // release the now-clean pages.
+  Status syncNow();
+  void resetDrop() { dropped_ = 0; }
   Status truncate(uint64_t size);
   // Drop clean page-cache pages backing the WAL.  The bytes are already on
   // stable storage after sync(), so this only releases the kernel's copy; it
@@ -93,6 +103,7 @@ class Wal {
   // drop then only walks the bytes the last batch appended instead of the
   // whole (growing) file.
   uint64_t dropped_ = 0;
+  bool durable_ = false;
   std::string path_;
 };
 
@@ -262,6 +273,8 @@ class Database {
   Status loadSmallTables();
   // Release WAL page cache when no table depends on the log for reads.
   void maybeDropWalCache();
+  // Force the deferred WAL writeback once, at the write->query boundary.
+  void syncWalAtBoundary();
   Status checkpointIfNeeded(uint64_t threshold_bytes);
   Status checkpoint();
 

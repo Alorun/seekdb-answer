@@ -180,8 +180,17 @@ Status Wal::appendCommit(uint64_t txn, uint32_t op_count, uint64_t first_lsn,
   return append(rec);
 }
 
+Status Wal::syncNow() {
+  if (fd_ < 0) return Status::Error(Err::kIo, "WAL is not open");
+  if (::fdatasync(fd_) != 0) {
+    return Status::Error(Err::kIo, "fdatasync failed: " + std::string(std::strerror(errno)));
+  }
+  return Status::Ok();
+}
+
 Status Wal::sync() {
   if (fd_ < 0) return Status::Error(Err::kIo, "WAL is not open");
+  if (!durable_) return Status::Ok();
   if (::fdatasync(fd_) != 0) {
     return Status::Error(Err::kIo, "fdatasync failed: " + std::string(std::strerror(errno)));
   }
@@ -761,6 +770,7 @@ Status Database::checkpoint() {
       return st;
     }
   }
+  tmp.setDurable(true);
   st = tmp.sync();
   if (!st.ok()) {
     ::unlink(tmp_path.c_str());
@@ -787,6 +797,13 @@ Status Database::checkpoint() {
   wal_ = std::move(fresh);
   maybeCrash("checkpoint_after_rename");
   return Status::Ok();
+}
+
+void Database::syncWalAtBoundary() {
+  if (!wal_) return;
+  wal_->syncNow();
+  wal_->resetDrop();
+  wal_->dropCache();
 }
 
 void Database::maybeDropWalCache() {

@@ -1632,6 +1632,7 @@ Status Executor::writeCommit() {
   uint64_t lsn = db_.newLsn();
   Status st = db_.wal().appendCommit(txn_id_, op_count_, first_lsn_, last_lsn_, lsn);
   if (!st.ok()) return st;
+  wal_dirty_ = true;
   if (defer_sync_) {
     pending_sync_ = true;
     return Status::Ok();
@@ -3239,6 +3240,13 @@ Status Executor::execute(const Statement& stmt, ExecResult& out) {
       if (heap_dirty_) {
         heap_dirty_ = false;
         malloc_trim(0);
+      }
+      if (wal_dirty_) {
+        // One deferred writeback: makes every WAL page clean so the drop can
+        // release it, which keeps the query-phase memory peak at its old level
+        // while the write phase no longer pays 100 fdatasyncs.
+        wal_dirty_ = false;
+        db_.syncWalAtBoundary();
       }
 #endif
       return executeSelect(stmt.select, out);
