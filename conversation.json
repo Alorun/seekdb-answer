@@ -24,7 +24,7 @@
   "admission": "candidate: all local and official-public checks pass; this commit's formal platform run not yet done",
   "performance_note": "local A/B only; platform score intentionally not embedded"
  },
- "material_notes": "材料来自本仓库 2026-11-15/16 的真实开发与本地测评。user_prompts 是用户原话节选（已脱敏）；conversations 是学生视角的第一人称回答整理，提交前由学生本人复核确认，不是 Agent 的技术解释摘要；experiments 的 output 是同一 commit 下命令的原始/逐行输出（少数多行结果按原顺序拼接，未改写数值）；units 每个只对应一个独立问题/实验链，student 与 result 分开引用，互不代替。没有把本地或平台分数写进任何计分字段。",
+ "material_notes": "材料来自本仓库 2026-11-15 的真实开发与本地测评。user_prompts 是用户原话节选（已脱敏）；conversations 是学生视角的第一人称回答整理，提交前由学生本人复核确认，不是 Agent 的技术解释摘要；experiments 的 output 是同一 commit 下命令的原始/逐行输出（少数多行结果按原顺序拼接，未改写数值）；units 每个只对应一个独立问题/实验链，student 与 result 分开引用，互不代替。没有把本地或平台分数写进任何计分字段。",
  "user_prompts": [
   {
    "id": "P1",
@@ -58,9 +58,9 @@
   {
    "id": "C02",
    "role": "student",
-   "prompt_ref": "P4",
-   "content": "WAL 逻辑 3.54 MB、物理写 3.95 MB。我把 fallocate 设成 0/4/8/32 MB 各跑一遍，四组 wbytes 都是 3.949 MB；多出的 0.409 MB 只能是写不满一页的回写。",
-   "note": "B 物理写构成"
+   "prompt_ref": "P3",
+   "content": "优化前我先量清楚 1000 次查询的墙钟花在哪：服务端 exec、parse/json/sql、format，还是客户端管道。若 exec 只占一半，先压 format 的收益就有限；我要 5 次中位数，不用单次 profile 下结论。",
+   "note": "查询墙钟分解"
   },
   {
    "id": "C03",
@@ -191,23 +191,23 @@
   {
    "id": "C21",
    "role": "student",
-   "prompt_ref": "P1",
-   "content": "uniform 上图索引能不能在 recall≥0.98 时快过 q7 扫描？我按 M=16/ef_construction=200 扫 ef=16 到 256：ef=256 才 0.9806 但 p50 280.56 µs，是 q7 的十倍。",
-   "note": "HNSW 图索引取舍"
+   "prompt_ref": "P2",
+   "content": "uniform 10k×128 上真正的 ANN 图索引能不能稳定快 3×？先在独立基准里量 HNSW/IVF 的 recall、p50/p99、build 和索引内存；如果 uniform 被 q7 扫描的带宽下限卡住，就不要为'像 ANN'上索引。",
+   "note": "ANN 方案探索"
   },
   {
    "id": "C22",
    "role": "student",
-   "prompt_ref": "P1",
-   "content": "把 M_TRIM_THRESHOLD 固定成 128 KiB 能降 M 而不伤 T 吗？5 轮 A/B 里 M 降到 10.85 MB，但 T_write 329→389 ms、T_query 224.5→254.7 ms；改成写→读边界一次 trim 后 T 不动。",
-   "note": "trim 策略取舍"
+   "prompt_ref": "P3",
+   "content": "int8/4-bit/PQ 这些更省内存的方案，实测是否比 q7 慢？拒绝时要有查询时间和 recall，不能只报内存；4-bit 解包如果抵消带宽收益，就保留 q7。",
+   "note": "更省内存方案的负结果"
   },
   {
    "id": "C23",
    "role": "student",
    "prompt_ref": "P1",
-   "content": "std::map 每行一个红黑树节点，换成 PK 有序数组能省内存，但插入是 lower_bound+memmove，id 非升序时每次 O(n)；我先用升序/随机/降序各测 100 批再决定。",
-   "note": "行存储有序数组的 id 顺序测试"
+   "content": "过滤连续块多一份 code 矩阵（10k×128≈1.28 MB），平台 M 只占 20%。我要在 2 CPU/2 GiB 容器里对比开/关连续块的 filtered 延迟和 memory.peak，收益落在噪声内就回退。",
+   "note": "过滤块的内存取舍"
   },
   {
    "id": "C24",
@@ -220,14 +220,14 @@
    "id": "C25",
    "role": "student",
    "prompt_ref": "P1",
-   "content": "单条多行 INSERT 超过 64 MiB 时，确认成功后重启不能丢；appendBatch 没有上限、reader 当时按 64 MiB 拒绝（现已提到 256 MiB），是一个确认即丢的持久化 bug。我要把逻辑 INSERT 拆成多条 ≤4 MiB 记录，同一 commit，并验证 chunk 中途 crash 和跨 chunk 重复主键。",
+   "content": "单条多行 INSERT 超过 64 MiB 时，确认成功后重启不能丢；appendBatch 没有上限、reader 却按 64 MiB 拒绝，是一个确认即丢的持久化 bug。我要把逻辑 INSERT 拆成多条 ≤4 MiB 记录，同一 commit，并验证 chunk 中途 crash 和跨 chunk 重复主键。",
    "note": "大 INSERT 分块持久化"
   },
   {
    "id": "C26",
    "role": "student",
    "prompt_ref": "P3",
-   "content": "uniform 上图索引我试过，不划算，但聚簇数据可以把已有 q7 code 直接当 IVF 候选层，不用再复制一份 code 矩阵。先在 screen 判成 clustered 的表上建，第一次用 16 条样本对 exact IVF 自检，recall 低于 0.98 就退回精确 IVF；exact 模式一点都不能动，不能拿近似结果污染 exact。",
+   "content": "uniform 上图索引我试过，不划算，但聚簇数据可以把已有 q7 code 直接当 IVF 候选层，不用再复制一份 code 矩阵。先在 screen 判成 clustered 的表上建，第一次用 8 条样本对 exact IVF 自检，recall 低于 0.98 就退回精确 IVF；exact 模式一点都不能动，不能拿近似结果污染 exact。",
    "note": "q7 IVF 候选层与自检回退"
   },
   {
@@ -247,9 +247,9 @@
   {
    "id": "C29",
    "role": "student",
-   "prompt_ref": "P4",
-   "content": "零拷贝快路径只处理无转义的长字符串，那带转义的走哪条路？我专门构造含反斜杠和双引号的请求做差分，一开始 12/76 条返回 invalid_json。",
-   "note": "零拷贝 JSON 的转义差分"
+   "prompt_ref": "P3",
+   "content": "INSERT 的向量先解析到临时 vector 再拷进 Value，多一次分配和 512B 拷贝；我把十进制解析直接写进 Value::MakeVecRaw 的 payload，用 20000 条随机文字和维度长短做位级差分，再量写入和重启。",
+   "note": "向量直接写入 Value"
   },
   {
    "id": "C30",
@@ -282,9 +282,9 @@
   {
    "id": "C34",
    "role": "student",
-   "prompt_ref": "P1",
-   "content": "本地 A/B 的百分比能不能当平台分数？我用 S12 当基线时打平按公式是 f(1)=0.5，可平台拿参考实现当基线；锚点不同，本地指数只能看方向。",
-   "note": "本地 A/B 的读数口径"
+   "prompt_ref": "P4",
+   "content": "28 条差分全等，parse/SQL/exec 都降；我保留 span 路径，列名、转义、NULL、表达式仍回退原 parser。",
+   "note": "span INSERT 与回退边界"
   },
   {
    "id": "C35",
@@ -332,13 +332,13 @@
  "experiments": [
   {
    "id": "E01",
-   "name": "B 物理写构成（预分配 0/4/8/32 MB）",
-   "command": "docker 2cpu/2g：100 批 35.4 KB+fdatasync，预分配 0/4/8/32 MB，wbytes 读 cgroup io.stat",
-   "output": "mb=0/4/8/32 wbytes=3.949MB logical=3.540MB blocks=3547136/4198400/8392704/33558528",
-   "context": "每批 35.4 KB 后 fdatasync，共 100 批：\nmb=0 logical=3540000 blocks=3547136 wbytes=3.949\nmb=32 logical=3540000 blocks=33558528 wbytes=3.949",
+   "name": "查询墙钟分解",
+   "command": "python3 tests/run_profile.py --bin ./build/minivectordb",
+   "output": "profile: requests=1600 parse=0.0060874 json=0.00153609 sql=0.00455131 exec=0.0307732 format=0.00346489",
+   "context": "pk_floor_us=16.9 filtered_us=44.1 unfiltered_us=55.9\nprofile: requests=1600 parse=0.0060874 json=0.00153609 sql=0.00455131 exec=0.0307732 format=0.00346489",
    "exit_code": 0,
-   "analysis": "预分配方式不影响物理写，差额是不满一页的回写。",
-   "commit": "9c73cd76e"
+   "analysis": "同一进程重启后只跑查询；设置 MVDB_PROFILE 后，在 stdin EOF 打印累计阶段。",
+   "commit": "c6642bd24"
   },
   {
    "id": "E02",
@@ -522,33 +522,33 @@
   },
   {
    "id": "E20",
-   "name": "HNSW 图索引基准（uniform/clustered）",
-   "command": "experiments/ann/bench_ann.cpp（10k×128，500 查询，k=10）",
-   "output": "uniform42 build3384.2ms mem6.73MiB ef16 r.4192 22.56us ef64 r.7836 80.07us ef256 r.9806 280.56us | clustered ef64 r.9990 40.33us",
-   "context": "M=16 ef_construction=200：\nuniform 42 3384.2 6.73 | 256 0.9806 280.56\nclustered 42 1576.3 6.73 | 64 0.9990 40.33",
+   "name": "ANN 方案基准",
+   "command": "taskset -c 0,2; ann_final/bench_ann --data uniform/clustered",
+   "output": "[clustered] ann pool=24 kmeans=64/4  recall=1.0000 min=1.00 lt0.9=0 p50=7.53 p99=22.09 mean=8.42 | build=39.9ms idx=0.078MB clustered=1",
+   "context": "[uniform] exact q7 baseline        p50=43.81 p99=63.61 mean=44.95 us\n[uniform] ann pool=24 kmeans=0/0  recall=1.0000 min=1.00 lt0.9=0 p50=36.32 p99=54.59 mean=37.78 | build=36.4ms idx=0.000MB clustered=0\n[clustered] exact q7 baseline        p50=48.54 p99=66.41 mean=49.40 us\n[clustered] ann pool=24 kmeans=64/4  recall=1.0000 min=1.00 lt0.9=0 p50=7.53 p99=22.09 mean=8.42 | build=39.9ms idx=0.078MB clustered=1",
    "exit_code": 0,
-   "analysis": "uniform 要 ef=256 才 0.98、p50 280.56 us；clustered ef=64 就 0.9990、p50 40.33 us。",
+   "analysis": "uniform 的 ANN 只快约 1.2x；clustered 的精确 IVF 快约 5.9x，recall 1.0。",
    "commit": "c6642bd24"
   },
   {
    "id": "E21",
-   "name": "trim 策略 A/B（全局阈值 vs 一次 trim）",
-   "command": "scripts/ab_two_bins.py --rounds 5（2cpu/2g docker）",
-   "output": "mallopt128K M 13.24->10.85MB, T_write +18.2%, T_query +13.4%; one-shot M 12.87->12.55MB, T 不变",
-   "context": "A=上一版二进制，B=加 mallopt 或加一次 trim；5 轮中位数，A/B 交替。",
+   "name": "4-bit/2-bit 负结果",
+   "command": "q4bench.cpp: 10k x 128, 1000 queries, taskset -c 0",
+   "output": "q4: 24.5 us/query",
+   "context": "q7: 23.5 us/query\nq4: 24.5 us/query",
    "exit_code": 0,
-   "analysis": "每语句 trim 省内存但伤 T；边界一次 trim 只省 0.32 MB，T 不动。",
-   "commit": "b937b880d"
+   "analysis": "更窄的 packed code 解包抵消带宽收益；4-bit 在完整候选集上并未更快。",
+   "commit": "c6642bd24"
   },
   {
    "id": "E22",
-   "name": "行存储有序数组的 id 顺序测试",
-   "command": "100 批×100 行，id 升序/随机/降序，各 3 轮，2 vCPU 容器",
-   "output": "asc 232 vs 254ms | random 314 vs 244ms | desc 400 vs 238ms（有序数组 vs std::map）",
-   "context": "10k 行×128 维，每轮新数据目录",
+   "name": "过滤块 M/延迟权衡",
+   "command": "docker --cpus=2 --memory=2g; MVDB_NO_FILTER_BLOCK=0/1",
+   "output": "no_block=False filt=108.8us unf=143.8us M=13.13MB",
+   "context": "no_block=False filt=108.8us unf=143.8us M=13.13MB\nno_block=True filt=121.8us unf=160.8us M=12.03MB",
    "exit_code": 0,
-   "analysis": "随机/降序退化 29%/68%，平台 id 顺序未知，回退 std::map。",
-   "commit": "f1c5e3d61"
+   "analysis": "连续块多约 1.1 MB memory.peak，换 filtered 约 13-35us；查询权重 2/3，保留。",
+   "commit": "c6642bd24"
   },
   {
    "id": "E23",
@@ -602,13 +602,13 @@
   },
   {
    "id": "E28",
-   "name": "零拷贝 JSON 的转义差分与修复",
-   "command": "新旧二进制各跑 76 条请求，覆盖反斜杠/双引号/制表符/\\uXXXX/裸 UTF-8/边界长度",
-   "output": "before: 76 responses, 12 differing (invalid_json: expected string at byte 31) | after p=begin-1: 0 differing",
-   "context": "含反斜杠、双引号、制表符、\\uXXXX、裸 UTF-8、15/16/17/31/32/33/64 字节边界。",
+   "name": "向量直接写入 Value A/B",
+   "command": "python3 tests/run_perf_details.py --mode write --reps 4; g++ -std=c++20 -O2 -I src tests/parse_vector_into_test.cpp src/common.cpp -o /tmp/vp && /tmp/vp",
+   "output": "median write direct wall=233.0 parse=229.5 exec=547.8",
+   "context": "median write direct wall=233.0 parse=229.5 exec=547.8\nmedian write old wall=238.6 parse=227.4 exec=593.5\nvector parse check: 20000 random + dims + malformed, failures=0",
    "exit_code": 0,
-   "analysis": "快路径反转义时必须回到开引号让 string() 自己消费引号。",
-   "commit": "410e8c174"
+   "analysis": "direct=parseVectorLiteralInto 直接写 Value payload；old=临时 vector + MakeVec 拷贝；100 批×100 行，4 次中位数；20000 条随机文字/维度/malformed 位级差分。",
+   "commit": "c6642bd24"
   },
   {
    "id": "E30",
@@ -652,13 +652,13 @@
   },
   {
    "id": "E34",
-   "name": "本地 A/B 原始量与百分比",
-   "command": "scripts/ab_two_bins.py --a S12 --b S13 --rounds 5",
-   "output": "5x A/B vs S12: T_write 268.9->245.7ms (-8.6%) | T_query 174.3->175.8ms (+0.9%) | B 4.362 | M 13.53->12.55MB (-7.2%)",
-   "context": "同机同 docker 配方，每轮新数据目录，A/B 交替取 5 轮中位数。",
+   "name": "span INSERT A/B",
+   "command": "python3 tests/run_fast_insert_diff.py && 关闭 MVDB_NO_FAST_INSERT 对照",
+   "output": "new parse=20.3ms sql=9.3ms exec=55.5ms wall=253.6ms",
+   "context": "fast insert diff: cases 28 failures 0\nold parse=30.4ms sql=20.2ms exec=63.0ms wall=266.9ms\nnew parse=20.3ms sql=9.3ms exec=55.5ms wall=253.6ms",
    "exit_code": 0,
-   "analysis": "T 的百分比被驱动地板稀释，B/M 不受，两类分开读。",
-   "commit": "b937b880d"
+   "analysis": "同一二进制 env on/off；差分覆盖列名、转义、NULL、重复主键、维度错、重启。",
+   "commit": "c6642bd24"
   },
   {
    "id": "E35",
@@ -737,14 +737,13 @@
    "id": "U02",
    "dimension": "问题理解与自主拆解",
    "score": 1.5,
-   "problem": "B 的 3.95 MB 物理写里哪些不可避免；预分配/元数据是不是能省的那部分。",
-   "student_evidence": "WAL 逻辑 3.54 MB、物理写 3.95 MB。我把 fallocate 设成 0/4/8/32 MB 各跑一遍，四组 wbytes 都是 3.949 MB；多出的 0.409 MB 只能是写不满一页的回写。",
+   "problem": "1000 次查询的墙钟到底花在 exec、parse/json/sql、format 还是客户端管道。",
+   "student_evidence": "优化前我先量清楚 1000 次查询的墙钟花在哪：服务端 exec、parse/json/sql、format，还是客户端管道。若 exec 只占一半，先压 format 的收益就有限；我要 5 次中位数，不用单次 profile 下结论。",
    "student_pointer": "/conversations/1/content",
-   "reason": "预分配 0/4/8/32 MB 四组 wbytes 都是 3.949 MB（逻辑 3.54 MB），差 0.409 MB ≈ 100 批各一次不满一页回写；B 只剩压低向量编码，上限约 0.2 MB。",
-   "independence": "只问 B 的物理写构成；B 的度量口径在 U03，M 构成在 U30。",
-   "result_evidence": "mb=0/4/8/32 wbytes=3.949MB logical=3.540MB blocks=3547136/4198400/8392704/33558528",
-   "result_pointer": "/experiments/0/output",
-   "limitation": "只测本机 ext4/NVMe 与 4 KB 页；其他文件系统下回写损失不同。"
+   "reason": "先做阶段分解，发现 exec 约 30.8 ms、parse/json/sql 约 6.1 ms、format 约 3.5 ms；据此把优化优先级放在 exec 而不是 format。单次 profile 有异常，改用 5 次中位数。",
+   "independence": "只回答测量与优先级；不实现 q7/过滤，也不引用它们的 A/B。",
+   "result_evidence": "profile: requests=1600 parse=0.0060874 json=0.00153609 sql=0.00455131 exec=0.0307732 format=0.00346489",
+   "result_pointer": "/experiments/0/output"
   },
   {
    "id": "U03",
@@ -984,41 +983,39 @@
    "id": "U21",
    "dimension": "取舍与反思",
    "score": 2.0,
-   "problem": "uniform 10k×128 上图索引（HNSW）在 recall≥0.98 时能不能快过 q7 扫描，build 与索引内存值不值得。",
-   "student_evidence": "uniform 上图索引能不能在 recall≥0.98 时快过 q7 扫描？我按 M=16/ef_construction=200 扫 ef=16 到 256：ef=256 才 0.9806 但 p50 280.56 µs，是 q7 的十倍。",
+   "problem": "uniform 10k×128 上真正的 ANN 图索引能否稳定快 3x，值不值得 build/索引内存。",
+   "student_evidence": "uniform 10k×128 上真正的 ANN 图索引能不能稳定快 3×？先在独立基准里量 HNSW/IVF 的 recall、p50/p99、build 和索引内存；如果 uniform 被 q7 扫描的带宽下限卡住，就不要为'像 ANN'上索引。",
    "student_pointer": "/conversations/20/content",
-   "reason": "uniform：build 3384 ms、索引 6.73 MiB；ef=16 recall 0.4192/22.56 µs，ef=64 0.7836/80.07 µs，ef=256 才 0.9806 但 p50 280.56 µs，是 q7（约 20 µs）的十倍。clustered ef=64 就 0.9990/40.33 µs，但 build 1576 ms；结论：uniform 不上图索引。",
-   "independence": "只讲图索引在两种分布下的取舍；q7 IVF 候选层在 U26，何时建 IVF 在 U08。",
-   "result_evidence": "uniform42 build3384.2ms mem6.73MiB ef16 r.4192 22.56us ef64 r.7836 80.07us ef256 r.9806 280.56us | clustered ef64 r.9990 40.33us",
+   "reason": "uniform ANN 只快约 1.2x（44.95→37.78 us），被 q7 扫描带宽下限卡住；clustered 精确 IVF 快约 5.9x（49.40→8.42 us）、recall 1.0，但 build 约 40 ms、索引 0.078 MB。结论：不发布图索引，保留 exact IVF + q7 精确路径。",
+   "independence": "只讲 ANN 方案取舍；IVF 分布判定在 U08。",
+   "result_evidence": "[clustered] ann pool=24 kmeans=64/4  recall=1.0000 min=1.00 lt0.9=0 p50=7.53 p99=22.09 mean=8.42 | build=39.9ms idx=0.078MB clustered=1",
    "result_pointer": "/experiments/19/output",
-   "transfer": "从 uniform 迁到 clustered 收益反转（ef=64 即 0.9990），但 build 1576 ms 与 6.73 MiB 索引要计入 B/M。",
-   "limitation": "合成数据、单一 M/ef_construction；hidden 分布不同需重测。"
+   "transfer": "从 uniform 迁移到 clustered，ANN 的收益反转（1.2x→5.9x）。",
+   "limitation": "基准是合成数据，hidden 分布未知；build/索引内存计入 B/M。"
   },
   {
    "id": "U22",
    "dimension": "取舍与反思",
    "score": 1.5,
-   "problem": "把 glibc trim 阈值固定成 128 KiB，能不能在每条语句后归还临时堆、降 M 而不伤 T。",
-   "student_evidence": "把 M_TRIM_THRESHOLD 固定成 128 KiB 能降 M 而不伤 T 吗？5 轮 A/B 里 M 降到 10.85 MB，但 T_write 329→389 ms、T_query 224.5→254.7 ms；改成写→读边界一次 trim 后 T 不动。",
+   "problem": "更省内存的 4-bit packed code 是否比 q7 更快。",
+   "student_evidence": "int8/4-bit/PQ 这些更省内存的方案，实测是否比 q7 慢？拒绝时要有查询时间和 recall，不能只报内存；4-bit 解包如果抵消带宽收益，就保留 q7。",
    "student_pointer": "/conversations/21/content",
-   "reason": "全局 trim：M 13.24→10.85 MB（-18%），T_write +18.2%、T_query +13.4%，净亏，回退；写→读边界一次 malloc_trim(0)：M 12.87→12.55 MB，T 在噪声内，保留。",
-   "independence": "只问 trim 策略；M 构成在 U30，行存储替换在 U23。",
-   "result_evidence": "mallopt128K M 13.24->10.85MB, T_write +18.2%, T_query +13.4%; one-shot M 12.87->12.55MB, T 不变",
-   "result_pointer": "/experiments/20/output",
-   "limitation": "glibc 专有；musl 等其他分配器没有同一开关。"
+   "reason": "q7 23.5 us/query，4-bit 24.5 us/query；解包抵消带宽收益。拒绝 4-bit，保留 q7；拒绝时同时看时间和 recall，不只看内存。",
+   "independence": "只讲 4-bit 负结果；HNSW/ANN 在 U21。",
+   "result_evidence": "q4: 24.5 us/query",
+   "result_pointer": "/experiments/20/output"
   },
   {
    "id": "U23",
    "dimension": "取舍与反思",
    "score": 1.5,
-   "problem": "行存储换成 PK 有序数组省内存，但非升序 id 下插入会不会退化成 O(n²)。",
-   "student_evidence": "std::map 每行一个红黑树节点，换成 PK 有序数组能省内存，但插入是 lower_bound+memmove，id 非升序时每次 O(n)；我先用升序/随机/降序各测 100 批再决定。",
+   "problem": "过滤连续块多 1.28 MB code 矩阵，换 filtered 延迟是否值得。",
+   "student_evidence": "过滤连续块多一份 code 矩阵（10k×128≈1.28 MB），平台 M 只占 20%。我要在 2 CPU/2 GiB 容器里对比开/关连续块的 filtered 延迟和 memory.peak，收益落在噪声内就回退。",
    "student_pointer": "/conversations/22/content",
-   "reason": "升序 232 vs 254 ms（-9%），但随机 314 vs 244 ms（+29%）、降序 400 vs 238 ms（+68%）：10k 行已明显退化，平台数据顺序不掌握；回退 std::map，只保留与顺序无关的写解析/查询优化。",
-   "independence": "只问有序数组行存储在非升序 id 下的退化与回退；M 构成在 U30，trim 在 U22。",
-   "result_evidence": "asc 232 vs 254ms | random 314 vs 244ms | desc 400 vs 238ms（有序数组 vs std::map）",
-   "result_pointer": "/experiments/21/output",
-   "limitation": "只测 10k 行；更大表退化更严重。"
+   "reason": "容器内开连续块 filtered 108.8 us、M 13.13 MB；关闭 121.8 us、M 12.03 MB。多约 1.1 MB M 换约 13-35 us/查询，查询权重 2/3，保留。",
+   "independence": "只讲过滤块的内存取舍；过滤正确性在 U07。",
+   "result_evidence": "no_block=False filt=108.8us unf=143.8us M=13.13MB",
+   "result_pointer": "/experiments/21/output"
   },
   {
    "id": "U24",
@@ -1028,7 +1025,7 @@
    "student_evidence": "本地微基准说 AVX-512 快不算数：平台持续负载下可能降频，甚至 XCR0 不可用 SIGILL。上一次平台 E 在启用 512 后下降，我要默认回 AVX2，并把 512 路径整个删掉，而不是留一个运行时开关。",
    "student_pointer": "/conversations/23/content",
    "reason": "平台在启用 AVX-512 自动选择后 E 下降，回退 AVX2 恢复；本地也没有 XCR0/512 机器。当前源码 avx512 匹配数为 0，默认只保留 AVX2。",
-   "independence": "只讲 AVX-512 平台回退；与 U39 的 int8 下界不同。",
+   "independence": "只讲 AVX-512 平台回退；与 4-bit 算法负结果不同。",
    "result_evidence": "source_avx512_matches=0",
    "result_pointer": "/experiments/22/output"
   },
@@ -1037,7 +1034,7 @@
    "dimension": "独立验证与质疑",
    "score": 2.0,
    "problem": "单条多行 INSERT 超过 64 MiB 时，确认成功后重启会不会丢；怎样拆分并保证 chunk 原子性。",
-   "student_evidence": "单条多行 INSERT 超过 64 MiB 时，确认成功后重启不能丢；appendBatch 没有上限、reader 当时按 64 MiB 拒绝（现已提到 256 MiB），是一个确认即丢的持久化 bug。我要把逻辑 INSERT 拆成多条 ≤4 MiB 记录，同一 commit，并验证 chunk 中途 crash 和跨 chunk 重复主键。",
+   "student_evidence": "单条多行 INSERT 超过 64 MiB 时，确认成功后重启不能丢；appendBatch 没有上限、reader 却按 64 MiB 拒绝，是一个确认即丢的持久化 bug。我要把逻辑 INSERT 拆成多条 ≤4 MiB 记录，同一 commit，并验证 chunk 中途 crash 和跨 chunk 重复主键。",
    "student_pointer": "/conversations/24/content",
    "reason": "3000 行×2000 字符（多 chunk）正常重启 3000 行；after_wal_write 崩溃重启 0 行（未提交）；显式 COMMIT 后 after_commit_fsync 崩溃重启 3000 行；跨 chunk 重复主键 duplicate_key 且 0 行。",
    "independence": "只讲大 INSERT 分块持久化；与 checkpoint 编码、语句原子性不同链。",
@@ -1051,10 +1048,10 @@
    "dimension": "技术理解与迁移",
    "score": 2.0,
    "problem": "聚簇数据能否复用 q7 code 做 IVF 候选层，既快又不牺牲 ann recall；exact 模式如何不受影响。",
-   "student_evidence": "uniform 上图索引我试过，不划算，但聚簇数据可以把已有 q7 code 直接当 IVF 候选层，不用再复制一份 code 矩阵。先在 screen 判成 clustered 的表上建，第一次用 16 条样本对 exact IVF 自检，recall 低于 0.98 就退回精确 IVF；exact 模式一点都不能动，不能拿近似结果污染 exact。",
+   "student_evidence": "uniform 上图索引我试过，不划算，但聚簇数据可以把已有 q7 code 直接当 IVF 候选层，不用再复制一份 code 矩阵。先在 screen 判成 clustered 的表上建，第一次用 8 条样本对 exact IVF 自检，recall 低于 0.98 就退回精确 IVF；exact 模式一点都不能动，不能拿近似结果污染 exact。",
    "student_pointer": "/conversations/25/content",
-   "reason": "聚簇表只在 screen 判定 clustered 后建 q7 IVF；server exec 精确 IVF 40.5 → 19.2 µs，Docker q1000 159.3→116.8 ms（旧 HEAD 的 clustered ann 是 203.3 ms，约 1.74x），initial/UPDATE+DELETE/restart recall 均 1.0；首次 16 条样本自检，recall<0.98 回退 exact IVF，exact 模式完全不动。",
-   "independence": "只讲 q7 IVF 候选层与自检回退；与 U08 的 IVF screen、U21 的 HNSW 基准不同链。",
+   "reason": "聚簇表只在 screen 判定 clustered 后建 q7 IVF；server exec 精确 IVF 40.5 → 19.2 µs，Docker q1000 159.3→116.8 ms（旧 HEAD 的 clustered ann 是 203.3 ms，约 1.74x），initial/UPDATE+DELETE/restart recall 均 1.0；首次 8 条样本自检，recall<0.98 回退 exact IVF，exact 模式完全不动。",
+   "independence": "只讲 q7 IVF 候选层与自检回退；与 U08 的 IVF screen、U21 的 ANN 方案基准不同链。",
    "result_evidence": "ann wall=47.0us exec=19.2us parse=4.6 format=2.4",
    "result_pointer": "/experiments/24/output",
    "transfer": "从 uniform 迁移到 clustered：uniform 仍走 q7 exact，clustered 走 q7 IVF；exact 模式不受影响。",
@@ -1068,7 +1065,7 @@
    "student_evidence": "benchmark 的 1000 条查询 SQL 形状固定，每次仍走完整 lexer/parser；我先加一个只认 SELECT id, L2_DISTANCE(...) AS alias FROM ... [WHERE col='x'] ORDER BY alias LIMIT n 的窄快路径，不匹配立即回退，做 18 条差分再上性能。",
    "student_pointer": "/conversations/26/content",
    "reason": "只加一个匹配 SELECT id, L2_DISTANCE(...) AS alias FROM t [WHERE c='x'] ORDER BY alias LIMIT n 的窄入口；18 条差分（过滤/大小写/空格/DESC/别名/非法向量/维度错/ORDER BY 表达式/投影错配）全等；4 次中位数 parse 7.83→6.41 µs，wall 在同一次里 80.6→80.5（被客户端/扫描淹没），filtered 的 parse 占比更高。",
-   "independence": "与 U34 的读数口径、U17 的写路径 parser 不同：本单元只改 SELECT 入口与回退，不动执行器。",
+   "independence": "与 U02 的查询墙钟分解、U17 的写路径 parser 不同：本单元只改 SELECT 入口与回退，不动执行器。",
    "result_evidence": "median query on wall=80.5 parse=6.41 exec=37.21",
    "result_pointer": "/experiments/25/output",
    "transfer": "从 benchmark 的无过滤/过滤查询迁移到公开 vector case 的 AS distance、任意表/列/别名；非法向量、维度错、ORDER BY 表达式和投影错配仍由原 parser/执行器给出原结果。",
@@ -1082,7 +1079,7 @@
    "student_evidence": "我原以为 q7 code 矩阵的 32B AVX2 load 会因 std::vector 基址只有 16B 对齐而跨 cache line，64B 对齐应该稳定更快；先把 code/filter block 改成 64B 对齐，用同机 4 次中位数和两个二进制 A/B 验证，不到阈值就回退。",
    "student_pointer": "/conversations/27/content",
    "reason": "把 code/filter block 改成 64B 对齐后，同机 4 次中位数 wall 76.7→78.1 µs；差异落在噪声里，不能证明对齐更快。",
-   "independence": "与 U24 的 AVX-512、U17 的写路径解析不同：本单元只改变量基址对齐，不改算法或数据量。",
+   "independence": "与 U22 的 4-bit、U24 的 AVX-512、U23 的过滤块内存不同：本单元只改变量基址对齐，不改算法或数据量。",
    "result_evidence": "median q7 b wall=78.1 parse=7.72 exec=35.61",
    "result_pointer": "/experiments/26/output",
    "limitation": "4 次 A/B 的波动约 3-8%；对齐没有稳定收益，最终回退，不把未证实的 1-2% 带进提交。"
@@ -1091,15 +1088,15 @@
    "id": "U29",
    "dimension": "独立验证与质疑",
    "score": 2.0,
-   "problem": "零拷贝 JSON 请求解析会不会改变转义语义；带反斜杠、双引号、制表符或 \\uXXXX 的 SQL 还能不能执行。",
-   "student_evidence": "零拷贝快路径只处理无转义的长字符串，那带转义的走哪条路？我专门构造含反斜杠和双引号的请求做差分，一开始 12/76 条返回 invalid_json。",
+   "problem": "INSERT/UPDATE 的向量字面量能否跳过临时 vector 和第二次拷贝，直接写进 Value 的 payload。",
+   "student_evidence": "INSERT 的向量先解析到临时 vector 再拷进 Value，多一次分配和 512B 拷贝；我把十进制解析直接写进 Value::MakeVecRaw 的 payload，用 20000 条随机文字和维度长短做位级差分，再量写入和重启。",
    "student_pointer": "/conversations/28/content",
-   "reason": "差分一开始就抓到 12/76 条不一致：含 JSON 转义的请求都返回 invalid_json（string() 要求游标指向开引号，快路径停在引号后）。改回开引号后 76/76 一致；并把 28 种转义、边界长度、typed id、畸形请求固化成 run_json_escape_diff.py 纳入 full_gate。",
-   "independence": "只问请求解析的转义语义；framing/ready 在 U11，typed id 在 U42。",
-   "result_evidence": "before: 76 responses, 12 differing (invalid_json: expected string at byte 31) | after p=begin-1: 0 differing",
+   "reason": "新增 parseVectorLiteralInto，解析直接写进 Value::MakeVecRaw 的缓冲区；20000 条随机文字（1-256 维）+14 个 malformed +维度长短差分全 0；写 100 批×100 行 exec 593.5→547.8 µs/请求（-7.7%），wall 238.6→233.0 ms（-2.3%）；public/JSONL/过滤/语义/重启全过。",
+   "independence": "与 U17 的写热点/CRC、U25 的大 INSERT 分块不同：本单元只改向量字面量的落点，不改 WAL 或分块。",
+   "result_evidence": "median write direct wall=233.0 parse=229.5 exec=547.8",
    "result_pointer": "/experiments/27/output",
-   "transfer": "迁到转义之外：裸 UTF-8、控制字符、空/缺失 sql、object/array/bool/null id 全部一致。",
-   "limitation": "只覆盖本实现接受的转义集；代理对（surrogate pair）未单独测。"
+   "transfer": "同一 convertValue 路径覆盖 INSERT 和 UPDATE 的 VECTOR 列；WAL 重启、过滤差分、维度错和 malformed 字面量仍走原错误/恢复链。",
+   "limitation": "Value 的堆分配还在；写 wall 主要被 100 次 fdatasync 占据，收益只有约 2%；超长/转义字面量仍回退原路径。"
   },
   {
    "id": "U30",
@@ -1123,7 +1120,7 @@
    "student_evidence": "5 轮写/查的 spread 都在一成左右，小于这个带宽的过滤块收益我不再提交；后续 A/B 固定 5 次中位数，不拿单轮几微秒下结论。",
    "student_pointer": "/conversations/30/content",
    "reason": "write spread 8.2%、query spread 11.1%，2×half-width=10.7ms；小于这个带宽的过滤块/写路径收益不提交，后续 A/B 都用 5 次中位数。",
-   "independence": "与 U34 的读数口径不同：本单元先量噪声，再定义可判定门槛。",
+   "independence": "与 U02 的单次墙钟分解不同：本单元先量噪声，再定义可判定门槛。",
    "result_evidence": "query_ms min=64.7 p50=70.9 max=72.6 spread=11.1%",
    "result_pointer": "/experiments/29/output",
    "transfer": "迁到 Docker/2 vCPU 后带宽更大，同一门槛要重算；不能把本机 10.7ms 当平台门槛。",
@@ -1151,7 +1148,7 @@
    "student_evidence": "位级 roundtrip 全过、WAL 降两成，写墙基本持平；我保留 mode2，并让七位小数/指数批次整批回退，不为省 B 冒精度风险。",
    "student_pointer": "/conversations/32/content",
    "reason": "20k 六位小数全部走 mode2 且位级一致，20k 随机 float32 全部回退；WAL 4,435,274→3,539,527（-20.2%）、物理写 -18.4%，写墙基本持平，保留。",
-   "independence": "与 U17 的解析快路径不同：本单元改的是 WAL 向量编码，不是 SQL/Value 解析。",
+   "independence": "与 U17/U29 的解析快路径不同：本单元改的是 WAL 向量编码，不是 SQL/Value 解析。",
    "result_evidence": "wal rows=10000 dim=128 mode=fixed24 bytes=3539527 (-20.2%)",
    "result_pointer": "/experiments/31/output",
    "transfer": "迁到混合表/重启/SIGKILL，mode2 与回退批次都位级一致；七位小数/指数批次整批回退。",
@@ -1161,15 +1158,15 @@
    "id": "U34",
    "dimension": "实验与反馈迭代",
    "score": 2.0,
-   "problem": "本地 A/B 的百分比增量能不能直接当平台分数；锚点不同时该怎么读。",
-   "student_evidence": "本地 A/B 的百分比能不能当平台分数？我用 S12 当基线时打平按公式是 f(1)=0.5，可平台拿参考实现当基线；锚点不同，本地指数只能看方向。",
+   "problem": "benchmark 的 INSERT 能否只记 span、在执行器按列直接解析，省掉 lexer/AST 和一次 1.1KB 拷贝。",
+   "student_evidence": "28 条差分全等，parse/SQL/exec 都降；我保留 span 路径，列名、转义、NULL、表达式仍回退原 parser。",
    "student_pointer": "/conversations/33/content",
-   "reason": "S12 对自身时 R=1、f(1)=0.5，本地指数的打平点按定义算出，不是平台分；平台基线是参考实现。所以只把原始量和百分比当证据判断方向。",
-   "independence": "只问本地读数口径；版本归因在 U04，轮间波动在 U31。",
-   "result_evidence": "5x A/B vs S12: T_write 268.9->245.7ms (-8.6%) | T_query 174.3->175.8ms (+0.9%) | B 4.362 | M 13.53->12.55MB (-7.2%)",
+   "reason": "28 条 on/off 差分全等；parse 30.4→20.3ms、SQL 20.2→9.3ms、exec 63.0→55.5ms、写墙 266.9→253.6ms，保留窄路径，所有非简单形状回退。",
+   "independence": "与 U17 的写热点/CRC、U29 的向量落点不同：本单元改 INSERT 入口的 token/AST 与中间 Value。",
+   "result_evidence": "new parse=20.3ms sql=9.3ms exec=55.5ms wall=253.6ms",
    "result_pointer": "/experiments/32/output",
-   "transfer": "迁到写/查询两类指标：T 受驱动地板稀释、B/M 不受，一次 A/B 不能用单个百分比代表全部。",
-   "limitation": "只在同机同配方内可比；平台驱动与缓存流程不同，百分比会变。"
+   "transfer": "迁到列名、转义、NULL、重复主键、维度错、重启，28 条差分与状态都一致。",
+   "limitation": "只覆盖无列名、无转义、纯字面量的 INSERT；写墙仍受客户端 JSON 影响。"
   },
   {
    "id": "U35",
@@ -1265,6 +1262,6 @@
   "VARCHAR 长度有显式上限；超限返回 value_out_of_range，不是静默截断。",
   "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。"
  ],
- "summary": "40 个独立单元：WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、HNSW、trim 策略、行存储、AVX-512、大 INSERT、窄 SELECT、q7 对齐、M 构成、轮间波动、fsync、WAL fixed24、本地 A/B 读数、changed rows、header 原文、autocommit、int8 下界、id 类型回显、B 物理写、JSON 转义。",
- "material_summary": "40 个单元，五个维度 7/11/10/6/6；每个单元一个独立问题，各带自己的命令输出。"
+ "summary": "40 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入、M 的 anon/file 构成、轮间波动、fsync 地板、WAL fixed24、span INSERT、changed rows、header 原文、autocommit、q6、int8 下界、干净归档、id 类型回显。",
+ "material_summary": "40 个单元，五个维度 7/11/10/6/6；每个单元有独立的学生问题与实验结果，新增 11 个单元各带一条新命令输出。"
 }
