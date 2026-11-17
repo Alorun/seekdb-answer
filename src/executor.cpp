@@ -955,9 +955,16 @@ __attribute__((target("avx2,fma"))) void scanQ7ExactRange(
 // scan stops once the next list cannot beat the exact k-th distance, so the
 // result is identical to a full exact scan.
 __attribute__((target("avx2,fma"))) void scanIvfExact(
-    const IvfCache& ivf, const VectorCache& vc, const float* q, size_t k,
-    std::vector<RawHit>& out) {
+    const IvfCache& ivf, const VectorCache& vc, const Quant8Cache& qc,
+    const Q7Query& qq, const float* q, size_t k, std::vector<RawHit>& out) {
   TopK top(k);
+  const int8_t* qcodes = qq.codes.data();
+  const int32_t cq = qq.cq;
+  const double q7scale = static_cast<double>(qc.scale);
+  const bool q7_ok = qc.valid && qc.dim == vc.dim &&
+                     qc.codes.size() == vc.pks.size() * vc.dim &&
+                     qc.pv.size() == vc.pks.size() &&
+                     qc.errs.size() == vc.pks.size();
   std::vector<std::pair<double, size_t>> order;
   order.reserve(ivf.nlist);
   for (size_t c = 0; c < ivf.nlist; ++c) {
@@ -975,8 +982,20 @@ __attribute__((target("avx2,fma"))) void scanIvfExact(
   for (const auto& [lower_sq, c] : order) {
     if (top.full() && lower_sq > worst) break;
     for (size_t vi : ivf.lists[c]) {
-      const float* a = vc.vecp[vi];
-      double d = l2Avx2DoubleSq(a, q, vc.dim);
+      if (q7_ok) {
+        // Triangle-inequality lower bound from the q7 codes: skip a member
+        // whose exact distance provably cannot beat the current k-th one.
+        // The bound never exceeds the true distance, so the result is the
+        // same exact TopK as the plain scan.
+        const uint8_t* code = qc.codes.data() + vi * vc.dim;
+        const int32_t dcod = qc.pv[vi] + cq - 2 * q7Dot(code, qcodes, vc.dim);
+        const double rad =
+            q7scale * std::sqrt(static_cast<double>(dcod > 0 ? dcod : 0));
+        double lb = rad - (static_cast<double>(qc.errs[vi]) + qq.error_norm);
+        if (lb < 0.0) lb = 0.0;
+        if (top.full() && lb * lb > worst) continue;
+      }
+      double d = l2Avx2DoubleSq(vc.vecp[vi], q, vc.dim);
       top.push(RawHit{d, vc.pks[vi], vi});
       if (top.full() && d < worst) worst = top.worstDistance();
     }
@@ -2961,7 +2980,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
                         break;
                       }
                       std::vector<RawHit> eh;
-                      scanIvfExact(*ivf, cache, qv.data(), kc, eh);
+                      scanIvfExact(*ivf, cache, *q8, qq2, qv.data(), kc, eh);
                       std::vector<annq::Hit> ah;
                       idx->search(arows, qv.data(), qq2.codes.data(), qq2.cq,
                                   kc, ah, ascratch);
@@ -3009,7 +3028,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
                 // Exact radius-bounded IVF: always recall 1.0.  Also used
                 // when the ann self-check rejects the approximate index.
                 std::vector<RawHit> hits;
-                scanIvfExact(*ivf, cache, q, k, hits);
+                scanIvfExact(*ivf, cache, *q8, qq, q, k, hits);
                 if (simple_proj) {
                   fast_hits.clear();
                   fast_hits.reserve(hits.size());
