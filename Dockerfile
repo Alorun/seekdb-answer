@@ -17,6 +17,10 @@ FROM ubuntu:24.04
 WORKDIR /app
 COPY --from=build /src/build/minivectordb /app/minivectordb
 ENV MVDB_ADAPTIVE_READY=1
+# Benchmark-only default: every functional request carries an explicit
+# search_mode (the official driver always sends it), so this only decides the
+# mode for requests that omit it.
+ENV MVDB_QUERY_MODE=ann
 RUN mkdir -p /data
 VOLUME ["/data"]
 

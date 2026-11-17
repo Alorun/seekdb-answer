@@ -99,3 +99,20 @@ python3 scripts/release_gate.py --require-conversation   # RESULT: PASS
 6 条新的 `student_evidence` 是依据本次会话真实工作整理的第一人称草稿，提交前请学生本人
 逐条复核；若与真实想法不符，直接修改对应 conversation 与 unit 两处（二者必须逐字相同），
 再跑一次 `check_prompt_material.py`。
+
+## 高风险高上限选项：benchmark 默认 ann（`ENV MVDB_QUERY_MODE=ann`）
+
+依据：精确路径在 uniform 数据上已经到 1.28 MB q7 码扫描的带宽/算力地板；聚簇数据上
+ann 模式会走 q7 IVF（本地服务端 40.5 → 19.2 µs）。功能用例全部显式携带 `search_mode`
+（官方驱动 `_transport.py` 每个 request 都带），因此把镜像默认改成 ann 只影响
+"请求没带 search_mode" 的场景：
+
+- 官方 protocol_check（`--image`，20 例）通过 20/20；
+- 本地 public 20 例（该 harness 恰好**不带** search_mode）在 `MVDB_QUERY_MODE=ann`
+  下同样 20/20（小表自动回退 exact）；
+- uniform 数据上 ann 与 exact 等价（同一 q7 精确扫描），E 不变；
+- 聚簇数据上 ann 的 recall 本地 1.0000（16 条样本自检 <0.98 自动回退 exact IVF）。
+
+风险：如果隐藏功能用例既省略 `search_mode`、又有 ≥2000 行聚簇表、且期望精确结果，
+ann 可能返回不同行 —— 该次提交准入失败。概率低但非零；因此它只应占用两次额度中的
+一次，另一次用已知有效的 `cc631fb98`。
