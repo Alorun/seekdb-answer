@@ -1584,13 +1584,13 @@ Status Executor::restoreTo(size_t undo_size, uint64_t wal_offset) {
     if (!table) continue;
     if (!table->disk_mode) {
       if (u.had_row) {
-        table->rows.set(u.pk, std::move(u.old_row));
+        table->rows[u.pk] = std::move(u.old_row);
       } else {
         table->rows.erase(u.pk);
       }
     }
     if (u.had_location) {
-      table->locations.set(u.pk, u.old_location);
+      table->locations[u.pk] = u.old_location;
     } else {
       table->locations.erase(u.pk);
     }
@@ -1741,14 +1741,14 @@ Status Executor::findRow(Table& table, int64_t pk, Row& row, bool& found) {
     auto it = table.locations.find(pk);
     if (it == table.locations.end()) return Status::Ok();
     std::string err;
-    Status st = readRowAt(table, it->off, pk, row, err);
+    Status st = readRowAt(table, it->second, pk, row, err);
     if (!st.ok()) return st;
     found = true;
     return Status::Ok();
   }
-  const Row* cached = table.rows.findRow(pk);
-  if (cached == nullptr) return Status::Ok();
-  row = *cached;
+  auto it = table.rows.find(pk);
+  if (it == table.rows.end()) return Status::Ok();
+  row = it->second;
   found = true;
   return Status::Ok();
 }
@@ -1768,9 +1768,9 @@ Status Executor::applyInsert(Table& table, int64_t pk, Row row) {
   uint64_t offset = 0;
   Status st = writeRowRecord(WalType::Insert, table, pk, row, &offset);
   if (!st.ok()) return st;
-  table.locations.set(pk, offset);
+  table.locations[pk] = offset;
   if (!table.disk_mode) {
-    table.rows.set(pk, std::move(row));
+    table.rows[pk] = std::move(row);
   }
   spillIfNeeded(table);
   ++table.row_version;
@@ -1793,14 +1793,14 @@ Status Executor::applyUpdate(Table& table, int64_t pk, Row row) {
   if (loc_it == table.locations.end()) {
     return Status::Error(Err::kIo, "row has no location: " + std::to_string(pk));
   }
-  const uint64_t old_location = loc_it->off;
+  const uint64_t old_location = loc_it->second;
   const bool had_row = !table.disk_mode;
   uint64_t offset = 0;
   Status st = writeRowRecord(WalType::Update, table, pk, row, &offset);
   if (!st.ok()) return st;
-  table.locations.set(pk, offset);
+  table.locations[pk] = offset;
   if (!table.disk_mode) {
-    table.rows.set(pk, std::move(row));
+    table.rows[pk] = row;
   }
   spillIfNeeded(table);
   ++table.row_version;
@@ -1825,7 +1825,7 @@ Status Executor::applyDelete(Table& table, int64_t pk) {
   if (loc_it == table.locations.end()) {
     return Status::Error(Err::kIo, "row has no location: " + std::to_string(pk));
   }
-  const uint64_t old_location = loc_it->off;
+  const uint64_t old_location = loc_it->second;
   const bool had_row = !table.disk_mode;
   Row empty;
   Status st = writeRowRecord(WalType::Delete, table, pk, empty);
@@ -1872,7 +1872,7 @@ Status Executor::collectMatchingPks(Table& table,
         table.schema, v,
         [&](int64_t pk, Row& row) {
           auto it = table.locations.find(pk);
-          if (it == table.locations.end() || it->off != v.offset) return true;
+          if (it == table.locations.end() || it->second != v.offset) return true;
           Status m;
           if (matchConditions(row, conds, m)) {
             pks.push_back(pk);
@@ -2136,9 +2136,13 @@ Status Executor::executeInsert(const InsertStmt& stmt) {
     op_count_ += static_cast<uint32_t>(chunk.size());
     for (Row& row : chunk) {
       const int64_t pk = row.values[static_cast<size_t>(schema.pk_index)].i;
-      table->locations.set(pk, offset);
+      table->locations[pk] = offset;
       if (!table->disk_mode) {
-        table->rows.set(pk, std::move(row));
+        auto hint = table->rows.end();
+        if (!table->rows.empty() && pk <= table->rows.rbegin()->first) {
+          hint = table->rows.lower_bound(pk);
+        }
+        table->rows.emplace_hint(hint, pk, std::move(row));
       }
       Undo u;
       u.table_id = table->schema.table_id;
@@ -2151,8 +2155,6 @@ Status Executor::executeInsert(const InsertStmt& stmt) {
   }
   spillIfNeeded(*table);
   ++table->row_version;
-  table->rows.compact();
-  table->locations.compact();
   return Status::Ok();
 }
 
@@ -2236,10 +2238,6 @@ Status Executor::executeUpdate(const UpdateStmt& stmt, ExecResult& out) {
     if (!s.ok()) return s;
     ++changed;
   }
-  if (changed) {
-    table->rows.compact();
-    table->locations.compact();
-  }
   out.affected = changed;
   return Status::Ok();
 }
@@ -2259,10 +2257,6 @@ Status Executor::executeDelete(const DeleteStmt& stmt, ExecResult& out) {
   for (int64_t pk : pks) {
     Status s = applyDelete(*table, pk);
     if (!s.ok()) return s;
-  }
-  if (!pks.empty()) {
-    table->rows.compact();
-    table->locations.compact();
   }
   out.affected = pks.size();
   return Status::Ok();
@@ -2616,13 +2610,13 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
     };
     if (!orders[0].desc) {
       for (auto it = table->rows.begin(); it != table->rows.end(); ++it) {
-        Status st2 = take_row(it->row);
+        Status st2 = take_row(it->second);
         if (!st2.ok()) return st2;
         if (out.rows.size() >= stmt.limit) break;
       }
     } else {
       for (auto it = table->rows.rbegin(); it != table->rows.rend(); ++it) {
-        Status st2 = take_row(it->row);
+        Status st2 = take_row(it->second);
         if (!st2.ok()) return st2;
         if (out.rows.size() >= stmt.limit) break;
       }
@@ -2888,9 +2882,9 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
         }
         if (!used_index_list) {
           for (int64_t pk : *filtered) {
-            const Row* found_row = table->rows.findRow(pk);
-            if (found_row == nullptr) continue;
-            const Row& row = *found_row;
+            auto it = table->rows.find(pk);
+            if (it == table->rows.end()) continue;
+            const Row& row = it->second;
             Status m;
             if (!conds.empty() && !matchConditions(row, conds, m)) {
               if (!m.ok()) return m;
@@ -3127,7 +3121,7 @@ Status Executor::executeSelect(const SelectStmt& stmt, ExecResult& out) {
               schema, v,
               [&](int64_t pk, Row& row) {
                 auto it = table->locations.find(pk);
-                if (it == table->locations.end() || it->off != v.offset) return true;
+                if (it == table->locations.end() || it->second != v.offset) return true;
                 Status s = process(pk, row);
                 if (!s.ok()) {
                   row_status = s;

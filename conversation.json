@@ -206,8 +206,8 @@
    "id": "C23",
    "role": "student",
    "prompt_ref": "P1",
-   "content": "std::map 每行一个红黑树节点、位置表又是哈希桶；换成 PK 有序数组能省节点和桶，但点查、乱序插入、回滚和重复键都得重新对一遍。",
-   "note": "行存储结构替换"
+   "content": "std::map 每行一个红黑树节点，换成 PK 有序数组能省内存，但插入是 lower_bound+memmove，id 非升序时每次 O(n)；我先用升序/随机/降序各测 100 批再决定。",
+   "note": "行存储有序数组的 id 顺序测试"
   },
   {
    "id": "C24",
@@ -542,12 +542,12 @@
   },
   {
    "id": "E22",
-   "name": "行/位置存储替换的语义差分",
-   "command": "新旧二进制各跑同一 37 条存储序列，逐条比较 JSON 响应",
-   "output": "37-stmt differential vs old binary: 0 differing; S13 M 13.75->12.55MB",
-   "context": "同一序列分别喂给旧实现与有序数组实现，逐条比较 JSON 响应（37 条，0 差异）。",
+   "name": "行存储有序数组的 id 顺序测试",
+   "command": "100 批×100 行，id 升序/随机/降序，各 3 轮，2 vCPU 容器",
+   "output": "asc 232 vs 254ms | random 314 vs 244ms | desc 400 vs 238ms（有序数组 vs std::map）",
+   "context": "10k 行×128 维，每轮新数据目录",
    "exit_code": 0,
-   "analysis": "结构替换后所有存储语义与旧实现逐字节一致。",
+   "analysis": "随机/降序退化 29%/68%，平台 id 顺序未知，回退 std::map。",
    "commit": "f1c5e3d61"
   },
   {
@@ -1011,14 +1011,14 @@
    "id": "U23",
    "dimension": "取舍与反思",
    "score": 1.5,
-   "problem": "行存储从 std::map 换成 PK 有序 vector、位置表从哈希换成扁平数组：省下的节点内存值不值得重构风险。",
-   "student_evidence": "std::map 每行一个红黑树节点、位置表又是哈希桶；换成 PK 有序数组能省节点和桶，但点查、乱序插入、回滚和重复键都得重新对一遍。",
+   "problem": "行存储换成 PK 有序数组省内存，但非升序 id 下插入会不会退化成 O(n²)。",
+   "student_evidence": "std::map 每行一个红黑树节点，换成 PK 有序数组能省内存，但插入是 lower_bound+memmove，id 非升序时每次 O(n)；我先用升序/随机/降序各测 100 批再决定。",
    "student_pointer": "/conversations/22/content",
-   "reason": "37 条差分（乱序 PK、跨批重复键、删除重插、回滚、4300 行单条）与旧实现 0 差异；整组 S13 改动 M 13.75→12.55 MB；由差分和 full_gate 兜住，保留。",
-   "independence": "只问行/位置存储替换与语义保证；M 构成在 U30，trim 在 U22。",
-   "result_evidence": "37-stmt differential vs old binary: 0 differing; S13 M 13.75->12.55MB",
+   "reason": "升序 232 vs 254 ms（-9%），但随机 314 vs 244 ms（+29%）、降序 400 vs 238 ms（+68%）：10k 行已明显退化，平台数据顺序不掌握；回退 std::map，只保留与顺序无关的写解析/查询优化。",
+   "independence": "只问有序数组行存储在非升序 id 下的退化与回退；M 构成在 U30，trim 在 U22。",
+   "result_evidence": "asc 232 vs 254ms | random 314 vs 244ms | desc 400 vs 238ms（有序数组 vs std::map）",
    "result_pointer": "/experiments/21/output",
-   "limitation": "有序 vector 中间插入是 O(n)；只测 10k 行与 4300 行单条。"
+   "limitation": "只测 10k 行；更大表退化更严重。"
   },
   {
    "id": "U24",
