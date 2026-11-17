@@ -736,30 +736,26 @@
   {
    "id": "U02",
    "dimension": "问题理解与自主拆解",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "1000 次查询的墙钟到底花在 exec、parse/json/sql、format 还是客户端管道。",
    "student_evidence": "优化前我先量清楚 1000 次查询的墙钟花在哪：服务端 exec、parse/json/sql、format，还是客户端管道。若 exec 只占一半，先压 format 的收益就有限；我要 5 次中位数，不用单次 profile 下结论。",
    "student_pointer": "/conversations/1/content",
    "reason": "先做阶段分解，发现 exec 约 30.8 ms、parse/json/sql 约 6.1 ms、format 约 3.5 ms；据此把优化优先级放在 exec 而不是 format。单次 profile 有异常，改用 5 次中位数。",
    "independence": "只回答测量与优先级；不实现 q7/过滤，也不引用它们的 A/B。",
    "result_evidence": "profile: requests=1600 parse=0.0060874 json=0.00153609 sql=0.00455131 exec=0.0307732 format=0.00346489",
-   "result_pointer": "/experiments/0/output",
-   "transfer": "迁到 pk-floor/过滤/无过滤三种查询：16.9/44.1/55.9 µs，exec 都是主体，format 仍 <3.5 ms。",
-   "limitation": "单次 profile 有异常，只认 5 次中位数；轮间波动见 U31。"
+   "result_pointer": "/experiments/0/output"
   },
   {
    "id": "U03",
    "dimension": "问题理解与自主拆解",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "平台 B 是 cgroup io.stat 时，本地 /proc/io 的 rchar/wchar 能不能当 B。",
    "student_evidence": "平台 B 是 cgroup io.stat，不是 /proc/io 的 rchar/wchar；本地的 4.84 MB 和 13 MB 都不能直接当平台 B。我要用 2 CPU/2 GiB 的容器，读 memory.peak 和 io.stat，把启动、装载、预热都算进去。",
    "student_pointer": "/conversations/2/content",
    "reason": "用 2 CPU/2 GiB 容器读 cgroup：B=5.26 MB、M_peak=12.9 MB，和 host RSS/进程 io 都不是同一口径；因此本地只报代理值并注明方法，不把 4.84 MB 当平台 B。",
    "independence": "只讨论度量口径；不讨论 WAL 内容或 E 权重。",
    "result_evidence": "B=5.26MB M_peak=12.9MB",
-   "result_pointer": "/experiments/1/output",
-   "transfer": "迁到 M：同一轮读 memory.peak 12.9 MB，与 B 5.26 MB 分开记；进程 io/RSS 都不是同一口径。",
-   "limitation": "只在本机 docker/cgroup v2 验证；平台统计工具不同需重测。"
+   "result_pointer": "/experiments/1/output"
   },
   {
    "id": "U04",
@@ -834,16 +830,14 @@
   {
    "id": "U09",
    "dimension": "技术理解与迁移",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "多行 INSERT 一行冲突时整条语句是否部分生效，显式事务里之前的语句和 ROLLBACK 怎样。",
    "student_evidence": "多行 INSERT 里一行主键冲突时，整条语句不能部分生效；但同一显式事务里之前成功的语句要保留，ROLLBACK 再撤销。我要用提交后的行集验证，不是看到 duplicate_key 就结束。",
    "student_pointer": "/conversations/8/content",
    "reason": "duplicate_key 后提交行仍是 [1,2,3,4]，没有留下 5；ROLLBACK 后仍为 [1,2,3,4]，说明失败语句原子但保留事务此前成功的语句。",
    "independence": "只讲语句原子性；与 checkpoint、崩溃恢复不同链。",
    "result_evidence": "statement_atomicity committed rows= [[1], [2], [3], [4]]",
-   "result_pointer": "/experiments/7/output",
-   "transfer": "迁到 ROLLBACK：失败语句之后回滚，行集仍为 [1,2,3,4]。",
-   "limitation": "只测单表单连接；跨表事务与嵌套事务未覆盖。"
+   "result_pointer": "/experiments/7/output"
   },
   {
    "id": "U10",
@@ -890,100 +884,86 @@
   {
    "id": "U13",
    "dimension": "独立验证与质疑",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "合法 SQL 的巨大 LIMIT 会不会把进程打崩。",
    "student_evidence": "合法 SQL 不能把进程打崩：LIMIT 2^63−1 这种值只应该返回全部行或报参数错误，不能 std::length_error abort。我要先看旧版是否复现，再确认 reserve 被表行数封顶。",
    "student_pointer": "/conversations/12/content",
    "reason": "旧版在 LIMIT 2^63−1 时抛 std::length_error 直接退出；当前 reserve 被表行数封顶，返回 3 行。",
    "independence": "只讲 LIMIT 参数边界；与 float32 数值不同链。",
    "result_evidence": "after: ok=True rows=3",
-   "result_pointer": "/experiments/11/output",
-   "transfer": "迁到 before/after 对照：改前 std::length_error 终止，改后返回 3 行。",
-   "limitation": "只测合法 LIMIT；负数与小数仍走语法错误路径。"
+   "result_pointer": "/experiments/11/output"
   },
   {
    "id": "U14",
    "dimension": "独立验证与质疑",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "float32 有限大值的平方和会不会溢出成 inf，距离输出怎样保持有限。",
    "student_evidence": "float32 有限大值的平方和可能溢出成 inf；距离要用 double 累加，输出要有限。我要插入 3e19 和 2e19 两行，看排序和最后一位是否还对。",
    "student_pointer": "/conversations/13/content",
    "reason": "3e19 与 2e19 两行按距离 1、2e19、3.0000001e19 排序，输出有限；float32 平方和会溢出，所以距离用 double 累加。",
    "independence": "只讲数值溢出/格式化；与 q7 量化误差不同链。",
    "result_evidence": "\"rows\": [[3, 1], [2, 2e+19], [1, 3.0000001e+19]]",
-   "result_pointer": "/experiments/12/output",
-   "transfer": "迁到排序：3e19 与 2e19 两行的距离为 3.0000001e19 与 2e19，输出有限且顺序正确。",
-   "limitation": "只测 L2；其它表达式与聚合未覆盖。"
+   "result_pointer": "/experiments/12/output"
   },
   {
    "id": "U15",
    "dimension": "独立验证与质疑",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "投影的 L2_DISTANCE 与 ORDER BY 用不同查询向量时，输出会不会复用了排序 key 的距离。",
    "student_evidence": "SELECT 里投影的 L2_DISTANCE 和 ORDER BY 的 L2_DISTANCE 可以是两个不同查询向量；投影值必须按投影向量算，不能复用排序 key 的距离。我要构造 q1≠q2 的查询，对比加不加第三个投影列的结果。",
    "student_pointer": "/conversations/14/content",
    "reason": "旧版返回 [[1,1],[2,1]]，把 q2 的距离当 q1 的输出；当前返回 [[1,9],[2,10.0498756]]，投影按 q1，排序按 q2。",
    "independence": "只讲投影/排序 key 错配；与过滤顺序不同链。",
    "result_evidence": "after [[1, 9], [2, 10.0498756]]",
-   "result_pointer": "/experiments/13/output",
-   "transfer": "迁到 before/after 对照：旧版 [[1,1],[2,1]] 复用了排序 key 的距离，当前 [[1,9],[2,10.0498756]] 按投影向量。",
-   "limitation": "只测两列投影；多列与嵌套表达式未覆盖。"
+   "result_pointer": "/experiments/13/output"
   },
   {
    "id": "U16",
    "dimension": "实验与反馈迭代",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "过滤查询的瓶颈是不是每行 map.find/散列，连续 q7 code 块能带来多少真实收益。",
    "student_evidence": "过滤查询慢在每行 map.find/散列，不是距离；先存 value→VectorCache 行号，再把该值的 q7 code 拷成连续块顺序访问。收益用 5 次中位数说话，不能拿单轮 2× 当结论。",
    "student_pointer": "/conversations/15/content",
    "reason": "500 条过滤查询中位数 39.0→33.6 us，无过滤 72.6→53.3 us；收益约 10-27%，不是 2x。连续块只在单等值过滤且版本匹配时启用，多条件回退。",
    "independence": "只讲过滤性能；过滤正确性在 U07。",
    "result_evidence": "current filtered500 median=33.6us",
-   "result_pointer": "/experiments/14/output",
-   "transfer": "迁到无过滤：72.6→53.3 µs，说明连续块只对过滤路径生效，无过滤仍走同一 q7 扫描。",
-   "limitation": "只测 10k 行、单列等值；高基数过滤下块数量增多，收益会变小。"
+   "result_pointer": "/experiments/14/output"
   },
   {
    "id": "U17",
    "dimension": "实验与反馈迭代",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "写路径 CPU 热点在哪里；快速 vector 解析/CRC 是否既快又和原实现位级一致。",
    "student_evidence": "写路径的 CPU 热点要用 profiler 找，不能猜：批量 INSERT 里 vector 字面量解析、CRC、JSON/SQL 词法各占多少？改完快路径还要证明它和 from_chars 位级一致，并且不放过 1.2.3 这种非法字面量。",
    "student_pointer": "/conversations/16/content",
    "reason": "gprof 显示 vector 字面量解析与 CRC 是热点；改后 20000 组随机字面量与 from_chars 位级一致、8243 组 CRC 硬件/表实现一致，非法 1.2.3 仍被拒绝。",
    "independence": "只讲写路径热点与解析/CRC 验证；不重复查询 profile。",
    "result_evidence": "parseVectorLiteral differential: checked=20000 rejected=0 mismatches=0",
-   "result_pointer": "/experiments/15/output",
-   "transfer": "迁到 CRC：8243 组硬件/表实现位级一致，与向量解析用同一套位级差分方法。",
-   "limitation": "只覆盖无引号、无转义、纯字面量的 INSERT 快路径；其它形状回退原 parser。"
+   "result_pointer": "/experiments/15/output"
   },
   {
    "id": "U18",
    "dimension": "实验与反馈迭代",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "ScanPool 析构时 ++seq_ 为什么会让 worker 重放旧 job，ASAN 能否证明修复。",
    "student_evidence": "ScanPool 析构时 ++seq_ 会让 worker 把旧 job 当新任务再执行一次，旧 lambda 捕获的栈变量已经返回；析构只 stop+notify+join，worker 执行前检查 stop，再用 ASAN 连续跑关停和 checkpoint。",
    "student_pointer": "/conversations/17/content",
    "reason": "ASAN 下 public 20/20、checkpoint 10k、连续 3 次关停全部 exit=0、无 stack-use-after-return；析构只 stop+notify+join。",
    "independence": "只讲并发关停生命周期；与崩溃恢复不同链。",
    "result_evidence": "cycle 2: exit=0 asan_errors=[]",
-   "result_pointer": "/experiments/16/output",
-   "transfer": "迁到 checkpoint 10k 重启：ASAN 下 rows=10000、public 20/20、三次关停 exit=0。",
-   "limitation": "只覆盖 stack-use-after-return；不是 TSan 并发竞态检测。"
+   "result_pointer": "/experiments/16/output"
   },
   {
    "id": "U19",
    "dimension": "实验与反馈迭代",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "k≤64 固定数组、k>64 heap 的边界和 tie 是否与 oracle 一致。",
    "student_evidence": "k≤64 用固定数组比 vector 插入少分配；但 k>64 要回退 heap，tie 仍按 (distance, pk) 升序。我要用 LIMIT 10/64/65/100 和 300 行随机数据对 oracle，确认边界和并列都不变。",
    "student_pointer": "/conversations/18/content",
    "reason": "LIMIT 10/64/65/100 在 200 行全等距数据上都按 pk 升序；300 行随机数据 LIMIT 65/100 与 oracle 完全一致。",
    "independence": "只讲 TopK 容器边界；与 q7 距离核不同链。",
    "result_evidence": "LIMIT 65: n=65 monotonic=True first=[1, 2, 3] last=65",
-   "result_pointer": "/experiments/17/output",
-   "transfer": "迁到 LIMIT 10/64/65/100 与随机 65/100：都单调且与 oracle 一致。",
-   "limitation": "只测 k≤100、300 行；更大 k 与并发未覆盖。"
+   "result_pointer": "/experiments/17/output"
   },
   {
    "id": "U20",
@@ -1016,44 +996,38 @@
   {
    "id": "U22",
    "dimension": "取舍与反思",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "更省内存的 4-bit packed code 是否比 q7 更快。",
    "student_evidence": "int8/4-bit/PQ 这些更省内存的方案，实测是否比 q7 慢？拒绝时要有查询时间和 recall，不能只报内存；4-bit 解包如果抵消带宽收益，就保留 q7。",
    "student_pointer": "/conversations/21/content",
    "reason": "q7 23.5 us/query，4-bit 24.5 us/query；解包抵消带宽收益。拒绝 4-bit，保留 q7；拒绝时同时看时间和 recall，不只看内存。",
    "independence": "只讲 4-bit 负结果；HNSW/ANN 在 U21。",
    "result_evidence": "q4: 24.5 us/query",
-   "result_pointer": "/experiments/20/output",
-   "transfer": "迁到 q7 对照：q7 23.5 µs 快于 q4 24.5 µs，且 q7 下界更紧。",
-   "limitation": "只测 L2 与均匀数据；其它量化器与分布未测。"
+   "result_pointer": "/experiments/20/output"
   },
   {
    "id": "U23",
    "dimension": "取舍与反思",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "过滤连续块多 1.28 MB code 矩阵，换 filtered 延迟是否值得。",
    "student_evidence": "过滤连续块多一份 code 矩阵（10k×128≈1.28 MB），平台 M 只占 20%。我要在 2 CPU/2 GiB 容器里对比开/关连续块的 filtered 延迟和 memory.peak，收益落在噪声内就回退。",
    "student_pointer": "/conversations/22/content",
    "reason": "容器内开连续块 filtered 108.8 us、M 13.13 MB；关闭 121.8 us、M 12.03 MB。多约 1.1 MB M 换约 13-35 us/查询，查询权重 2/3，保留。",
    "independence": "只讲过滤块的内存取舍；过滤正确性在 U07。",
    "result_evidence": "no_block=False filt=108.8us unf=143.8us M=13.13MB",
-   "result_pointer": "/experiments/21/output",
-   "transfer": "迁到无过滤：关闭连续块后 143.8→160.8 µs，说明块只影响过滤路径。",
-   "limitation": "只测单列等值、10k 行；高基数过滤下块数量增多，M 收益会变小。"
+   "result_pointer": "/experiments/21/output"
   },
   {
    "id": "U24",
    "dimension": "取舍与反思",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "本地微基准更快的 AVX-512 为什么在平台下降，是否应该整个删除。",
    "student_evidence": "本地微基准说 AVX-512 快不算数：平台持续负载下可能降频，甚至 XCR0 不可用 SIGILL。上一次平台 E 在启用 512 后下降，我要默认回 AVX2，并把 512 路径整个删掉，而不是留一个运行时开关。",
    "student_pointer": "/conversations/23/content",
    "reason": "平台在启用 AVX-512 自动选择后 E 下降，回退 AVX2 恢复；本地也没有 XCR0/512 机器。当前源码 avx512 匹配数为 0，默认只保留 AVX2。",
    "independence": "只讲 AVX-512 平台回退；与 4-bit 算法负结果不同。",
    "result_evidence": "source_avx512_matches=0",
-   "result_pointer": "/experiments/22/output",
-   "transfer": "迁到产物检查：二进制 AVX-512 符号为 0，public 20/20、crash fuzz 240、checkpoint 50k 都过。",
-   "limitation": "本地没有 AVX-512 机器，无法复现平台降频；结论只基于平台读数。"
+   "result_pointer": "/experiments/22/output"
   },
   {
    "id": "U25",
@@ -1100,7 +1074,7 @@
   {
    "id": "U28",
    "dimension": "实验与反馈迭代",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "q7 code/filter block 的 16B 基址是否让 32B AVX2 load 跨 cache line，64B 对齐是否稳定更快。",
    "student_evidence": "我原以为 q7 code 矩阵的 32B AVX2 load 会因 std::vector 基址只有 16B 对齐而跨 cache line，64B 对齐应该稳定更快；先把 code/filter block 改成 64B 对齐，用同机 4 次中位数和两个二进制 A/B 验证，不到阈值就回退。",
    "student_pointer": "/conversations/27/content",
@@ -1108,8 +1082,7 @@
    "independence": "与 U22 的 4-bit、U24 的 AVX-512、U23 的过滤块内存不同：本单元只改变量基址对齐，不改算法或数据量。",
    "result_evidence": "median q7 b wall=78.1 parse=7.72 exec=35.61",
    "result_pointer": "/experiments/26/output",
-   "limitation": "4 次 A/B 的波动约 3-8%；对齐没有稳定收益，最终回退，不把未证实的 1-2% 带进提交。",
-   "transfer": "迁到 a/b 两版对照：exec 35.77 vs 35.61、wall 76.7 vs 78.1，方向不一致，判为噪声。"
+   "limitation": "4 次 A/B 的波动约 3-8%；对齐没有稳定收益，最终回退，不把未证实的 1-2% 带进提交。"
   },
   {
    "id": "U29",
@@ -1212,7 +1185,7 @@
   {
    "id": "U36",
    "dimension": "技术理解与迁移",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "未别名 L2_DISTANCE 的列名能否保留表达式原文的空格/引号。",
    "student_evidence": "紧/松空格三种 header 都保留表达式原文，别名仍用别名；我把列名改成 token 偏移截取，不再由 parser 重建。",
    "student_pointer": "/conversations/35/content",
@@ -1220,13 +1193,12 @@
    "independence": "与 U15 的投影/排序距离错配不同：本单元只问列名文本，不问距离值。",
    "result_evidence": "header_space=L2_DISTANCE(e, '[1,2]')",
    "result_pointer": "/experiments/34/output",
-   "limitation": "只测 L2_DISTANCE；其它表达式列名未覆盖。",
-   "transfer": "迁到松空格与别名：header_space 保留原文、header_alias 仍为 d。"
+   "limitation": "只测 L2_DISTANCE；其它表达式列名未覆盖。"
   },
   {
    "id": "U37",
    "dimension": "技术理解与迁移",
-   "score": 2.0,
+   "score": 1.5,
    "problem": "SET autocommit=0/1 是否真的开/提交事务，shutdown 是否回滚未提交。",
    "student_evidence": "ROLLBACK 后为空、COMMIT 后可见、shutdown 后未提交不出现、autocommit=1 后提交；四条路径都对，SET 不再当 no-op。",
    "student_pointer": "/conversations/36/content",
@@ -1234,8 +1206,7 @@
    "independence": "与 U09 的语句原子性不同：本单元只问 autocommit 的事务生命周期。",
    "result_evidence": "restart_after_shutdown_rows=[[2]]",
    "result_pointer": "/experiments/35/output",
-   "limitation": "只测单连接；嵌套事务不支持。",
-   "transfer": "迁到 shutdown 与 autocommit=1：四条路径分别得到 []、[[2]]、[[2]]、[[2],[4]]。"
+   "limitation": "只测单连接；嵌套事务不支持。"
   },
   {
    "id": "U39",
@@ -1292,5 +1263,5 @@
   "只模拟进程强杀，不模拟断电/坏盘；崩溃 fuzz 的随机覆盖有限。"
  ],
  "summary": "40 个独立单元覆盖五个维度：规划与度量、WAL/checkpoint、q7 精确性、IVF、事务与崩溃、协议、过滤、写路径、ASAN、TopK、指标饱和、ANN、q7 IVF、4-bit、内存取舍、AVX-512、大 INSERT 分块、SELECT 窄快路径、q7 对齐负结果、向量直接写入、M 的 anon/file 构成、轮间波动、fsync 地板、WAL fixed24、span INSERT、changed rows、header 原文、autocommit、q6、int8 下界、干净归档、id 类型回显。",
- "material_summary": "40 个单元，五个维度 7/11/10/6/6；39 个单元带 transfer+limitation 的完整链，1 个纯规划单元。"
+ "material_summary": "40 个单元，五个维度 7/11/10/6/6；每个单元有独立的学生问题与实验结果，新增 11 个单元各带一条新命令输出。"
 }
