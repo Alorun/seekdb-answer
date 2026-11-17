@@ -192,10 +192,21 @@ void Wal::dropCache() {
   if (fd_ < 0 || size_ == 0) return;
   static const bool enabled = std::getenv("MVDB_NO_WAL_FADVISE") == nullptr;
   if (!enabled) return;
+  if (dropped_ >= size_) return;
   // Advisory only: the file is fsynced before this is called, so no
   // acknowledged data can be lost.  A later read simply faults the page back
-  // in from the device.
-  ::posix_fadvise(fd_, 0, static_cast<off_t>(size_), POSIX_FADV_DONTNEED);
+  // in from the device.  Only the bytes appended since the previous drop are
+  // advised: pages already dropped stay out of the page cache, so walking the
+  // whole file on every commit would rescan O(n) pages per batch for nothing.
+  // Align the start down to a page boundary: a DONTNEED range that starts
+  // inside a page leaves that page in the cache, which is exactly the page the
+  // previous batch ended in.
+  const uint64_t start = dropped_ & ~static_cast<uint64_t>(4095);
+  if (start < size_) {
+    ::posix_fadvise(fd_, static_cast<off_t>(start),
+                    static_cast<off_t>(size_ - start), POSIX_FADV_DONTNEED);
+  }
+  dropped_ = size_;
 }
 
 
@@ -208,6 +219,7 @@ Status Wal::truncate(uint64_t size) {
     return Status::Error(Err::kIo, "lseek failed: " + std::string(std::strerror(errno)));
   }
   size_ = size;
+  if (dropped_ > size_) dropped_ = size;
   return Status::Ok();
 }
 

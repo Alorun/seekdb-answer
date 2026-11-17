@@ -89,6 +89,10 @@ class Wal {
 
   int fd_ = -1;
   uint64_t size_ = 0;
+  // Highest offset already advised away from the page cache; the per-commit
+  // drop then only walks the bytes the last batch appended instead of the
+  // whole (growing) file.
+  uint64_t dropped_ = 0;
   std::string path_;
 };
 
